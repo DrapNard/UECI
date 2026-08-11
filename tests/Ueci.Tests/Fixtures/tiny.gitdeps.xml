@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<DependencyManifest BaseUrl="https://cdn.example.test/dependencies">
+  <Files>
+    <File Name="Engine/Binaries/Linux/tool" Hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" IsExecutable="true" />
+    <File Name="Engine/Source/Runtime/Core/Public/Core.h" Hash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" />
+    <File Name="Engine/Source/Runtime/Core/Public/CoreAlias.h" Hash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" />
+  </Files>
+  <Blobs>
+    <Blob Hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" Size="100" PackHash="cccccccccccccccccccccccccccccccccccccccc" PackOffset="8" />
+    <Blob Hash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" Size="200" PackHash="cccccccccccccccccccccccccccccccccccccccc" PackOffset="108" />
+  </Blobs>
+  <Packs>
+    <Pack Hash="cccccccccccccccccccccccccccccccccccccccc" Size="300" CompressedSize="150" RemotePath="UnrealEngine-123" />
+  </Packs>
+</DependencyManifest>
