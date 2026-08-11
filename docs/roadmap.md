@@ -14,11 +14,11 @@
 
 ## Milestone 0.2 — GitDependencies materializer
 
-- [ ] Pack downloader with bounded concurrency
-- [ ] Persistent pack/blob cache
-- [ ] SHA-1 validation before use
-- [ ] Determine/implement pack decompression from Epic's format
-- [ ] Extract only selected blobs
+- [x] Pack downloader with bounded concurrency
+- [x] Persistent pack/blob cache
+- [x] SHA-1 validation before use
+- [x] Implement validated gzip + `UEPACK00` pack decompression
+- [x] Extract only selected blobs, grouped by pack in offset order
 - [ ] Disk budget planner
 - [ ] Cache garbage collection
 

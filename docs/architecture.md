@@ -53,7 +53,7 @@ Blob.Hash ── Size
          └── RemotePath
 ```
 
-UECI v0.1 deliberately preserves this structure instead of inventing another lock format.
+UECI preserves this structure instead of inventing another lock format. v0.2 adds a materializer that groups selected blobs by pack, downloads each required gzip payload once, validates the `UEPACK00` decompressed header, extracts blobs in ascending `PackOffset` order, and verifies every blob SHA-1 before caching it.
 
 ## Epic source model
 
@@ -62,3 +62,33 @@ UECI v0.1 deliberately preserves this structure instead of inventing another loc
 ## Future writable overlay
 
 The immutable lower layers must stay clean. UBT/UAT can write to `Engine/Intermediate`, `Engine/Saved`, plugin `Intermediate`, and plugin `Binaries` through an upper layer. Mounted backends should implement copy-on-write semantics; materialized mode can use an ordinary writable directory.
+
+## v0.2 cache/materialization path
+
+```text
+Commit.gitdeps.xml
+        │
+        ▼
+     planner
+        │
+        ▼
+ group by PackHash
+        │
+        ▼
+ Epic dependency CDN
+        │
+        ▼
+ packs/<sha1>.gz       optional persistent cache
+        │
+      gunzip
+        │
+   UEPACK00 + blobs
+        │
+        ▼
+ blobs/<sha1>          verified content cache
+        │
+        ▼
+ materialized Engine paths
+```
+
+`--no-pack-cache` keeps the compressed pack only as a temporary file while retaining verified blobs. This is intended for ephemeral runners where peak disk usage matters more than avoiding a future CDN download.

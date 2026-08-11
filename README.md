@@ -2,7 +2,7 @@
 
 **UECI is an experimental, minimal Unreal Engine substrate for CI/CD.** Its goal is to build Unreal Engine code plugins without installing a full Unreal Engine tree on every runner.
 
-> Status: **v0.1 alpha / technical prototype.** The GitDependencies index and authenticated Epic source bootstrap exist today. Full plugin compilation, dependency-driven materialization, and mounted VFS backends are roadmap items.
+> Status: **v0.2 alpha / technical prototype.** Authenticated Epic source bootstrap and real GitDependencies CDN materialization now exist. Full UBT-driven plugin compilation and mounted VFS backends are still roadmap items.
 
 ## Why
 
@@ -27,7 +27,7 @@ A normal Unreal source setup materializes a very large source/dependency tree be
 
 The long-term design supports both **materialized mode** (portable, no special privileges) and **mounted mode** (FUSE on Linux, WinFsp on Windows, an appropriate macOS backend) behind the same engine-view contract.
 
-## What v0.1 already does
+## What v0.2 already does
 
 - Streams huge `Commit.gitdeps.xml` files without loading the whole XML document.
 - Builds deterministic `path → blob → pack` indexes.
@@ -37,6 +37,13 @@ The long-term design supports both **materialized mode** (portable, no special p
 - Authenticates to `EpicGames/UnrealEngine` using a **read-only token supplied only through the environment**.
 - Initializes an Epic source repository with `git fetch --filter=blob:none` and no full checkout.
 - Materializes an individual Git blob on demand.
+- Downloads Epic GitDependencies packs directly from the manifest-generated CDN URL.
+- Supports the validated gzip + `UEPACK00` pack layout and absolute decompressed `PackOffset` semantics.
+- Groups requested blobs by pack and extracts them in one forward gzip pass.
+- Verifies every extracted blob against its manifest SHA-1 before it enters the cache.
+- Keeps separate compressed-pack and verified-blob caches, with `--no-pack-cache` for disk-constrained runners.
+- Restores executable bits from `IsExecutable` on Unix hosts.
+- Rejects output-root path traversal during batch materialization.
 - Provides a future-proof VFS contract without making FUSE/WinFsp mandatory.
 - Has dependency-free local tests: no GitHub runner and no Epic token are required.
 
@@ -95,6 +102,37 @@ dotnet run --project src/Ueci.Cli -- \
   --prefix Engine/Binaries/DotNET \
   --prefix Engine/Source/Runtime/Core
 ```
+
+Fetch one real dependency file directly from Epic's CDN:
+
+```bash
+dotnet run --project src/Ueci.Cli -- \
+  gitdeps fetch /path/to/Commit.gitdeps.xml \
+  Engine/Binaries/Linux/UnrealVersionSelector-Linux-Shipping \
+  --out /tmp/UnrealVersionSelector-Linux-Shipping
+```
+
+Materialize a planned subtree while deduplicating shared blobs/packs:
+
+```bash
+dotnet run --project src/Ueci.Cli -- \
+  gitdeps materialize /path/to/Commit.gitdeps.xml \
+  --root .ueci/materialized \
+  --prefix Engine/Binaries/DotNET \
+  --prefix Engine/Source/Runtime/Core
+```
+
+By default compressed packs and verified blobs are cached. On a disk-constrained ephemeral machine, keep only verified blobs:
+
+```bash
+dotnet run --project src/Ueci.Cli -- \
+  gitdeps fetch /path/to/Commit.gitdeps.xml \
+  Engine/Binaries/Linux/UnrealVersionSelector-Linux-Shipping \
+  --out /tmp/UnrealVersionSelector-Linux-Shipping \
+  --no-pack-cache
+```
+
+Override the cache with `--cache-dir PATH` or `UECI_CACHE_DIR`. Batch materialization defaults to two concurrent packs and accepts `--max-concurrent-packs N` (1–32).
 
 ## Epic GitHub access
 
@@ -157,7 +195,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` currently bootstraps the blobless Epic source store. It intentionally does not pretend that plugin building is complete yet.
 
 ```yaml
-- uses: your-org/ueci@v0.1.0-alpha.1
+- uses: your-org/ueci@v0.2.0-alpha.1
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release
@@ -167,16 +205,16 @@ For pull requests from untrusted forks, do not expose an Epic token to checked-o
 
 ## Roadmap
 
-1. **v0.1 — manifest + Epic source substrate**
+1. **v0.1 — manifest + Epic source substrate** ✅
    - GitDependencies parser/index/planner
    - read-only Epic Git auth
    - blobless source store
    - local deterministic tests
-2. **v0.2 — GitDependencies fetch/materialize**
-   - pack cache
-   - SHA-1 verification
-   - pack extraction
-   - minimal physical Engine tree
+2. **v0.2 — GitDependencies fetch/materialize** ✅ alpha
+   - gzip/`UEPACK00` pack extraction
+   - compressed pack + verified blob caches
+   - SHA-1 validation and executable-bit restoration
+   - grouped multi-blob extraction and materialized subtrees
 3. **v0.3 — Unreal-aware resolver**
    - bootstrap UBT/UAT/UHT
    - evaluate real `.Build.cs` / target rules
@@ -196,7 +234,7 @@ For pull requests from untrusted forks, do not expose an Epic token to checked-o
    - release binaries
    - hard disk-budget enforcement
 
-See [`docs/architecture.md`](docs/architecture.md) and [`docs/roadmap.md`](docs/roadmap.md).
+See [`docs/architecture.md`](docs/architecture.md), [`docs/gitdependencies-format.md`](docs/gitdependencies-format.md), and [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Redpoint VFS
 

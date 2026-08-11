@@ -7,7 +7,8 @@ Thanks for helping make Unreal plugin CI less wasteful.
 1. Branch from `main`.
 2. Keep changes focused and add a deterministic fixture test.
 3. Run `./scripts/test.sh` (or `scripts/test.ps1`) locally.
-4. Open a pull request using the template.
+4. For GitDependencies changes, prefer synthetic gzip/`UEPACK00` fixtures; optionally exercise a real authorized manifest with `scripts/smoke-real-fetch.sh`.
+5. Open a pull request using the template.
 
 Suggested branch names:
 
