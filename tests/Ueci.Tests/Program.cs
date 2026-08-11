@@ -1,3 +1,6 @@
+using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Text;
 using Ueci.Epic;
 using Ueci.GitDeps;
 
@@ -12,7 +15,14 @@ internal static class Program
         ("planner deduplicates shared blobs and packs", PlannerDeduplicatesAsync),
         ("integrity validator accepts fixture", IntegrityValidAsync),
         ("path normalization is platform neutral", PathNormalizationAsync),
+        ("materialization path cannot escape root", MaterializationPathSafetyAsync),
         ("git credential is process-only config", GitCredentialEnvironmentAsync),
+        ("materializer extracts multiple blobs in one pack download", MaterializerExtractsMultiBlobPackAsync),
+        ("materializer reuses compressed pack cache", MaterializerReusesPackCacheAsync),
+        ("materializer repairs corrupt compressed pack cache", MaterializerRepairsCorruptPackCacheAsync),
+        ("materializer can discard compressed pack cache", MaterializerNoPackCacheAsync),
+        ("materializer rejects blob SHA-1 mismatch", MaterializerRejectsHashMismatchAsync),
+        ("pack extractor rejects unknown magic", PackExtractorRejectsUnknownMagicAsync),
     ];
 
     public static async Task<int> Main(string[] args)
@@ -31,7 +41,7 @@ internal static class Program
             catch (Exception ex)
             {
                 failed++;
-                Console.Error.WriteLine($"FAIL {name}: {ex.Message}");
+                Console.Error.WriteLine($"FAIL {name}: {ex}");
             }
         }
 
@@ -45,11 +55,12 @@ internal static class Program
             catch (Exception ex)
             {
                 failed++;
-                Console.Error.WriteLine($"FAIL real manifest smoke test: {ex.Message}");
+                Console.Error.WriteLine($"FAIL real manifest smoke test: {ex}");
             }
         }
 
-        Console.WriteLine($"{Tests.Count + (string.IsNullOrWhiteSpace(realManifest) ? 0 : 1) - failed} passed, {failed} failed");
+        int total = Tests.Count + (string.IsNullOrWhiteSpace(realManifest) ? 0 : 1);
+        Console.WriteLine($"{total - failed} passed, {failed} failed");
         return failed == 0 ? 0 : 1;
     }
 
@@ -107,6 +118,22 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static async Task MaterializationPathSafetyAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string safe = GitDependencyPath.CombineUnderRoot(root, "Engine/Source/Core.h");
+            Assert.True(safe.StartsWith(Path.GetFullPath(root), StringComparison.Ordinal));
+            await Assert.ThrowsAsync<InvalidDataException>(() => Task.FromResult(
+                GitDependencyPath.CombineUnderRoot(root, "Engine/../outside")));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
     private static Task GitCredentialEnvironmentAsync()
     {
         IReadOnlyDictionary<string, string> env = GitHubReadOnlyCredential.CreateGitEnvironment("super-secret");
@@ -114,6 +141,214 @@ internal static class Program
         Assert.True(env["GIT_CONFIG_VALUE_0"].StartsWith("AUTHORIZATION: basic ", StringComparison.Ordinal));
         Assert.False(env["GIT_CONFIG_VALUE_0"].Contains("super-secret", StringComparison.Ordinal));
         return Task.CompletedTask;
+    }
+
+    private static async Task MaterializerExtractsMultiBlobPackAsync()
+    {
+        SyntheticPack fixture = CreateSyntheticPack();
+        string root = CreateTempDirectory();
+        try
+        {
+            string cacheRoot = Path.Combine(root, "cache");
+            string outputRoot = Path.Combine(root, "engine");
+            var source = new MemoryPackSource(fixture.PackUri, fixture.CompressedBytes);
+            var materializer = new GitDependenciesMaterializer(source);
+            GitDependenciesPlan plan = GitDependenciesPlanner.CreatePlan(
+                fixture.Manifest,
+                prefixes: ["Engine/"]);
+
+            GitDependenciesBatchResult result = await materializer.MaterializePlanAsync(
+                fixture.Manifest,
+                plan,
+                outputRoot,
+                new GitDependenciesFetchOptions(cacheRoot, CacheCompressedPacks: true, MaxConcurrentPacks: 1));
+
+            Assert.Equal(1, source.DownloadCount);
+            Assert.Equal(3, result.FileCount);
+            Assert.Equal(2, result.UniqueBlobCount);
+            Assert.Equal(1, result.DownloadedPacks);
+            Assert.SequenceEqual(
+                fixture.BlobA,
+                await File.ReadAllBytesAsync(Path.Combine(outputRoot, "Engine", "Binaries", "Linux", "tool")));
+            Assert.SequenceEqual(
+                fixture.BlobB,
+                await File.ReadAllBytesAsync(Path.Combine(outputRoot, "Engine", "Source", "Runtime", "Core", "Public", "Core.h")));
+            Assert.SequenceEqual(
+                fixture.BlobB,
+                await File.ReadAllBytesAsync(Path.Combine(outputRoot, "Engine", "Source", "Runtime", "Core", "Public", "CoreAlias.h")));
+
+            if (!OperatingSystem.IsWindows())
+            {
+                string toolPath = Path.Combine(outputRoot, "Engine", "Binaries", "Linux", "tool");
+                UnixFileMode mode = File.GetUnixFileMode(toolPath);
+                Assert.True((mode & UnixFileMode.UserExecute) != 0);
+            }
+
+            string secondOutput = Path.Combine(root, "engine-second");
+            GitDependenciesBatchResult second = await materializer.MaterializePlanAsync(
+                fixture.Manifest,
+                plan,
+                secondOutput,
+                new GitDependenciesFetchOptions(cacheRoot, CacheCompressedPacks: true, MaxConcurrentPacks: 1));
+            Assert.Equal(1, source.DownloadCount);
+            Assert.Equal(2, second.BlobCacheHits);
+            Assert.Equal(0, second.DownloadedPacks);
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task MaterializerReusesPackCacheAsync()
+    {
+        SyntheticPack fixture = CreateSyntheticPack();
+        string root = CreateTempDirectory();
+        try
+        {
+            string cacheRoot = Path.Combine(root, "cache");
+            var source = new MemoryPackSource(fixture.PackUri, fixture.CompressedBytes);
+            var materializer = new GitDependenciesMaterializer(source);
+            GitDependencyResolution resolution = fixture.Manifest.Resolve("Engine/Binaries/Linux/tool")!;
+            GitDependenciesFetchOptions options = new(cacheRoot, CacheCompressedPacks: true, MaxConcurrentPacks: 1);
+
+            await materializer.MaterializeFileAsync(
+                resolution,
+                Path.Combine(root, "tool-one"),
+                options);
+            Assert.Equal(1, source.DownloadCount);
+
+            var cache = new GitDependenciesCache(cacheRoot);
+            File.Delete(cache.GetBlobPath(resolution.Blob.Hash));
+
+            GitDependenciesFetchResult second = await materializer.MaterializeFileAsync(
+                resolution,
+                Path.Combine(root, "tool-two"),
+                options);
+            Assert.Equal(1, source.DownloadCount);
+            Assert.True(second.PackCacheHit);
+            Assert.Equal(0L, second.DownloadedBytes);
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task MaterializerRepairsCorruptPackCacheAsync()
+    {
+        SyntheticPack fixture = CreateSyntheticPack();
+        string root = CreateTempDirectory();
+        try
+        {
+            string cacheRoot = Path.Combine(root, "cache");
+            var source = new MemoryPackSource(fixture.PackUri, fixture.CompressedBytes);
+            var materializer = new GitDependenciesMaterializer(source);
+            GitDependencyResolution resolution = fixture.Manifest.Resolve("Engine/Binaries/Linux/tool")!;
+            GitDependenciesFetchOptions options = new(cacheRoot, CacheCompressedPacks: true, MaxConcurrentPacks: 1);
+
+            await materializer.MaterializeFileAsync(
+                resolution,
+                Path.Combine(root, "tool-one"),
+                options);
+            Assert.Equal(1, source.DownloadCount);
+
+            var cache = new GitDependenciesCache(cacheRoot);
+            File.Delete(cache.GetBlobPath(resolution.Blob.Hash));
+            string packPath = cache.GetPackPath(resolution.Pack.Hash);
+            byte[] corrupt = Enumerable.Repeat((byte)0x5a, fixture.CompressedBytes.Length).ToArray();
+            await File.WriteAllBytesAsync(packPath, corrupt);
+
+            GitDependenciesFetchResult repaired = await materializer.MaterializeFileAsync(
+                resolution,
+                Path.Combine(root, "tool-two"),
+                options);
+
+            Assert.Equal(2, source.DownloadCount);
+            Assert.False(repaired.PackCacheHit);
+            Assert.Equal((long)fixture.CompressedBytes.Length, repaired.DownloadedBytes);
+            Assert.SequenceEqual(fixture.BlobA, await File.ReadAllBytesAsync(Path.Combine(root, "tool-two")));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task MaterializerNoPackCacheAsync()
+    {
+        SyntheticPack fixture = CreateSyntheticPack();
+        string root = CreateTempDirectory();
+        try
+        {
+            string cacheRoot = Path.Combine(root, "cache");
+            var source = new MemoryPackSource(fixture.PackUri, fixture.CompressedBytes);
+            var materializer = new GitDependenciesMaterializer(source);
+            GitDependencyResolution resolution = fixture.Manifest.Resolve("Engine/Binaries/Linux/tool")!;
+
+            await materializer.MaterializeFileAsync(
+                resolution,
+                Path.Combine(root, "tool"),
+                new GitDependenciesFetchOptions(cacheRoot, CacheCompressedPacks: false, MaxConcurrentPacks: 1));
+
+            var cache = new GitDependenciesCache(cacheRoot);
+            Assert.False(File.Exists(cache.GetPackPath(resolution.Pack.Hash)));
+            Assert.True(File.Exists(cache.GetBlobPath(resolution.Blob.Hash)));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task MaterializerRejectsHashMismatchAsync()
+    {
+        SyntheticPack fixture = CreateSyntheticPack();
+        string root = CreateTempDirectory();
+        try
+        {
+            GitDependencyResolution original = fixture.Manifest.Resolve("Engine/Binaries/Linux/tool")!;
+            var badBlob = original.Blob with { Hash = new string('f', 40) };
+            var badFile = original.File with { Hash = badBlob.Hash };
+            var badResolution = new GitDependencyResolution(badFile, badBlob, original.Pack, original.PackUri);
+            var source = new MemoryPackSource(fixture.PackUri, fixture.CompressedBytes);
+            var materializer = new GitDependenciesMaterializer(source);
+
+            await Assert.ThrowsAsync<InvalidDataException>(() => materializer.MaterializeFileAsync(
+                badResolution,
+                Path.Combine(root, "bad-tool"),
+                new GitDependenciesFetchOptions(Path.Combine(root, "cache"), true, 1)));
+            Assert.False(File.Exists(Path.Combine(root, "bad-tool")));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task PackExtractorRejectsUnknownMagicAsync()
+    {
+        byte[] payload = Encoding.UTF8.GetBytes("hello");
+        string blobHash = Sha1(payload);
+        byte[] raw = Encoding.ASCII.GetBytes("NOTAPACK").Concat(payload).ToArray();
+        byte[] compressed = Gzip(raw);
+        var pack = new GitDependencyPack(new string('c', 40), raw.Length, compressed.Length, "UnrealEngine-test");
+        var blob = new GitDependencyBlob(blobHash, payload.Length, pack.Hash, 8);
+        string root = CreateTempDirectory();
+
+        try
+        {
+            await using var stream = new MemoryStream(compressed, writable: false);
+            await Assert.ThrowsAsync<InvalidDataException>(() => GitDependenciesPackExtractor.ExtractAsync(
+                stream,
+                pack,
+                [blob],
+                _ => Path.Combine(root, "blob")));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
     }
 
     private static async Task RealManifestSmokeAsync(string path)
@@ -129,6 +364,84 @@ internal static class Program
         Assert.True(integrity.IsValid);
     }
 
+    private static SyntheticPack CreateSyntheticPack()
+    {
+        byte[] blobA = Encoding.UTF8.GetBytes("#!/bin/sh\necho ueci\n");
+        byte[] blobB = Enumerable.Range(0, 4096).Select(index => (byte)(index * 31)).ToArray();
+        string hashA = Sha1(blobA);
+        string hashB = Sha1(blobB);
+        string packHash = new string('c', 40);
+
+        byte[] gap = Enumerable.Repeat((byte)0xa5, 37).ToArray();
+        byte[] raw = Encoding.ASCII.GetBytes("UEPACK00")
+            .Concat(blobA)
+            .Concat(gap)
+            .Concat(blobB)
+            .ToArray();
+        byte[] compressed = Gzip(raw);
+
+        var pack = new GitDependencyPack(packHash, raw.Length, compressed.Length, "UnrealEngine-test");
+        var blobRecordA = new GitDependencyBlob(hashA, blobA.Length, packHash, 8);
+        var blobRecordB = new GitDependencyBlob(hashB, blobB.Length, packHash, 8 + blobA.Length + gap.Length);
+        var files = new Dictionary<string, GitDependencyFile>(StringComparer.Ordinal)
+        {
+            ["Engine/Binaries/Linux/tool"] = new("Engine/Binaries/Linux/tool", hashA, true),
+            ["Engine/Source/Runtime/Core/Public/Core.h"] = new("Engine/Source/Runtime/Core/Public/Core.h", hashB, false),
+            ["Engine/Source/Runtime/Core/Public/CoreAlias.h"] = new("Engine/Source/Runtime/Core/Public/CoreAlias.h", hashB, false),
+        };
+        var blobs = new Dictionary<string, GitDependencyBlob>(StringComparer.OrdinalIgnoreCase)
+        {
+            [hashA] = blobRecordA,
+            [hashB] = blobRecordB,
+        };
+        var packs = new Dictionary<string, GitDependencyPack>(StringComparer.OrdinalIgnoreCase)
+        {
+            [packHash] = pack,
+        };
+        var manifest = new GitDependenciesManifest(
+            "https://cdn.example.test/dependencies",
+            files,
+            blobs,
+            packs);
+        Uri uri = manifest.GetPackUri(pack);
+        return new SyntheticPack(manifest, uri, compressed, blobA, blobB);
+    }
+
+    private static byte[] Gzip(byte[] raw)
+    {
+        using var output = new MemoryStream();
+        using (var gzip = new GZipStream(output, CompressionLevel.SmallestSize, leaveOpen: true))
+        {
+            gzip.Write(raw);
+        }
+        return output.ToArray();
+    }
+
+    private static string Sha1(byte[] data)
+        => Convert.ToHexString(SHA1.HashData(data)).ToLowerInvariant();
+
+    private static string CreateTempDirectory()
+    {
+        string path = Path.Combine(Path.GetTempPath(), "ueci-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    private static void DeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch
+        {
+            // Keep test failures focused on the behavior under test.
+        }
+    }
+
     private static string? GetOption(string[] args, string name)
     {
         for (int i = 0; i < args.Length - 1; i++)
@@ -139,6 +452,38 @@ internal static class Program
             }
         }
         return null;
+    }
+
+    private sealed record SyntheticPack(
+        GitDependenciesManifest Manifest,
+        Uri PackUri,
+        byte[] CompressedBytes,
+        byte[] BlobA,
+        byte[] BlobB);
+
+    private sealed class MemoryPackSource : IGitDependenciesPackSource
+    {
+        private readonly Uri _expectedUri;
+        private readonly byte[] _bytes;
+
+        public MemoryPackSource(Uri expectedUri, byte[] bytes)
+        {
+            _expectedUri = expectedUri;
+            _bytes = bytes;
+        }
+
+        public int DownloadCount { get; private set; }
+
+        public async Task<long> DownloadAsync(
+            Uri uri,
+            Stream destination,
+            CancellationToken cancellationToken = default)
+        {
+            Assert.Equal(_expectedUri, uri);
+            DownloadCount++;
+            await destination.WriteAsync(_bytes.AsMemory(), cancellationToken);
+            return _bytes.Length;
+        }
     }
 
     private static class Assert
@@ -159,6 +504,29 @@ internal static class Program
             {
                 throw new Exception($"expected '{expected}', got '{actual}'");
             }
+        }
+
+        public static void SequenceEqual(byte[] expected, byte[] actual)
+        {
+            if (!expected.AsSpan().SequenceEqual(actual))
+            {
+                throw new Exception($"byte sequences differ (expected {expected.Length}, got {actual.Length})");
+            }
+        }
+
+        public static async Task ThrowsAsync<TException>(Func<Task> action)
+            where TException : Exception
+        {
+            try
+            {
+                await action().ConfigureAwait(false);
+            }
+            catch (TException)
+            {
+                return;
+            }
+
+            throw new Exception($"expected exception {typeof(TException).Name}");
         }
     }
 }

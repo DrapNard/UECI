@@ -6,7 +6,7 @@ namespace Ueci.Cli;
 
 internal static class Program
 {
-    private const string Version = "0.1.0-alpha.1";
+    private const string Version = "0.2.0-alpha.1";
 
     public static async Task<int> Main(string[] args)
     {
@@ -141,6 +141,79 @@ internal static class Program
                 }
                 return 0;
             }
+            case "fetch":
+            {
+                if (args.Length < 3 || args[2].StartsWith("--", StringComparison.Ordinal))
+                {
+                    return Fail("Usage: ueci gitdeps fetch <manifest> <engine-path> --out PATH [--cache-dir PATH] [--no-pack-cache] [--json]");
+                }
+
+                string enginePath = args[2];
+                string output = GetOption(args, "--out") ?? GetOption(args, "--output")
+                    ?? throw new ArgumentException("Missing required option --out.");
+                GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath)
+                    .ConfigureAwait(false);
+                GitDependencyResolution resolution = manifest.Resolve(enginePath)
+                    ?? throw new FileNotFoundException($"Path not found in manifest: {enginePath}");
+
+                GitDependenciesFetchOptions options = GetFetchOptions(args);
+                using var source = new HttpGitDependenciesPackSource();
+                var materializer = new GitDependenciesMaterializer(source);
+                GitDependenciesFetchResult result = await materializer.MaterializeFileAsync(
+                    resolution,
+                    output,
+                    options).ConfigureAwait(false);
+
+                if (json)
+                {
+                    WriteJson(result);
+                }
+                else
+                {
+                    Console.WriteLine($"Materialized:      {result.OutputPath}");
+                    Console.WriteLine($"Blob:              {result.BlobHash}");
+                    Console.WriteLine($"Pack:              {result.PackHash}");
+                    Console.WriteLine($"Blob cache:        {(result.BlobCacheHit ? "hit" : "miss")}");
+                    Console.WriteLine($"Pack cache:        {(result.PackCacheHit ? "hit" : "miss")}");
+                    Console.WriteLine($"Downloaded:        {FormatBytes(result.DownloadedBytes)}");
+                }
+                return 0;
+            }
+            case "materialize":
+            {
+                string outputRoot = RequireOption(args, "--root");
+                string[] exact = GetMultiOption(args, "--path");
+                string[] prefixes = GetMultiOption(args, "--prefix");
+                GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath)
+                    .ConfigureAwait(false);
+                GitDependenciesPlan plan = GitDependenciesPlanner.CreatePlan(manifest, exact, prefixes);
+                GitDependenciesFetchOptions options = GetFetchOptions(args);
+
+                using var source = new HttpGitDependenciesPackSource();
+                var materializer = new GitDependenciesMaterializer(source);
+                GitDependenciesBatchResult result = await materializer.MaterializePlanAsync(
+                    manifest,
+                    plan,
+                    outputRoot,
+                    options).ConfigureAwait(false);
+
+                if (json)
+                {
+                    WriteJson(result);
+                }
+                else
+                {
+                    Console.WriteLine($"Files:             {result.FileCount:N0}");
+                    Console.WriteLine($"Unique blobs:      {result.UniqueBlobCount:N0}");
+                    Console.WriteLine($"Unique packs:      {result.UniquePackCount:N0}");
+                    Console.WriteLine($"Blob cache hits:   {result.BlobCacheHits:N0}");
+                    Console.WriteLine($"Pack cache hits:   {result.PackCacheHits:N0}");
+                    Console.WriteLine($"Downloaded packs:  {result.DownloadedPacks:N0}");
+                    Console.WriteLine($"Downloaded:        {FormatBytes(result.DownloadedBytes)}");
+                    Console.WriteLine($"Output root:       {Path.GetFullPath(outputRoot)}");
+                }
+                return 0;
+            }
             default:
                 return Fail($"Unknown gitdeps command '{command}'.");
         }
@@ -266,6 +339,19 @@ internal static class Program
 
     private static bool HasFlag(string[] args, string name) => args.Contains(name, StringComparer.Ordinal);
 
+    private static GitDependenciesFetchOptions GetFetchOptions(string[] args)
+    {
+        string cacheDirectory = GetOption(args, "--cache-dir") ?? GitDependenciesCache.GetDefaultRoot();
+        bool cachePacks = !HasFlag(args, "--no-pack-cache");
+        string? concurrencyRaw = GetOption(args, "--max-concurrent-packs");
+        int concurrency = concurrencyRaw is null
+            ? 2
+            : int.TryParse(concurrencyRaw, out int parsed)
+                ? parsed
+                : throw new ArgumentException("--max-concurrent-packs must be an integer.");
+        return new GitDependenciesFetchOptions(cacheDirectory, cachePacks, concurrency);
+    }
+
     private static void WriteJson<T>(T value)
     {
         Console.WriteLine(JsonSerializer.Serialize(value, new JsonSerializerOptions { WriteIndented = true }));
@@ -313,6 +399,14 @@ internal static class Program
               ueci gitdeps validate <Commit.gitdeps.xml> [--json]
               ueci gitdeps lookup <Commit.gitdeps.xml> <engine-path> [--json]
               ueci gitdeps plan <Commit.gitdeps.xml> [--path X]... [--prefix X]... [--json]
+              ueci gitdeps fetch <Commit.gitdeps.xml> <engine-path> --out PATH [fetch options]
+              ueci gitdeps materialize <Commit.gitdeps.xml> --root PATH [--path X]... [--prefix X]... [fetch options]
+
+            Fetch options:
+              --cache-dir PATH           Override the persistent cache directory.
+              --no-pack-cache            Delete compressed packs after extraction.
+              --max-concurrent-packs N   Download/extract up to N packs concurrently (default: 2).
+              --json                     Emit machine-readable output.
             """);
     }
 
