@@ -1,0 +1,40 @@
+name: UECI bootstrap
+description: Experimental blobless Unreal Engine source bootstrap for plugin CI.
+author: UECI contributors
+branding:
+  icon: box
+  color: purple
+inputs:
+  epic-token:
+    description: Read-only GitHub token whose account can access EpicGames/UnrealEngine.
+    required: true
+  engine-ref:
+    description: Git ref in EpicGames/UnrealEngine.
+    required: false
+    default: release
+  engine-dir:
+    description: Directory used for the blobless Epic source store.
+    required: false
+    default: .ueci/engine
+  manifest-out:
+    description: Output path for Epic's Commit.gitdeps.xml.
+    required: false
+    default: .ueci/Commit.gitdeps.xml
+runs:
+  using: composite
+  steps:
+    - name: Set up .NET 8
+      uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: 8.0.x
+    - name: Initialize Epic source store
+      shell: bash
+      env:
+        UECI_EPIC_GITHUB_TOKEN: ${{ inputs.epic-token }}
+      run: >-
+        dotnet run --project "$GITHUB_ACTION_PATH/src/Ueci.Cli/Ueci.Cli.csproj"
+        -c Release --
+        epic bootstrap
+        --dir "${{ inputs.engine-dir }}"
+        --manifest-out "${{ inputs.manifest-out }}"
+        --ref "${{ inputs.engine-ref }}"

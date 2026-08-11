@@ -1,0 +1,34 @@
+name: Bug report
+description: Report reproducible UECI behaviour.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Please remove tokens, private Epic URLs, and proprietary Unreal source from logs before attaching them.
+  - type: input
+    id: version
+    attributes:
+      label: UECI version
+      placeholder: 0.1.0-alpha.1
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options: [Linux, Windows, macOS, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Commands, expected result, and actual result.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      render: text
