@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Ueci.Epic;
 using Ueci.GitDeps;
+using Ueci.Unreal;
 
 namespace Ueci.Tests;
 
@@ -23,6 +24,9 @@ internal static class Program
         ("materializer can discard compressed pack cache", MaterializerNoPackCacheAsync),
         ("materializer rejects blob SHA-1 mismatch", MaterializerRejectsHashMismatchAsync),
         ("pack extractor rejects unknown magic", PackExtractorRejectsUnknownMagicAsync),
+        ("runtimeconfig parser reads shared framework", RuntimeConfigParsesAsync),
+        ("Epic bundled dotnet resolver selects host runtime", BundledDotNetResolverAsync),
+        ("UBT locator requires managed bootstrap files", UnrealBuildToolLocatorAsync),
     ];
 
     public static async Task<int> Main(string[] args)
@@ -344,6 +348,89 @@ internal static class Program
                 pack,
                 [blob],
                 _ => Path.Combine(root, "blob")));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task RuntimeConfigParsesAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string path = Path.Combine(root, "UnrealBuildTool.runtimeconfig.json");
+            await File.WriteAllTextAsync(path, """
+                {
+                  "runtimeOptions": {
+                    "tfm": "net10.0",
+                    "framework": {
+                      "name": "Microsoft.NETCore.App",
+                      "version": "10.0.0"
+                    }
+                  }
+                }
+                """);
+
+            DotNetRuntimeConfig config = await DotNetRuntimeConfig.ReadAsync(path);
+            Assert.Equal(1, config.Frameworks.Count);
+            Assert.Equal("Microsoft.NETCore.App", config.Frameworks[0].Name);
+            Assert.Equal(new Version(10, 0, 0), config.Frameworks[0].Version);
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static Task BundledDotNetResolverAsync()
+    {
+        var files = new Dictionary<string, GitDependencyFile>(StringComparer.Ordinal)
+        {
+            ["Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/dotnet"] =
+                new("Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/dotnet", "a", true),
+            ["Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/host/fxr/10.0.7/libhostfxr.so"] =
+                new("Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/host/fxr/10.0.7/libhostfxr.so", "b", true),
+            ["Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/shared/Microsoft.NETCore.App/10.0.6/System.Private.CoreLib.dll"] =
+                new("Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/shared/Microsoft.NETCore.App/10.0.6/System.Private.CoreLib.dll", "c", false),
+            ["Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/shared/Microsoft.NETCore.App/10.0.7/System.Private.CoreLib.dll"] =
+                new("Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/shared/Microsoft.NETCore.App/10.0.7/System.Private.CoreLib.dll", "d", false),
+        };
+        var manifest = new GitDependenciesManifest(
+            "https://cdn.example.test/dependencies",
+            files,
+            new Dictionary<string, GitDependencyBlob>(),
+            new Dictionary<string, GitDependencyPack>());
+        var config = new DotNetRuntimeConfig(
+            [new DotNetFrameworkRequirement("Microsoft.NETCore.App", new Version(10, 0, 0))]);
+
+        EpicBundledDotNetPlan plan = EpicBundledDotNetResolver.Resolve(manifest, config, "linux-x64");
+        Assert.Equal("Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/", plan.BundlePrefix);
+        Assert.Equal("Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/dotnet", plan.DotNetPath);
+        Assert.Equal(new Version(10, 0, 7), plan.ResolvedFrameworks[0].Version);
+        Assert.True(plan.Prefixes.Contains(
+            "Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/shared/Microsoft.NETCore.App/10.0.7/",
+            StringComparer.Ordinal));
+        return Task.CompletedTask;
+    }
+
+    private static async Task UnrealBuildToolLocatorAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string ubt = Path.Combine(root, "Engine", "Binaries", "DotNET", "UnrealBuildTool");
+            Directory.CreateDirectory(ubt);
+            string dll = Path.Combine(ubt, "UnrealBuildTool.dll");
+            string runtimeConfig = Path.Combine(ubt, "UnrealBuildTool.runtimeconfig.json");
+            await File.WriteAllBytesAsync(dll, [1, 2, 3]);
+            await File.WriteAllTextAsync(runtimeConfig, "{}");
+
+            UnrealBuildToolPaths paths = UnrealBuildToolLocator.Locate(root);
+            Assert.Equal(Path.GetFullPath(root), paths.EngineRoot);
+            Assert.Equal(dll, paths.AssemblyPath);
+            Assert.Equal(runtimeConfig, paths.RuntimeConfigPath);
         }
         finally
         {

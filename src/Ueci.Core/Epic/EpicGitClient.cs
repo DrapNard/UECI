@@ -78,6 +78,59 @@ public sealed class EpicGitClient
         return commit;
     }
 
+
+    public async Task MaterializePathsAsync(
+        string repositoryDirectory,
+        IEnumerable<string> enginePaths,
+        string? tokenEnvironmentVariable = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(enginePaths);
+        string token = GitHubReadOnlyCredential.GetRequiredToken(tokenEnvironmentVariable);
+        IReadOnlyDictionary<string, string> environment = GitHubReadOnlyCredential.CreateGitEnvironment(token);
+        string root = Path.GetFullPath(repositoryDirectory);
+        string commit = await GetPinnedCommitAsync(root, cancellationToken).ConfigureAwait(false);
+        string[] normalizedPaths = enginePaths
+            .Select(NormalizeGitPathspec)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (normalizedPaths.Length == 0)
+        {
+            throw new ArgumentException("At least one Epic source path is required.", nameof(enginePaths));
+        }
+
+        var arguments = new List<string>(4 + normalizedPaths.Length)
+        {
+            "checkout",
+            "--quiet",
+            commit,
+            "--",
+        };
+        arguments.AddRange(normalizedPaths);
+        await RequireSuccessAsync(root, arguments, environment, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<string> GetPinnedCommitAsync(
+        string repositoryDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        string root = Path.GetFullPath(repositoryDirectory);
+        string refPath = Path.Combine(root, RefFileName);
+        if (!File.Exists(refPath))
+        {
+            throw new InvalidOperationException(
+                $"'{root}' has no {RefFileName}. Run 'ueci epic init' first.");
+        }
+
+        string commit = (await File.ReadAllTextAsync(refPath, cancellationToken).ConfigureAwait(false)).Trim();
+        if (commit.Length == 0)
+        {
+            throw new InvalidDataException($"'{refPath}' does not contain a pinned Epic commit.");
+        }
+        return commit;
+    }
+
     public async Task MaterializeFileAsync(
         string repositoryDirectory,
         string enginePath,
@@ -88,15 +141,8 @@ public sealed class EpicGitClient
         string token = GitHubReadOnlyCredential.GetRequiredToken(tokenEnvironmentVariable);
         IReadOnlyDictionary<string, string> environment = GitHubReadOnlyCredential.CreateGitEnvironment(token);
         string root = Path.GetFullPath(repositoryDirectory);
-        string refPath = Path.Combine(root, RefFileName);
-        if (!File.Exists(refPath))
-        {
-            throw new InvalidOperationException(
-                $"'{root}' has no {RefFileName}. Run 'ueci epic init' first.");
-        }
-
-        string commit = (await File.ReadAllTextAsync(refPath, cancellationToken).ConfigureAwait(false)).Trim();
-        string normalized = enginePath.Replace('\\', '/').TrimStart('/');
+        string commit = await GetPinnedCommitAsync(root, cancellationToken).ConfigureAwait(false);
+        string normalized = NormalizeGitPathspec(enginePath);
         string objectSpec = $"{commit}:{normalized}";
 
         await GitProcess.RunBinaryToFileAsync(
@@ -105,6 +151,24 @@ public sealed class EpicGitClient
             Path.GetFullPath(outputPath),
             environment,
             cancellationToken).ConfigureAwait(false);
+    }
+
+
+    private static string NormalizeGitPathspec(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        string normalized = path.Replace('\\', '/').Trim();
+        while (normalized.StartsWith("./", StringComparison.Ordinal))
+        {
+            normalized = normalized[2..];
+        }
+        normalized = normalized.TrimStart('/');
+        string[] segments = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 0 || segments.Any(segment => segment is "." or ".."))
+        {
+            throw new InvalidDataException($"Unsafe Epic Git path '{path}'.");
+        }
+        return normalized;
     }
 
     private static async Task<GitProcessResult> RequireSuccessAsync(

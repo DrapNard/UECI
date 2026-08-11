@@ -1,12 +1,13 @@
 using System.Text.Json;
 using Ueci.Epic;
 using Ueci.GitDeps;
+using Ueci.Unreal;
 
 namespace Ueci.Cli;
 
 internal static class Program
 {
-    private const string Version = "0.2.0-alpha.1";
+    private const string CliVersion = "0.3.0-alpha.1";
 
     public static async Task<int> Main(string[] args)
     {
@@ -20,7 +21,7 @@ internal static class Program
 
             if (args[0] is "--version" or "version")
             {
-                Console.WriteLine(Version);
+                Console.WriteLine(CliVersion);
                 return 0;
             }
 
@@ -28,6 +29,7 @@ internal static class Program
             {
                 "gitdeps" => await RunGitDepsAsync(args[1..]).ConfigureAwait(false),
                 "epic" => await RunEpicAsync(args[1..]).ConfigureAwait(false),
+                "ubt" => await RunUbtAsync(args[1..]).ConfigureAwait(false),
                 "init" => await RunInitAsync(args[1..]).ConfigureAwait(false),
                 _ => Fail($"Unknown command '{args[0]}'."),
             };
@@ -278,6 +280,122 @@ internal static class Program
         }
     }
 
+    private static async Task<int> RunUbtAsync(string[] args)
+    {
+        if (args.Length == 0 || IsHelp(args[0]))
+        {
+            PrintUbtHelp();
+            return args.Length == 0 ? 2 : 0;
+        }
+
+        string command = args[0];
+        string root = RequireOption(args, "--dir");
+        string repo = GetOption(args, "--repo") ?? EpicGitClient.DefaultRepository;
+        string reference = GetOption(args, "--ref") ?? EpicGitClient.DefaultRef;
+        string? tokenEnv = GetOption(args, "--token-env");
+        string runtimeIdentifier = GetOption(args, "--host-rid") ?? UnrealHostRuntime.DetectRuntimeIdentifier();
+
+        switch (command)
+        {
+            case "bootstrap":
+            {
+                var bootstrapper = new UnrealBuildToolBootstrapper();
+                var options = new UnrealBuildToolBootstrapOptions(
+                    root,
+                    repo,
+                    reference,
+                    tokenEnv,
+                    GetFetchOptions(args),
+                    runtimeIdentifier,
+                    ProbeUnrealBuildTool: !HasFlag(args, "--no-probe"));
+                UnrealBuildToolBootstrapResult result = await bootstrapper.BootstrapAsync(options)
+                    .ConfigureAwait(false);
+
+                Console.WriteLine($"Engine root:        {result.EngineRoot}");
+                Console.WriteLine($"Epic commit:        {result.EpicCommit}");
+                Console.WriteLine($"Host RID:           {result.RuntimeIdentifier}");
+                Console.WriteLine($"Bundled .NET:       {result.BundledDotNetRoot}");
+                Console.WriteLine($"UBT assembly:       {result.UnrealBuildToolAssembly}");
+                Console.WriteLine($"GitDeps files:      {result.Dependencies.FileCount:N0}");
+                Console.WriteLine($"GitDeps blobs:      {result.Dependencies.UniqueBlobCount:N0}");
+                Console.WriteLine($"Downloaded:         {FormatBytes(result.Dependencies.DownloadedBytes)}");
+                foreach (DotNetFrameworkRequirement framework in result.Frameworks)
+                {
+                    Console.WriteLine($"Framework:          {framework.Name} {framework.Version}");
+                }
+
+                if (result.ProbeResult is not null)
+                {
+                    Console.WriteLine($"UBT probe:          {(result.ProbeResult.Succeeded ? "OK" : $"FAILED ({result.ProbeResult.ExitCode})")}");
+                    if (!result.ProbeResult.Succeeded)
+                    {
+                        if (!string.IsNullOrWhiteSpace(result.ProbeResult.StandardOutput))
+                        {
+                            Console.WriteLine(result.ProbeResult.StandardOutput.TrimEnd());
+                        }
+                        if (!string.IsNullOrWhiteSpace(result.ProbeResult.StandardError))
+                        {
+                            Console.Error.WriteLine(result.ProbeResult.StandardError.TrimEnd());
+                        }
+                        return result.ProbeResult.ExitCode == 0 ? 4 : result.ProbeResult.ExitCode;
+                    }
+                }
+                return 0;
+            }
+            case "run":
+            {
+                int separator = Array.IndexOf(args, "--");
+                if (separator < 0 || separator == args.Length - 1)
+                {
+                    return Fail("Usage: ueci ubt run --dir PATH [--dotnet-root PATH] -- <UBT arguments...>");
+                }
+
+                string dotNetRoot = GetOption(args, "--dotnet-root")
+                    ?? FindBundledDotNetRoot(root, runtimeIdentifier);
+                string[] ubtArguments = args[(separator + 1)..];
+                var runner = new UnrealBuildToolRunner();
+                ExternalProcessResult result = await runner.RunAsync(root, dotNetRoot, ubtArguments)
+                    .ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(result.StandardOutput))
+                {
+                    Console.Write(result.StandardOutput);
+                }
+                if (!string.IsNullOrEmpty(result.StandardError))
+                {
+                    Console.Error.Write(result.StandardError);
+                }
+                return result.ExitCode;
+            }
+            default:
+                return Fail($"Unknown ubt command '{command}'.");
+        }
+    }
+
+    private static string FindBundledDotNetRoot(string engineRoot, string runtimeIdentifier)
+    {
+        string baseRoot = Path.Combine(
+            Path.GetFullPath(engineRoot),
+            "Engine", "Binaries", "ThirdParty", "DotNet");
+        if (!Directory.Exists(baseRoot))
+        {
+            throw new DirectoryNotFoundException(
+                $"Bundled Epic .NET directory is missing: {baseRoot}. Run 'ueci ubt bootstrap' first.");
+        }
+
+        string executableName = OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet";
+        string? result = Directory.EnumerateDirectories(baseRoot)
+            .Select(versionRoot => Path.Combine(versionRoot, runtimeIdentifier))
+            .Where(Directory.Exists)
+            .Where(candidate => File.Exists(Path.Combine(candidate, executableName)))
+            .OrderByDescending(candidate => ParseVersionOrZero(Path.GetFileName(Path.GetDirectoryName(candidate)!)))
+            .FirstOrDefault();
+        return result ?? throw new FileNotFoundException(
+            $"No materialized Epic bundled dotnet host was found for '{runtimeIdentifier}'. Run 'ueci ubt bootstrap' first.");
+    }
+
+    private static Version ParseVersionOrZero(string value)
+        => Version.TryParse(value, out Version? version) ? version : new Version(0, 0);
+
     private static Task<int> RunInitAsync(string[] args)
     {
         string engineRef = GetOption(args, "--engine-ref") ?? EpicGitClient.DefaultRef;
@@ -385,9 +503,10 @@ internal static class Program
               ueci init [options]
               ueci gitdeps <command> ...
               ueci epic <command> ...
+              ueci ubt <command> ...
               ueci --version
 
-            Run 'ueci gitdeps --help' or 'ueci epic --help' for command details.
+            Run 'ueci gitdeps --help', 'ueci epic --help' or 'ueci ubt --help' for command details.
             """);
     }
 
@@ -407,6 +526,22 @@ internal static class Program
               --no-pack-cache            Delete compressed packs after extraction.
               --max-concurrent-packs N   Download/extract up to N packs concurrently (default: 2).
               --json                     Emit machine-readable output.
+            """);
+    }
+
+    private static void PrintUbtHelp()
+    {
+        Console.WriteLine("""
+            UnrealBuildTool commands:
+              ueci ubt bootstrap --dir PATH [--repo URL] [--ref REF] [--host-rid RID] [--token-env NAME] [fetch options]
+              ueci ubt run --dir PATH [--host-rid RID] [--dotnet-root PATH] -- <UBT arguments...>
+
+            bootstrap creates/updates a blobless Epic source store, checks out only the managed UBT seed,
+            overlays the matching GitDependencies files, materializes Epic's bundled .NET runtime, then runs
+            UnrealBuildTool -help as a probe. Use --no-probe to only materialize the bootstrap.
+
+            Host RIDs: win-x64, win-arm64, linux-x64, linux-arm64, mac-x64, mac-arm64.
+            Fetch options are the same as 'ueci gitdeps materialize'.
             """);
     }
 
