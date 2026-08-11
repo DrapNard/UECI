@@ -24,11 +24,13 @@
 
 ## Milestone 0.3 — Unreal bootstrap/resolution
 
-- [ ] Bootstrap minimum .NET/UBT/UAT/UHT inputs
-- [ ] Obtain `Commit.gitdeps.xml` from the selected Git commit automatically
+- [x] Bootstrap minimum Epic-bundled .NET + UBT inputs
+- [ ] Bootstrap UAT/UHT inputs required by plugin builds
+- [x] Obtain `Commit.gitdeps.xml` from the selected Git commit automatically
 - [ ] Ask UBT for real target/module rules instead of parsing `Build.cs` as YAML-like text
 - [ ] Requirement discovery/retry loop
-- [ ] Host/target platform filtering
+- [x] Host runtime filtering for bundled .NET
+- [ ] Target platform filtering for plugin builds
 
 ## Milestone 0.4 — plugin packaging
 

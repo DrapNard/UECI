@@ -16,7 +16,7 @@ Windows:
 ./scripts/test.ps1
 ```
 
-The test executable intentionally avoids xUnit/NUnit/MSTest packages so the test harness itself has no third-party NuGet dependency. v0.2 tests also construct gzip `UEPACK00` packs in memory and verify multi-blob extraction, SHA-1 failure behavior, cache reuse, pack-cache deletion, executable bits, and output path safety without any network access.
+The test executable intentionally avoids xUnit/NUnit/MSTest packages so the test harness itself has no third-party NuGet dependency. The suite constructs gzip `UEPACK00` packs in memory and verifies multi-blob extraction, SHA-1 failure behavior, cache reuse, pack-cache deletion, executable bits, output path safety, runtimeconfig parsing, bundled .NET resolution, and UBT layout detection without any network access.
 
 ## Real-manifest smoke test
 
@@ -44,3 +44,14 @@ dotnet run --project src/Ueci.Cli -- \
 ```
 
 This is deliberately not part of the default suite because development/tests must remain offline and deterministic.
+
+## Optional real UBT bootstrap
+
+With an authorized Epic token, the UBT bootstrap can be exercised from an ordinary development machine:
+
+```bash
+export UECI_EPIC_GITHUB_TOKEN='...'
+./scripts/smoke-ubt.sh
+```
+
+This test is deliberately opt-in because it accesses private Epic Git data and downloads Epic dependency packs. It is not required by the local unit suite.

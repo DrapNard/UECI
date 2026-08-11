@@ -1,5 +1,5 @@
-name: UECI bootstrap
-description: Experimental blobless Unreal Engine source bootstrap for plugin CI.
+name: UECI UnrealBuildTool bootstrap
+description: Bootstrap a minimal UnrealBuildTool environment from Epic Git + GitDependencies.
 author: UECI contributors
 branding:
   icon: box
@@ -13,28 +13,38 @@ inputs:
     required: false
     default: release
   engine-dir:
-    description: Directory used for the blobless Epic source store.
+    description: Directory used for the blobless/materialized Epic engine view.
     required: false
     default: .ueci/engine
-  manifest-out:
-    description: Output path for Epic's Commit.gitdeps.xml.
+  cache-dir:
+    description: UECI GitDependencies cache directory.
     required: false
-    default: .ueci/Commit.gitdeps.xml
+    default: .ueci/cache
+  cache-compressed-packs:
+    description: Keep downloaded .gz packs after verified blobs are extracted.
+    required: false
+    default: "false"
 runs:
   using: composite
   steps:
-    - name: Set up .NET 8
+    - name: Set up .NET 8 for UECI
       uses: actions/setup-dotnet@v6
       with:
         dotnet-version: 8.0.x
-    - name: Initialize Epic source store
+    - name: Bootstrap UnrealBuildTool
       shell: bash
       env:
         UECI_EPIC_GITHUB_TOKEN: ${{ inputs.epic-token }}
-      run: >-
-        dotnet run --project "$GITHUB_ACTION_PATH/src/Ueci.Cli/Ueci.Cli.csproj"
-        -c Release --
-        epic bootstrap
-        --dir "${{ inputs.engine-dir }}"
-        --manifest-out "${{ inputs.manifest-out }}"
-        --ref "${{ inputs.engine-ref }}"
+      run: |
+        set -euo pipefail
+        extra=()
+        if [[ "${{ inputs.cache-compressed-packs }}" != "true" ]]; then
+          extra+=(--no-pack-cache)
+        fi
+        dotnet run --project "$GITHUB_ACTION_PATH/src/Ueci.Cli/Ueci.Cli.csproj" \
+          -c Release -- \
+          ubt bootstrap \
+          --dir "${{ inputs.engine-dir }}" \
+          --cache-dir "${{ inputs.cache-dir }}" \
+          --ref "${{ inputs.engine-ref }}" \
+          "${extra[@]}"

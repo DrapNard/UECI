@@ -92,3 +92,35 @@ Commit.gitdeps.xml
 ```
 
 `--no-pack-cache` keeps the compressed pack only as a temporary file while retaining verified blobs. This is intended for ephemeral runners where peak disk usage matters more than avoiding a future CDN download.
+
+## v0.3 UBT bootstrap
+
+The first Unreal-aware consumer composes a small physical engine root before attempting any C++ build:
+
+```text
+blobless Epic Git
+   │
+   └── checkout selected pathspecs
+         Engine/Binaries/DotNET
+         Engine/Build/Build.version
+         Engine/Build/Commit.gitdeps.xml
+                    │
+                    ▼
+       UnrealBuildTool.runtimeconfig.json
+                    │
+                    ▼
+        Epic bundled runtime resolver
+                    │
+       Commit.gitdeps.xml + host RID
+                    │
+          ┌─────────┴─────────┐
+          │                   │
+Engine/Binaries/DotNET   ThirdParty/DotNet
+ GitDeps overlay          dotnet + host + shared runtime
+          │                   │
+          └─────────┬─────────┘
+                    ▼
+           UnrealBuildTool.dll
+```
+
+This is intentionally a seed, not a static list claimed to be sufficient for plugin compilation. The next resolver stage will let UBT evaluate real target/module rule assemblies, observe requirements that are absent from the materialized tree, then request those paths from either Git or GitDependencies. The permanent architecture therefore keeps UBT above the providers rather than translating `.Build.cs` into a second UECI rule language.

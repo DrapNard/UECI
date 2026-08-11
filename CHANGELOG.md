@@ -2,6 +2,26 @@
 
 All notable changes to UECI will be documented here.
 
+## [0.3.0-alpha.1] - 2026-08-12
+
+### Added
+
+- Minimal UnrealBuildTool bootstrap from the blobless Epic Git source plus GitDependencies.
+- Incremental tracked-subtree materialization through authenticated Git checkout pathspecs.
+- `UnrealBuildTool.runtimeconfig.json` parser and host-specific Epic bundled .NET resolver.
+- Runtime selection by required framework major/minor with the highest available matching patch.
+- Minimal bundled runtime materialization (`dotnet`, host/fxr, required shared frameworks) instead of the full Epic .NET SDK.
+- `ueci ubt bootstrap` with optional UBT `-help` probe.
+- `ueci ubt run` for forwarding arbitrary arguments to the bootstrapped UBT.
+- Offline tests for runtime config parsing, bundled runtime selection, and UBT layout detection.
+- Opt-in `scripts/smoke-ubt.sh` real Epic integration test.
+
+### Changed
+
+- Nullable reference annotations are enabled solution-wide.
+- The composite GitHub Action now bootstraps/probes UBT rather than stopping after manifest retrieval.
+- CLI version advanced to `0.3.0-alpha.1`.
+
 ## [0.2.0-alpha.1] - 2026-08-12
 
 ### Added

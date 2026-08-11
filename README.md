@@ -2,7 +2,7 @@
 
 **UECI is an experimental, minimal Unreal Engine substrate for CI/CD.** Its goal is to build Unreal Engine code plugins without installing a full Unreal Engine tree on every runner.
 
-> Status: **v0.2 alpha / technical prototype.** Authenticated Epic source bootstrap and real GitDependencies CDN materialization now exist. Full UBT-driven plugin compilation and mounted VFS backends are still roadmap items.
+> Status: **v0.3 alpha / technical prototype.** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, and a minimal UnrealBuildTool bootstrap now exist. Full plugin compilation and mounted VFS backends are still roadmap items.
 
 ## Why
 
@@ -27,7 +27,7 @@ A normal Unreal source setup materializes a very large source/dependency tree be
 
 The long-term design supports both **materialized mode** (portable, no special privileges) and **mounted mode** (FUSE on Linux, WinFsp on Windows, an appropriate macOS backend) behind the same engine-view contract.
 
-## What v0.2 already does
+## What v0.3 already does
 
 - Streams huge `Commit.gitdeps.xml` files without loading the whole XML document.
 - Builds deterministic `path → blob → pack` indexes.
@@ -37,6 +37,7 @@ The long-term design supports both **materialized mode** (portable, no special p
 - Authenticates to `EpicGames/UnrealEngine` using a **read-only token supplied only through the environment**.
 - Initializes an Epic source repository with `git fetch --filter=blob:none` and no full checkout.
 - Materializes an individual Git blob on demand.
+- Materializes selected tracked Epic Git subtrees into the blobless source store without checking out the full engine.
 - Downloads Epic GitDependencies packs directly from the manifest-generated CDN URL.
 - Supports the validated gzip + `UEPACK00` pack layout and absolute decompressed `PackOffset` semantics.
 - Groups requested blobs by pack and extracts them in one forward gzip pass.
@@ -44,6 +45,9 @@ The long-term design supports both **materialized mode** (portable, no special p
 - Keeps separate compressed-pack and verified-blob caches, with `--no-pack-cache` for disk-constrained runners.
 - Restores executable bits from `IsExecutable` on Unix hosts.
 - Rejects output-root path traversal during batch materialization.
+- Reads `UnrealBuildTool.runtimeconfig.json` and resolves Epic's matching bundled .NET host/runtime from the manifest.
+- Bootstraps `UnrealBuildTool.dll` from a minimal Git seed plus GitDependencies overlay and probes it with the Epic-bundled `dotnet`.
+- Provides `ubt run` to forward arbitrary arguments to the bootstrapped UBT.
 - Provides a future-proof VFS contract without making FUSE/WinFsp mandatory.
 - Has dependency-free local tests: no GitHub runner and no Epic token are required.
 
@@ -158,6 +162,31 @@ The lower-level `epic init` and `epic materialize` commands are also available i
 
 UECI injects the Git authorization header through per-process environment configuration. It does not persist the token to `.git/config`, the remote URL, `.ueci.yml`, or normal logs.
 
+## Bootstrap UnrealBuildTool
+
+Once the Epic token works, UECI can create a blobless source store, check out only the managed UBT seed, overlay the required GitDependencies files, select the correct bundled .NET runtime for the host, and probe UBT:
+
+```bash
+export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
+
+dotnet run --project src/Ueci.Cli -- \
+  ubt bootstrap \
+  --dir /tmp/ueci-engine \
+  --ref release \
+  --no-pack-cache
+```
+
+Then invoke the already bootstrapped UBT directly through UECI:
+
+```bash
+dotnet run --project src/Ueci.Cli -- \
+  ubt run \
+  --dir /tmp/ueci-engine \
+  -- -help
+```
+
+UECI itself still targets .NET 8 for easy development. The UBT process uses the .NET runtime shipped by the selected Unreal commit, resolved from `UnrealBuildTool.runtimeconfig.json` rather than from a hard-coded engine version. See [`docs/ubt-bootstrap.md`](docs/ubt-bootstrap.md).
+
 ## Project config
 
 The initial config can be generated with:
@@ -192,10 +221,10 @@ The credential field stores only the **environment variable name**, never a secr
 
 ## GitHub Action (prototype)
 
-The root `action.yml` currently bootstraps the blobless Epic source store. It intentionally does not pretend that plugin building is complete yet.
+The root `action.yml` now bootstraps and probes UnrealBuildTool using the blobless Epic source plus minimal GitDependencies runtime. It still intentionally does not pretend that plugin building is complete yet.
 
 ```yaml
-- uses: your-org/ueci@v0.2.0-alpha.1
+- uses: your-org/ueci@v0.3.0-alpha.1
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release
@@ -215,8 +244,8 @@ For pull requests from untrusted forks, do not expose an Epic token to checked-o
    - compressed pack + verified blob caches
    - SHA-1 validation and executable-bit restoration
    - grouped multi-blob extraction and materialized subtrees
-3. **v0.3 — Unreal-aware resolver**
-   - bootstrap UBT/UAT/UHT
+3. **v0.3 — Unreal-aware resolver** 🚧
+   - UBT + Epic bundled .NET bootstrap ✅
    - evaluate real `.Build.cs` / target rules
    - retry/lazy discovery when a requirement is missed
 4. **v0.4 — plugin build**
