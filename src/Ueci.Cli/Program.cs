@@ -10,7 +10,7 @@ namespace Ueci.Cli;
 
 internal static class Program
 {
-    private const string CliVersion = "0.5.0-alpha.3";
+    private const string CliVersion = "0.5.0-alpha.4";
 
     public static async Task<int> Main(string[] args)
     {
@@ -475,6 +475,15 @@ internal static class Program
         string runtimeIdentifier = GetOption(args, "--host-rid") ?? UnrealHostRuntime.DetectRuntimeIdentifier();
         string platform = GetOption(args, "--platform") ?? UnrealPluginBuilder.PlatformForHostRuntime(runtimeIdentifier);
         string configuration = GetOption(args, "--configuration") ?? "Development";
+        string backend = (GetOption(args, "--backend") ?? "materialized").ToLowerInvariant();
+        EnginePresentationMode presentationMode = backend switch
+        {
+            "auto" => EnginePresentationMode.Auto,
+            "materialized" => EnginePresentationMode.Materialized,
+            "fuse" or "mounted" => EnginePresentationMode.Mounted,
+            _ => throw new ArgumentException("--backend must be one of: auto, materialized, fuse."),
+        };
+        bool verboseVfs = HasFlag(args, "--vfs-verbose");
         string? maxRaw = GetOption(args, "--max-discovery-passes");
         int maxPasses = maxRaw is null
             ? 32
@@ -496,7 +505,9 @@ internal static class Program
                 configuration,
                 output,
                 maxPasses,
-                Progress: message => Console.Error.WriteLine($"[ueci] {message}")))
+                Progress: message => Console.Error.WriteLine($"[ueci] {message}"),
+                PresentationMode: presentationMode,
+                VerboseVfs: verboseVfs))
             .ConfigureAwait(false);
 
         Console.WriteLine($"Plugin:             {result.PluginName}");
@@ -749,14 +760,17 @@ internal static class Program
               --host-rid RID             Host runtime override.
               --platform PLATFORM        UBT platform override (default: derived from host RID).
               --configuration CONFIG     UBT configuration (default: Development).
-              --max-discovery-passes N   Maximum lazy materialization/retry passes (default: 32).
+              --backend MODE             materialized (default), fuse, or auto.
+              --vfs-verbose              Log individual FUSE requests for --backend fuse.
+              --max-discovery-passes N   Materialized-backend retry cap (default: 32; unused by FUSE).
               --cache-dir PATH           Override the GitDependencies cache.
               --no-pack-cache            Discard compressed GitDependencies packs after extraction.
               --max-concurrent-packs N   Download/extract up to N packs concurrently.
 
-            UECI creates an ephemeral host project, asks the real UBT to build only the plugin modules,
-            materializes newly exposed Epic Git/GitDependencies requirements, retries, and packages the
-            resulting plugin without committing or redistributing Unreal Engine content.
+            The materialized backend keeps the v0.4 sparse discovery/retry loop. The experimental FUSE
+            backend mounts the complete pinned Engine namespace, compiles UBT inside that virtual Engine,
+            installs the host toolchain outside the mount, then runs each UBT target once while Git/GitDeps
+            content hydrates into CAS on ordinary stat/open/read requests.
             """);
     }
 

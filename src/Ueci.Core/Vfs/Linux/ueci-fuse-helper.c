@@ -417,6 +417,34 @@ static int ueci_utimens(const char *path, const struct timespec tv[2], struct fu
     return rc == 0 ? 0 : -saved;
 }
 
+
+static int ueci_fallocate(const char *path, int mode, off_t offset, off_t length, struct fuse_file_info *fi)
+{
+    (void)path;
+    if (!fi || !fi->fh) return -EBADF;
+    if (mode != 0) return -EOPNOTSUPP;
+    int result = posix_fallocate((int)fi->fh, offset, length);
+    return result == 0 ? 0 : -result;
+}
+
+static ssize_t ueci_copy_file_range(const char *path_in, struct fuse_file_info *fi_in, off_t offset_in,
+                                    const char *path_out, struct fuse_file_info *fi_out, off_t offset_out,
+                                    size_t size, int flags)
+{
+    (void)path_in; (void)path_out;
+    if (!fi_in || !fi_out || !fi_in->fh || !fi_out->fh) return -EBADF;
+    ssize_t result = copy_file_range((int)fi_in->fh, &offset_in, (int)fi_out->fh, &offset_out, size, flags);
+    return result < 0 ? -errno : result;
+}
+
+static off_t ueci_lseek(const char *path, off_t offset, int whence, struct fuse_file_info *fi)
+{
+    (void)path;
+    if (!fi || !fi->fh) return -EBADF;
+    off_t result = lseek((int)fi->fh, offset, whence);
+    return result < 0 ? (off_t)-errno : result;
+}
+
 static int ueci_access(const char *path, int mask)
 {
     (void)mask;
@@ -462,6 +490,9 @@ static const struct fuse_operations ueci_ops = {
     .access = ueci_access,
     .create = ueci_create,
     .utimens = ueci_utimens,
+    .fallocate = ueci_fallocate,
+    .copy_file_range = ueci_copy_file_range,
+    .lseek = ueci_lseek,
 };
 
 int main(int argc, char **argv)

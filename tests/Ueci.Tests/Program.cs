@@ -39,6 +39,7 @@ internal static class Program
         ("UBT locator discovers project bin output", UnrealBuildToolLocatorFindsProjectBinAsync),
         ("plugin descriptor classifies runtime and editor modules", PluginDescriptorParsesAsync),
         ("plugin host project is ephemeral and strips stale outputs", PluginHostProjectPreparesAsync),
+        ("plugin host project supports an external mounted-build workspace", PluginHostProjectExternalWorkspaceAsync),
         ("plugin diagnostic parser derives lazy requirements", PluginDiagnosticsParseAsync),
         ("module dependency hints parse standard Build.cs lists", ModuleDependencyHintsParseAsync),
         ("tracked Epic index locates module rules and suffixes", EpicTrackedIndexFindsAsync),
@@ -875,6 +876,40 @@ internal static class Program
             Assert.False(File.Exists(Path.Combine(host.PluginRoot, "Binaries", "Linux", "stale.so")));
             Assert.True(File.Exists(Path.Combine(host.PluginRoot, "Binaries", "ThirdParty", "vendor.so")));
             Assert.False(Directory.Exists(Path.Combine(host.PluginRoot, "Intermediate")));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task PluginHostProjectExternalWorkspaceAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string source = Path.Combine(root, "PluginSource");
+            Directory.CreateDirectory(Path.Combine(source, "Source", "Fixture"));
+            string descriptor = Path.Combine(source, "Fixture.uplugin");
+            await File.WriteAllTextAsync(
+                descriptor,
+                "{ \"FileVersion\": 3, \"Modules\": [{ \"Name\": \"Fixture\", \"Type\": \"Runtime\" }] }");
+            await File.WriteAllTextAsync(Path.Combine(source, "Source", "Fixture", "Fixture.Build.cs"), "// fixture");
+
+            UnrealPluginDescriptor plugin = await UnrealPluginDescriptor.ReadAsync(descriptor);
+            string engine = Path.Combine(root, "VirtualEngine");
+            string external = Path.Combine(root, "MountedState", "plugin-work");
+            Directory.CreateDirectory(engine);
+            UnrealPluginHostLayout host = await UnrealPluginHostProject.PrepareAsync(
+                engine,
+                plugin,
+                external);
+
+            Assert.True(host.Root.StartsWith(Path.GetFullPath(external), StringComparison.Ordinal));
+            Assert.False(host.Root.StartsWith(Path.Combine(Path.GetFullPath(engine), ".ueci"), StringComparison.Ordinal));
+            Assert.True(File.Exists(host.ProjectPath));
+            Assert.True(File.Exists(Path.Combine(engine, "Engine", "Saved", "UnrealBuildTool", "BuildConfiguration.xml")));
+            Assert.True(File.Exists(Path.Combine(host.Root, "Saved", "UnrealBuildTool", "BuildConfiguration.xml")));
         }
         finally
         {

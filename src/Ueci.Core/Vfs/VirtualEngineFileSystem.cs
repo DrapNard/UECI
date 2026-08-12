@@ -15,6 +15,10 @@ public sealed class VirtualEngineFileSystem
     private readonly GitDependenciesFetchOptions _fetchOptions;
     private readonly EngineWhiteoutStore _whiteouts;
     private readonly Action<string>? _progress;
+    private long _gitHydratedFiles;
+    private long _gitHydratedBytes;
+    private long _gitDependenciesHydratedFiles;
+    private long _gitDependenciesDownloadedBytes;
 
     public VirtualEngineFileSystem(
         VirtualEngineIndex index,
@@ -40,6 +44,11 @@ public sealed class VirtualEngineFileSystem
     public string UpperRoot { get; }
     public string StateDirectory { get; }
     public int LowerEntryCount => _index.EntryCount;
+    public VirtualEngineIoMetrics Metrics => new(
+        Interlocked.Read(ref _gitHydratedFiles),
+        Interlocked.Read(ref _gitHydratedBytes),
+        Interlocked.Read(ref _gitDependenciesHydratedFiles),
+        Interlocked.Read(ref _gitDependenciesDownloadedBytes));
 
     public Task<VirtualEngineMetadata?> GetMetadataAsync(
         string path,
@@ -198,6 +207,8 @@ public sealed class VirtualEngineFileSystem
                 cancellationToken).ConfigureAwait(false);
             if (!result.BlobCacheHit)
             {
+                Interlocked.Increment(ref _gitDependenciesHydratedFiles);
+                Interlocked.Add(ref _gitDependenciesDownloadedBytes, result.DownloadedBytes);
                 _progress?.Invoke($"[vfs/gitdeps] materialized {normalized} ({result.DownloadedBytes:N0} downloaded bytes)");
             }
             return result.BlobPath;
@@ -205,7 +216,14 @@ public sealed class VirtualEngineFileSystem
 
         if (entry.GitEntry is not null)
         {
-            return await _gitBlobs.EnsureAsync(entry.GitEntry, cancellationToken).ConfigureAwait(false);
+            bool cacheHit = _gitBlobs.TryGetCachedSize(entry.GitEntry, out _);
+            string backing = await _gitBlobs.EnsureAsync(entry.GitEntry, cancellationToken).ConfigureAwait(false);
+            if (!cacheHit)
+            {
+                Interlocked.Increment(ref _gitHydratedFiles);
+                Interlocked.Add(ref _gitHydratedBytes, new FileInfo(backing).Length);
+            }
+            return backing;
         }
 
         throw new FileNotFoundException("Virtual engine path has no content provider.", normalized);

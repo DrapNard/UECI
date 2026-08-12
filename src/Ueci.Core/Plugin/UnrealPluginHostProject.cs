@@ -16,16 +16,25 @@ public static class UnrealPluginHostProject
     public const string GameTargetName = "UECIHost";
     public const string EditorTargetName = "UECIHostEditor";
 
+    public static Task<UnrealPluginHostLayout> PrepareAsync(
+        string engineRoot,
+        UnrealPluginDescriptor plugin,
+        CancellationToken cancellationToken = default)
+        => PrepareAsync(engineRoot, plugin, workspaceBaseDirectory: null, cancellationToken);
+
     public static async Task<UnrealPluginHostLayout> PrepareAsync(
         string engineRoot,
         UnrealPluginDescriptor plugin,
+        string? workspaceBaseDirectory,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(engineRoot);
         ArgumentNullException.ThrowIfNull(plugin);
 
-        string workspace = Path.Combine(
-            Path.GetFullPath(engineRoot), ".ueci", "plugin-work", Sanitize(plugin.Name));
+        string workspaceBase = workspaceBaseDirectory is null
+            ? Path.Combine(Path.GetFullPath(engineRoot), ".ueci", "plugin-work")
+            : Path.GetFullPath(workspaceBaseDirectory);
+        string workspace = Path.Combine(workspaceBase, Sanitize(plugin.Name));
         string pluginRoot = Path.Combine(workspace, "Plugins", plugin.Name);
         if (Directory.Exists(workspace))
         {

@@ -49,3 +49,10 @@ public sealed record VirtualEngineDirectoryEntry(
     VirtualEngineNodeKind Kind,
     long Size,
     int UnixMode);
+
+
+public sealed record VirtualEngineIoMetrics(
+    long GitHydratedFiles,
+    long GitHydratedBytes,
+    long GitDependenciesHydratedFiles,
+    long GitDependenciesDownloadedBytes);

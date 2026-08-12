@@ -1,6 +1,7 @@
 using Ueci.Epic;
 using Ueci.GitDeps;
 using Ueci.Unreal;
+using Ueci.Vfs;
 
 namespace Ueci.Plugin;
 
@@ -16,7 +17,9 @@ public sealed record UnrealPluginBuildOptions(
     string Configuration,
     string OutputDirectory,
     int MaxDiscoveryPasses = 32,
-    Action<string>? Progress = null);
+    Action<string>? Progress = null,
+    EnginePresentationMode PresentationMode = EnginePresentationMode.Auto,
+    bool VerboseVfs = false);
 
 public sealed record UnrealPluginBuildPhaseResult(
     string Target,
@@ -110,6 +113,12 @@ public sealed class UnrealPluginBuilder
         CancellationToken cancellationToken = default)
     {
         ValidateOptions(options);
+        if (options.PresentationMode == EnginePresentationMode.Mounted)
+        {
+            var mounted = new UnrealMountedPluginBuilder();
+            return await mounted.BuildAsync(options, cancellationToken).ConfigureAwait(false);
+        }
+
         UnrealPluginDescriptor plugin = await UnrealPluginDescriptor.ReadAsync(
             options.PluginPath,
             cancellationToken).ConfigureAwait(false);

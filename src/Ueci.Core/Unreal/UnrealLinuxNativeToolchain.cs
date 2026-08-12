@@ -281,7 +281,8 @@ public sealed class UnrealLinuxNativeToolchainInstaller
         string cacheDirectory,
         bool cacheArchive = true,
         Action<string>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? persistentStoreRoot = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(engineRoot);
         ArgumentException.ThrowIfNullOrWhiteSpace(cacheDirectory);
@@ -289,7 +290,7 @@ public sealed class UnrealLinuxNativeToolchainInstaller
         UnrealLinuxNativeToolchainDescriptor descriptor = await UnrealLinuxNativeToolchainDescriptor.ReadAsync(
             engineRoot,
             cancellationToken).ConfigureAwait(false);
-        ToolchainPaths paths = GetPaths(engineRoot, descriptor.Version);
+        ToolchainPaths paths = GetPaths(engineRoot, descriptor.Version, persistentStoreRoot);
 
         // Adopt toolchains installed by earlier UECI alphas. The stable copy is intentionally
         // outside Engine/ so `git sparse-checkout set` and `git reset --hard` can never remove it.
@@ -415,13 +416,15 @@ public sealed class UnrealLinuxNativeToolchainInstaller
             downloaded);
     }
 
-    private static ToolchainPaths GetPaths(string engineRoot, string version)
+    private static ToolchainPaths GetPaths(string engineRoot, string version, string? persistentStoreRoot = null)
     {
         string root = Path.GetFullPath(engineRoot);
         string projection = Path.Combine(
             root,
             "Engine", "Extras", "ThirdPartyNotUE", "SDKs", "HostLinux", "Linux_x64", version);
-        string store = Path.Combine(root, ".ueci", "toolchains", "linux-x64", version);
+        string store = persistentStoreRoot is null
+            ? Path.Combine(root, ".ueci", "toolchains", "linux-x64", version)
+            : Path.Combine(Path.GetFullPath(persistentStoreRoot), version);
         return new ToolchainPaths(store, projection);
     }
 

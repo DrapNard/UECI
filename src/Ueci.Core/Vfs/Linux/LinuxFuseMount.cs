@@ -8,11 +8,78 @@ public sealed record LinuxFuseMountOptions(
     string MountPoint,
     string CacheDirectory,
     bool Verbose = false,
+    TimeSpan? StartupTimeout = null,
     Action<string>? Progress = null);
+
+public sealed class LinuxFuseMountSession : IAsyncDisposable
+{
+    private readonly Process _process;
+    private readonly FuseProtocolServer _server;
+    private readonly CancellationTokenSource _serverCancellation;
+    private readonly Task _serverTask;
+    private int _disposed;
+
+    internal LinuxFuseMountSession(
+        string mountPoint,
+        Process process,
+        FuseProtocolServer server,
+        CancellationTokenSource serverCancellation,
+        Task serverTask)
+    {
+        MountPoint = mountPoint;
+        _process = process;
+        _server = server;
+        _serverCancellation = serverCancellation;
+        _serverTask = serverTask;
+    }
+
+    public string MountPoint { get; }
+    public int ProcessId => _process.Id;
+    public bool HasExited => _process.HasExited;
+
+    public async Task<int> WaitForExitAsync(CancellationToken cancellationToken = default)
+    {
+        await _process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        return _process.ExitCode;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        await LinuxFuseMount.TryUnmountAsync(MountPoint).ConfigureAwait(false);
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await _process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+        }
+        catch
+        {
+            try
+            {
+                if (!_process.HasExited)
+                {
+                    _process.Kill(entireProcessTree: true);
+                    await _process.WaitForExitAsync().ConfigureAwait(false);
+                }
+            }
+            catch { }
+        }
+
+        _serverCancellation.Cancel();
+        try { await _serverTask.ConfigureAwait(false); } catch { }
+        await _server.DisposeAsync().ConfigureAwait(false);
+        _serverCancellation.Dispose();
+        _process.Dispose();
+    }
+}
 
 public sealed class LinuxFuseMount
 {
-    public async Task<int> RunAsync(
+    public async Task<LinuxFuseMountSession> StartAsync(
         VirtualEngineFileSystem fileSystem,
         LinuxFuseMountOptions options,
         CancellationToken cancellationToken = default)
@@ -26,6 +93,10 @@ public sealed class LinuxFuseMount
 
         string mountPoint = Path.GetFullPath(options.MountPoint);
         Directory.CreateDirectory(mountPoint);
+        if (IsMounted(mountPoint))
+        {
+            throw new InvalidOperationException($"FUSE mount point is already mounted: {mountPoint}");
+        }
         if (Directory.EnumerateFileSystemEntries(mountPoint).Any())
         {
             throw new InvalidOperationException($"FUSE mount point must be empty: {mountPoint}");
@@ -35,11 +106,11 @@ public sealed class LinuxFuseMount
         string helper = await compiler.EnsureCompiledAsync(options.CacheDirectory, options.Progress, cancellationToken)
             .ConfigureAwait(false);
         string socket = CreateShortSocketPath(mountPoint);
-        await using var server = new FuseProtocolServer(fileSystem, socket, options.Progress, options.Verbose);
+        var server = new FuseProtocolServer(fileSystem, socket, options.Progress, options.Verbose);
         await server.StartAsync(cancellationToken).ConfigureAwait(false);
 
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        Task serverTask = server.RunAsync(linked.Token);
+        var serverCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task serverTask = server.RunAsync(serverCancellation.Token);
 
         var info = new ProcessStartInfo(helper)
         {
@@ -48,27 +119,126 @@ public sealed class LinuxFuseMount
         };
         info.ArgumentList.Add(socket);
         info.ArgumentList.Add(mountPoint);
-        using var process = new Process { StartInfo = info };
+        var process = new Process { StartInfo = info };
         options.Progress?.Invoke($"Mounting virtual Unreal Engine at {mountPoint}");
-        process.Start();
-
-        using CancellationTokenRegistration registration = cancellationToken.Register(() =>
-        {
-            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
-        });
 
         try
         {
-            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-            return process.ExitCode;
+            process.Start();
+            await WaitUntilMountedAsync(
+                mountPoint,
+                process,
+                options.StartupTimeout ?? TimeSpan.FromMinutes(2),
+                options.Progress,
+                cancellationToken).ConfigureAwait(false);
+            options.Progress?.Invoke($"Virtual Unreal Engine mount ready at {mountPoint}.");
+            return new LinuxFuseMountSession(mountPoint, process, server, serverCancellation, serverTask);
         }
-        finally
+        catch
         {
-            linked.Cancel();
-            try { await serverTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
-            await TryUnmountAsync(mountPoint).ConfigureAwait(false);
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                    await process.WaitForExitAsync().ConfigureAwait(false);
+                }
+            }
+            catch { }
+            serverCancellation.Cancel();
+            try { await serverTask.ConfigureAwait(false); } catch { }
+            await server.DisposeAsync().ConfigureAwait(false);
+            serverCancellation.Dispose();
+            process.Dispose();
+            throw;
         }
     }
+
+    public async Task<int> RunAsync(
+        VirtualEngineFileSystem fileSystem,
+        LinuxFuseMountOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        await using LinuxFuseMountSession session = await StartAsync(fileSystem, options, cancellationToken)
+            .ConfigureAwait(false);
+        try
+        {
+            return await session.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return 0;
+        }
+    }
+
+    private static async Task WaitUntilMountedAsync(
+        string mountPoint,
+        Process process,
+        TimeSpan timeout,
+        Action<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        TimeSpan nextProgress = TimeSpan.FromSeconds(5);
+        while (stopwatch.Elapsed < timeout)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (process.HasExited)
+            {
+                throw new InvalidOperationException(
+                    $"FUSE helper exited before the mount became ready (exit {process.ExitCode}).");
+            }
+            if (IsMounted(mountPoint))
+            {
+                return;
+            }
+            if (stopwatch.Elapsed >= nextProgress)
+            {
+                progress?.Invoke($"Waiting for FUSE mount readiness... {stopwatch.Elapsed.TotalSeconds:N0}s elapsed.");
+                nextProgress += TimeSpan.FromSeconds(5);
+            }
+            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new TimeoutException(
+            $"FUSE mount did not become ready within {timeout.TotalSeconds:N0}s: {mountPoint}");
+    }
+
+    private static bool IsMounted(string mountPoint)
+    {
+        if (!OperatingSystem.IsLinux() || !File.Exists("/proc/self/mountinfo"))
+        {
+            return false;
+        }
+
+        string target = Path.GetFullPath(mountPoint);
+        try
+        {
+            foreach (string line in File.ReadLines("/proc/self/mountinfo"))
+            {
+                string[] fields = line.Split(' ');
+                if (fields.Length < 5)
+                {
+                    continue;
+                }
+                string candidate = UnescapeMountInfo(fields[4]);
+                if (string.Equals(Path.GetFullPath(candidate), target, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return false;
+    }
+
+    private static string UnescapeMountInfo(string value)
+        => value
+            .Replace("\\040", " ", StringComparison.Ordinal)
+            .Replace("\\011", "\t", StringComparison.Ordinal)
+            .Replace("\\012", "\n", StringComparison.Ordinal)
+            .Replace("\\134", "\\", StringComparison.Ordinal);
 
     private static string CreateShortSocketPath(string mountPoint)
     {
@@ -77,7 +247,7 @@ public sealed class LinuxFuseMount
         return Path.Combine(Path.GetTempPath(), $"ueci-{token}.sock");
     }
 
-    private static async Task TryUnmountAsync(string mountPoint)
+    internal static async Task TryUnmountAsync(string mountPoint)
     {
         foreach ((string exe, string[] args) in new[]
         {

@@ -22,17 +22,20 @@ public sealed class VirtualEngineMountContext : IDisposable
         VirtualEngineFileSystem fileSystem,
         string commit,
         string manifestPath,
+        GitDependenciesManifest manifest,
         IDisposable? disposableSource)
     {
         FileSystem = fileSystem;
         Commit = commit;
         ManifestPath = manifestPath;
+        Manifest = manifest;
         _disposableSource = disposableSource;
     }
 
     public VirtualEngineFileSystem FileSystem { get; }
     public string Commit { get; }
     public string ManifestPath { get; }
+    public GitDependenciesManifest Manifest { get; }
 
     public void Dispose() => _disposableSource?.Dispose();
 }
@@ -115,6 +118,6 @@ public static class VirtualEngineMountFactory
             options.Progress);
 
         options.Progress?.Invoke($"Virtual namespace ready: {index.EntryCount:N0} paths; no Engine source checkout required.");
-        return new VirtualEngineMountContext(fileSystem, commit, manifestPath, source);
+        return new VirtualEngineMountContext(fileSystem, commit, manifestPath, manifest, source);
     }
 }
