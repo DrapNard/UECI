@@ -57,7 +57,7 @@ UECI preserves this structure instead of inventing another lock format. v0.2 add
 
 ## Epic source model
 
-`ueci epic init` creates a Git repository and fetches a single Unreal ref using protocol v2 and `--filter=blob:none`. The working tree stays empty. A requested tracked file is later obtained with `git cat-file`, allowing Git's promisor remote to retrieve only the missing blob.
+`ueci epic init` creates a Git repository and fetches a single Unreal ref using protocol v2 and `--filter=blob:none`. The working tree stays empty. A requested individual file can be obtained with `git cat-file`. For larger source selections such as the UBT bootstrap seed, UECI uses a cone-mode sparse checkout and prefers `git backfill --sparse` so missing promisor blobs are downloaded in batches before worktree population. Older Git versions retain a lazy-checkout fallback for compatibility.
 
 ## Future writable overlay
 

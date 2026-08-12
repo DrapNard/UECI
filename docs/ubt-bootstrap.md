@@ -58,7 +58,7 @@ The Git source seed is intentionally limited to:
 - `Engine/Build/Build.version`;
 - `Engine/Build/Commit.gitdeps.xml`.
 
-Git remains a blobless promisor repository, so materializing these pathspecs fetches only the source blobs needed for the managed build rather than checking out the entire engine.
+Git remains a blobless promisor repository, so materializing these pathspecs fetches only the source blobs needed for the managed build rather than checking out the entire engine. UECI configures a cone-mode sparse checkout for those source directories and, when available, runs `git backfill --sparse` so the missing blobs are requested in batches before populating the selected worktree. This avoids the extremely slow failure mode where a partial clone lazily requests many blobs one at a time. Older Git versions fall back to the previous lazy checkout behavior.
 
 The GitDependencies overlay additionally includes root managed build props/targets plus the small dependency files under the UBT/shared program trees and `Engine/Binaries/DotNET`.
 

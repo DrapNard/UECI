@@ -38,6 +38,7 @@ The long-term design supports both **materialized mode** (portable, no special p
 - Initializes an Epic source repository with `git fetch --filter=blob:none` and no full checkout.
 - Materializes an individual Git blob on demand.
 - Materializes selected tracked Epic Git subtrees into the blobless source store without checking out the full engine.
+- Uses `git backfill` when available to batch missing partial-clone blobs before checkout, avoiding pathological one-blob-at-a-time promisor fetches.
 - Downloads Epic GitDependencies packs directly from the manifest-generated CDN URL.
 - Supports the validated gzip + `UEPACK00` pack layout and absolute decompressed `PackOffset` semantics.
 - Groups requested blobs by pack and extracts them in one forward gzip pass.
@@ -56,7 +57,7 @@ The long-term design supports both **materialized mode** (portable, no special p
 For development/tests:
 
 - .NET SDK 8.x
-- Git 2.x
+- Git 2.x (Git 2.49+ strongly recommended for fast blobless source materialization via `git backfill`)
 - Linux, Windows, or macOS
 
 Epic integration additionally requires a GitHub account with access to the private `EpicGames/UnrealEngine` repository and a read-only token for that account.
@@ -187,6 +188,8 @@ dotnet run --project src/Ueci.Cli -- \
 
 UECI itself still targets .NET 8 for easy development. UBT is compiled with the .NET SDK shipped by the selected Unreal commit; after compilation UECI validates the generated `UnrealBuildTool.runtimeconfig.json` against that same bundle. No Unreal/.NET version pair is hard-coded. See [`docs/ubt-bootstrap.md`](docs/ubt-bootstrap.md).
 
+For the Epic Git source seed, Git 2.49+ is strongly recommended. UECI creates a cone-mode sparse checkout for the UBT source seed and uses `git backfill --sparse` when available to batch missing blobs from the `--filter=blob:none` repository before populating the worktree. Older Git versions still fall back to lazy checkout, but that path can be dramatically slower on Unreal's source tree.
+
 ## Project config
 
 The initial config can be generated with:
@@ -224,7 +227,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` bootstraps, **compiles**, and probes UnrealBuildTool using the blobless Epic source plus a selective GitDependencies SDK/build-support overlay. It still intentionally does not pretend that plugin building is complete yet.
 
 ```yaml
-- uses: your-org/ueci@v0.3.0-alpha.3
+- uses: your-org/ueci@v0.3.0-alpha.4
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release

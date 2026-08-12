@@ -55,3 +55,5 @@ export UECI_EPIC_GITHUB_TOKEN='...'
 ```
 
 This test is deliberately opt-in because it accesses private Epic Git data and downloads Epic dependency packs. It is not required by the local unit suite.
+
+Git 2.49+ is recommended for this integration smoke test. When available, UECI uses `git backfill` to batch the source blobs selected from the partial clone. The standard offline suite does not require `git backfill` or network access.

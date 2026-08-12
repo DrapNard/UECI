@@ -2,6 +2,19 @@
 
 All notable changes to UECI will be documented here.
 
+## [0.3.0-alpha.4] - 2026-08-12
+
+### Fixed
+
+- Avoids the pathological slow path observed while materializing the UBT/shared source seed from a `--filter=blob:none` Epic repository.
+- Uses cone-mode sparse checkout plus `git backfill --sparse` when available to batch the missing source-seed blobs before worktree population.
+- Retains the existing lazy-checkout behavior as a compatibility fallback when `git backfill` is unavailable.
+- Reports the number of tracked files in the Epic Git seed and the selected materialization strategy before the potentially expensive operation.
+
+### Tests
+
+- Adds a local bare-repository partial-clone test that verifies sparse source materialization and confirms unrelated paths stay absent without requiring Epic credentials or network access.
+
 ## [0.3.0-alpha.3] - 2026-08-12
 
 ### Fixed
