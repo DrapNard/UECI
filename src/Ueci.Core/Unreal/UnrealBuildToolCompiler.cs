@@ -70,7 +70,25 @@ public sealed class UnrealBuildToolCompiler
                 + (diagnostics.Length == 0 ? string.Empty : Environment.NewLine + diagnostics));
         }
 
-        UnrealBuildToolPaths paths = UnrealBuildToolLocator.Locate(root);
+        UnrealBuildToolPaths paths;
+        try
+        {
+            paths = UnrealBuildToolLocator.LocateBuiltOutput(root, project);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or InvalidDataException)
+        {
+            string diagnostics = string.Join(
+                Environment.NewLine,
+                new[] { process.StandardOutput.Trim(), process.StandardError.Trim() }
+                    .Where(value => value.Length != 0));
+            throw new InvalidOperationException(
+                ex.Message +
+                (diagnostics.Length == 0
+                    ? string.Empty
+                    : Environment.NewLine + "MSBuild output:" + Environment.NewLine + diagnostics),
+                ex);
+        }
+
         return new UnrealBuildToolCompileResult(project, dotnet, process, paths);
     }
 }

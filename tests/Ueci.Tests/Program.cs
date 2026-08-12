@@ -30,6 +30,7 @@ internal static class Program
         ("Epic bundled dotnet resolver selects host runtime", BundledDotNetResolverAsync),
         ("Epic bundled dotnet SDK resolver selects latest SDK", BundledDotNetSdkResolverAsync),
         ("UBT locator requires compiled bootstrap files", UnrealBuildToolLocatorAsync),
+        ("UBT locator discovers project bin output", UnrealBuildToolLocatorFindsProjectBinAsync),
     ];
 
     public static async Task<int> Main(string[] args)
@@ -564,6 +565,33 @@ internal static class Program
 
             UnrealBuildToolPaths paths = UnrealBuildToolLocator.Locate(root);
             Assert.Equal(Path.GetFullPath(root), paths.EngineRoot);
+            Assert.Equal(dll, paths.AssemblyPath);
+            Assert.Equal(runtimeConfig, paths.RuntimeConfigPath);
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task UnrealBuildToolLocatorFindsProjectBinAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string projectDirectory = Path.Combine(root, "Engine", "Source", "Programs", "UnrealBuildTool");
+            Directory.CreateDirectory(projectDirectory);
+            string project = Path.Combine(projectDirectory, "UnrealBuildTool.csproj");
+            await File.WriteAllTextAsync(project, "<Project />");
+
+            string output = Path.Combine(projectDirectory, "bin", "Debug", "net10.0");
+            Directory.CreateDirectory(output);
+            string dll = Path.Combine(output, "UnrealBuildTool.dll");
+            string runtimeConfig = Path.Combine(output, "UnrealBuildTool.runtimeconfig.json");
+            await File.WriteAllBytesAsync(dll, [4, 5, 6]);
+            await File.WriteAllTextAsync(runtimeConfig, "{}");
+
+            UnrealBuildToolPaths paths = UnrealBuildToolLocator.LocateBuiltOutput(root, project);
             Assert.Equal(dll, paths.AssemblyPath);
             Assert.Equal(runtimeConfig, paths.RuntimeConfigPath);
         }

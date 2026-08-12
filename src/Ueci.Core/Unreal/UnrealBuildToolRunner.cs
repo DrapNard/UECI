@@ -2,13 +2,28 @@ namespace Ueci.Unreal;
 
 public sealed class UnrealBuildToolRunner
 {
-    public async Task<ExternalProcessResult> RunAsync(
+    public Task<ExternalProcessResult> RunAsync(
         string engineRoot,
         string dotNetRoot,
         IReadOnlyList<string> arguments,
         CancellationToken cancellationToken = default)
     {
-        UnrealBuildToolPaths ubt = UnrealBuildToolLocator.Locate(engineRoot);
+        string root = Path.GetFullPath(engineRoot);
+        string project = Path.Combine(
+            root, "Engine", "Source", "Programs", "UnrealBuildTool", "UnrealBuildTool.csproj");
+        UnrealBuildToolPaths ubt = File.Exists(project)
+            ? UnrealBuildToolLocator.LocateBuiltOutput(root, project)
+            : UnrealBuildToolLocator.Locate(root);
+        return RunAsync(ubt, dotNetRoot, arguments, cancellationToken);
+    }
+
+    public async Task<ExternalProcessResult> RunAsync(
+        UnrealBuildToolPaths ubt,
+        string dotNetRoot,
+        IReadOnlyList<string> arguments,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(ubt);
         string root = Path.GetFullPath(dotNetRoot);
         string dotnet = Path.Combine(root, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
         if (!File.Exists(dotnet))
