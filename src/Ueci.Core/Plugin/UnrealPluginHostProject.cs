@@ -153,7 +153,6 @@ public static class UnrealPluginHostProject
             <Configuration xmlns="https://www.unrealengine.com/BuildConfiguration">
               <BuildConfiguration>
                 <bAllowUBAExecutor>false</bAllowUBAExecutor>
-                <bAllowUBALocalExecutor>false</bAllowUBALocalExecutor>
                 <bAllowXGE>false</bAllowXGE>
                 <bAllowFASTBuild>false</bAllowFASTBuild>
                 <bAllowSNDBS>false</bAllowSNDBS>

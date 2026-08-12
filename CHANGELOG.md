@@ -7,7 +7,7 @@ All notable changes to UECI will be documented here.
 ### Fixed
 
 - Makes plugin UBT invocations hermetic with respect to workstation-level `BuildConfiguration.xml` files by using an isolated UBT home/profile.
-- Generates `<PROJECT>/Saved/UnrealBuildTool/BuildConfiguration.xml` for the synthetic host project and disables UBA, UBA-local, XGE, FASTBuild, and SN-DBS executors so the minimal engine working set uses the local executor instead of requiring accelerator binaries.
+- Generates `<PROJECT>/Saved/UnrealBuildTool/BuildConfiguration.xml` for the synthetic host project and disables UBA, XGE, FASTBuild, and SN-DBS executors so the minimal engine working set uses the local executor instead of requiring accelerator binaries.
 - Fixes the first real plugin discovery pass failing with `UBA is not available - please ensure the UBA binaries exist for your host platform`.
 - Prevents deprecated user settings such as `bAllowUBALocalExecutor` from leaking into reproducible UECI builds.
 
