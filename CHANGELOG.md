@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0-alpha.10] - 2026-08-13
+
+### Fixed
+
+- Disables Linux `dump_syms` at the hermetic UnrealBuildTool configuration layer with `bDisableDumpSYMs=true`. The real alpha.9 smoke showed that target-level `bAllowRuntimeSymbolFiles=false` alone still left `../Binaries/Linux/dump_syms` in `Link-UECIHost.sh`; the BuildConfiguration switch directly disables that post-link tool invocation for UECI's synthetic validation builds.
+- Applies the same symbol-extraction policy to all three UBT configuration scopes used by mounted builds (Engine, synthetic Project, and isolated UECI HOME), preventing a user/global config from re-enabling the post-link dependency. `bAllowRuntimeSymbolFiles=false` remains on the lean runtime target as an additional target-level guard.
+
+### Performance
+
+- Keeps the learned 5,612-Git-file / 81-GitDependencies fast profile unchanged. The alpha.9 warm smoke reached the final link in about 1m44s wall-clock while skipping the global Engine tree/size index.
+
+### Changed
+
+- CLI version advanced to `0.5.0-alpha.10`.
+
 ## [0.5.0-alpha.9] - 2026-08-13
 
 ### Fixed

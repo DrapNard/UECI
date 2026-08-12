@@ -12,6 +12,7 @@ public static class UnrealBuildToolConfiguration
             <bAllowXGE>false</bAllowXGE>
             <bAllowFASTBuild>false</bAllowFASTBuild>
             <bAllowSNDBS>false</bAllowSNDBS>
+            <bDisableDumpSYMs>true</bDisableDumpSYMs>
           </BuildConfiguration>
         </Configuration>
         """ + Environment.NewLine;

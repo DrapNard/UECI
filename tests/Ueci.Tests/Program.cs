@@ -1090,6 +1090,7 @@ internal static class Program
             string buildConfigXml = await File.ReadAllTextAsync(buildConfig);
             Assert.True(buildConfigXml.Contains("<bAllowUBAExecutor>false</bAllowUBAExecutor>", StringComparison.Ordinal));
             Assert.True(buildConfigXml.Contains("<bAllowUBALocalExecutor>false</bAllowUBALocalExecutor>", StringComparison.Ordinal));
+            Assert.True(buildConfigXml.Contains("<bDisableDumpSYMs>true</bDisableDumpSYMs>", StringComparison.Ordinal));
             string engineBuildConfig = Path.Combine(engine, "Engine", "Saved", "UnrealBuildTool", "BuildConfiguration.xml");
             Assert.True(File.Exists(engineBuildConfig));
             Assert.Equal(buildConfigXml, await File.ReadAllTextAsync(engineBuildConfig));

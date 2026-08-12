@@ -96,7 +96,7 @@ By default it builds `fixtures/MinimalPlugin/UECIMinimal.uplugin`, a single Runt
 Some UE 5.8 source builds pre-create Unreal Build Accelerator before platform/toolchain validation even when CI-oriented XML configuration asks for local executors. UECI therefore resolves `Engine/Source/Programs/Shared/EpicGames.UBA/Library.props` together with the host-specific `Engine/Binaries/*/UnrealBuildAccelerator` payload during the UBT bootstrap, before `UnrealBuildTool.csproj` is compiled. This matters on a warm cache because adding the native UBA payload after UBT was already built may leave the managed UBA integration unavailable. Missing-UBA diagnostics are still handled as a compatibility fallback; that fallback recompiles UBT after materializing UBA. The full UBT log at `Engine/Programs/UnrealBuildTool/Log.txt` is merged with stdout/stderr before requirement parsing, because that log can contain the Linux SDK requirement that the short console error omits.
 
 
-## Mounted backend (v0.5 alpha.9)
+## Mounted backend (v0.5 alpha.10)
 
 On Linux x64, `--backend fuse` bypasses the materialized discovery loop. Build mode first exposes a commit-scoped minimal Engine profile (or the embedded alpha.6 working-set seed); if that working set proves incomplete, UECI retries once with the complete virtual namespace and learns the additional lower paths for the next run. The generic `ueci mount` command still exposes every tracked Epic Git/GitDependencies path. UBT itself is compiled inside the mount with Epic's bundled .NET SDK. The synthetic project and plugin copy remain outside the mount, while Engine-generated outputs use the persistent COW upper.
 
@@ -108,6 +108,8 @@ Alpha.7 adds a second layer: the mounted **build** backend no longer has to expo
 Alpha.8 keeps that profile model and fixes the final Program-host link exposed by the first real alpha.7 run. `UECIHost` is still intentionally independent from Engine `Launch`; for the Linux runtime validation target it provides a tiny never-executed `main` plus the two Core globals normally owned by Launch. Plugin modules are emitted directly into `ExtraModuleNames`, while linker failures are excluded from the profile-fallback heuristic so an ordinary native error cannot cause a second full-Engine pass.
 
 Alpha.9 keeps the synthetic host lean through the post-link stage by setting `bAllowRuntimeSymbolFiles = false` on `UECIHost`. Runtime symbol extraction is not useful for UECI's never-executed validation binary, and disabling it prevents Linux UBT from requiring the standalone `dump_syms` tool solely to finish the smoke build.
+
+Alpha.10 moves the definitive `dump_syms` suppression into UECI's hermetic `BuildConfiguration.xml` with `bDisableDumpSYMs=true`, written at Engine, synthetic Project, and isolated-user scope. The alpha.9 smoke demonstrated that `bAllowRuntimeSymbolFiles=false` by itself still allowed Linux UBT to append the helper to the generated link script; the BuildConfiguration switch directly disables that global post-link action.
 
 The profile intentionally learns files that UBT stats/opens, not every sibling returned by `readdir`. This is what prevents EngineRules/UHT from rediscovering unrelated modules on the next run.
 

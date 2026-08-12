@@ -187,6 +187,8 @@ The v0.5 mounted backend exposes the whole pinned Unreal namespace without check
 
 `v0.5.0-alpha.9` disables runtime symbol-file generation for that synthetic Program host. UE 5.8 otherwise adds `dump_syms` to the Linux post-link script; UECI does not need crash-runtime symbols for a never-executed validation executable, so the minimal profile no longer has to carry the standalone `Engine/Binaries/Linux/dump_syms` utility.
 
+`v0.5.0-alpha.10` also disables `dump_syms` in UBT's hermetic `BuildConfiguration.xml`. The alpha.9 real smoke proved the target-level flag alone does not suppress the Linux post-link helper on this UE 5.8 commit; the configuration-level switch removes that standalone binary dependency from every synthetic validation UBT invocation.
+
 ```bash
 export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
 mkdir -p /tmp/ueci-engine-view
@@ -305,7 +307,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.5.0-alpha.9
+- uses: your-org/ueci@v0.5.0-alpha.10
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release
