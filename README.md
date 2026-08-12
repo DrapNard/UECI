@@ -258,14 +258,14 @@ credentials:
 The credential field stores only the **environment variable name**, never a secret.
 
 
-> **Executor discovery:** UE 5.8 can pre-create UBA before platform validation. UECI treats a missing UBA runtime as a lazy GitDependencies requirement and merges the full UBT log into discovery, so the same failed pass can also reveal the native platform SDK requirement.
+> **Executor bootstrap:** UE 5.8 can pre-create UBA before platform validation. UECI therefore materializes the tiny managed `EpicGames.UBA/Library.props` plus the host-specific native UBA payload **before compiling UBT**. Missing-UBA diagnostics remain supported as a lazy fallback, and the full UBT log is merged into discovery so the same failed pass can reveal the native platform SDK requirement.
 
 ## GitHub Action (prototype)
 
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.4.0-alpha.6
+- uses: your-org/ueci@v0.4.0-alpha.7
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release
@@ -291,7 +291,7 @@ For pull requests from untrusted forks, do not expose an Epic token to checked-o
    - UBT + Epic bundled .NET bootstrap ✅
    - real UBT remains the rules authority ✅
 4. **v0.4 — plugin build** 🚧
-   - Hermetic UBT executor configuration across Engine/user/Project scopes (remote + local UBA, XGE, FASTBuild, SN-DBS disabled) ✅
+   - UBT bootstrap includes host UBA support before managed compilation; hermetic executor config remains in place ✅
    - synthetic project + Game/Editor targets ✅
    - bounded diagnostic-driven materialization/retry loop ✅ experimental
    - package plugin + build report ✅

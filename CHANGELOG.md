@@ -2,6 +2,21 @@
 
 All notable changes to UECI will be documented here.
 
+## [0.4.0-alpha.7] - 2026-08-12
+
+### Fixed
+
+- Moves the host Unreal Build Accelerator payload into the UBT bootstrap plan so `Engine/Binaries/<host>/UnrealBuildAccelerator` exists **before** `UnrealBuildTool.csproj` is compiled. The UE 5.8 Linux smoke showed that materializing the native UBA files only after UBT had already been built still left `ExecutorFactory.GetUBAExecutor()` reporting UBA unavailable.
+- Makes the UBA bootstrap dependency explicit through `EpicBundledUbaResolver`: it requires both `Engine/Source/Programs/Shared/EpicGames.UBA/Library.props` and the host-specific native UBA prefix from `Commit.gitdeps.xml`.
+- Forces the Epic-bundled `dotnet build` of UBT to run with `--no-incremental`, preventing an UBT assembly compiled before the native UBA payload was present from surviving a warm UECI cache.
+- Keeps lazy UBA discovery as a compatibility fallback and recompiles UBT automatically if that fallback ever adds the host UBA payload after bootstrap.
+- CLI version advanced to `0.4.0-alpha.7`.
+
+### Testing
+
+- Adds an offline resolver test for the managed `EpicGames.UBA/Library.props` + native host UBA pair.
+- The optional real-manifest smoke now verifies the complete Linux host UBA bootstrap plan rather than only the native binary subtree.
+
 ## [0.4.0-alpha.6] - 2026-08-12
 
 ### Fixed
