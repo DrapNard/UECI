@@ -96,10 +96,13 @@ By default it builds `fixtures/MinimalPlugin/UECIMinimal.uplugin`, a single Runt
 Some UE 5.8 source builds pre-create Unreal Build Accelerator before platform/toolchain validation even when CI-oriented XML configuration asks for local executors. UECI therefore resolves `Engine/Source/Programs/Shared/EpicGames.UBA/Library.props` together with the host-specific `Engine/Binaries/*/UnrealBuildAccelerator` payload during the UBT bootstrap, before `UnrealBuildTool.csproj` is compiled. This matters on a warm cache because adding the native UBA payload after UBT was already built may leave the managed UBA integration unavailable. Missing-UBA diagnostics are still handled as a compatibility fallback; that fallback recompiles UBT after materializing UBA. The full UBT log at `Engine/Programs/UnrealBuildTool/Log.txt` is merged with stdout/stderr before requirement parsing, because that log can contain the Linux SDK requirement that the short console error omits.
 
 
-## Mounted backend (v0.5 alpha.5)
+## Mounted backend (v0.5 alpha.6)
 
 On Linux x64, `--backend fuse` bypasses the materialized discovery loop. The virtual namespace already contains every tracked Epic Git path and every GitDependencies file, so missing module/header/library discovery happens naturally through filesystem access while one UBT process remains alive. UBT itself is compiled inside the mount with Epic's bundled .NET SDK. The synthetic project and plugin copy remain outside the mount, while Engine-generated outputs use the persistent COW upper.
 
+
+Alpha.6 also keeps the FUSE protocol connection persistent per worker, enables kernel/readdir metadata caching, precomputes immutable lower directory listings, reuses `git cat-file --batch` for lazy source content and safely batch-prefetches the known UBT managed-source seed only when the Epic metadata repository is verified as a one-commit shallow snapshot. These changes are performance-only: the virtual Engine remains authoritative and no full source checkout is introduced.
+
 The Linux native toolchain is not part of Git/GitDependencies, so UECI proactively installs it before invoking the plugin target. Its authoritative payload is stored outside the FUSE mount and exposed to UBT by the normal `Engine/Extras/ThirdPartyNotUE/SDKs/...` projection.
 
-Use `./scripts/smoke-plugin-vfs.sh` for the first real build gate. The materialized backend remains available as `--backend materialized`.
+Use `./scripts/smoke-plugin-vfs.sh` for the first real build gate. The smoke enables aggregated VFS verbosity by default; set `UECI_VFS_VERBOSE=0` to silence those summaries. The materialized backend remains available as `--backend materialized`.

@@ -126,7 +126,7 @@ mkdir -p /tmp/ueci-engine/Engine/Saved/UECI
 printf 'hello\n' >/tmp/ueci-engine/Engine/Saved/UECI/cow-test.txt
 ```
 
-The first content read may block while its backing blob enters CAS. Repeating the same read should be a warm CAS hit with no network traffic. Startup/index progress is always printed; `--verbose` additionally traces individual FUSE requests. The real smoke prints a heartbeat every five seconds while it waits for the mount and defaults to a 10-minute startup timeout (`UECI_VFS_START_TIMEOUT`).
+The first content read may block while its backing blob enters CAS. Repeating the same read should be a warm CAS hit with no network traffic. Startup/index progress is always printed; `--verbose` additionally prints periodic FUSE request counters while cold CAS fills and mutations remain explicit. The real smoke prints a heartbeat every five seconds while it waits for the mount and defaults to a 10-minute startup timeout (`UECI_VFS_START_TIMEOUT`).
 
 ## Security / deadlock boundary
 
@@ -142,7 +142,7 @@ The standalone mount smoke is now validated on a real Linux host, and `build-plu
 
 Git tree objects contain path/mode/object-id but not blob length. On the Epic/GitHub backend, UECI enriches that local tree with exact `size` values from GitHub's Git Trees API, which exposes blob metadata without transferring file contents. Recursive responses that report `truncated` are split into smaller child-tree requests; the final SHA→size map is cached by commit. As a result, both `readdir(2)` and `stat(2)` stay metadata-only while still returning a truthful `st_size`; the first `open/read` remains the content-hydration boundary. Non-GitHub repositories keep a targeted hydration fallback when an exact size cannot be obtained.
 
-## Mounted plugin compilation (alpha.5)
+## Mounted plugin compilation (alpha.6)
 
 `ueci build-plugin --backend fuse` now consumes the mount as an actual Unreal Engine root:
 
@@ -156,6 +156,16 @@ Git tree objects contain path/mode/object-id but not blob length. On the Epic/Gi
 8. package the plugin and unmount in a `finally`/async-dispose path.
 
 The materialized backend remains the default because hosted CI cannot be assumed to expose `/dev/fuse`. The mounted backend is currently Linux x64 only.
+
+### Mounted hot-path performance
+
+Alpha.6 removes several per-syscall/per-blob costs exposed by real UBT scans:
+
+- each FUSE worker keeps a persistent Unix-domain socket to the C# resolver instead of reconnecting for every request, and multi-entry directory responses are buffered/flushed once;
+- directory enumeration returns child attributes so the kernel can prefill inode metadata, and the mount enables bounded attribute/entry/readdir caching for the immutable lower tree;
+- lower-only directory listings are precomputed once in `VirtualEngineIndex` rather than rebuilt and resorted for every UBT scan;
+- `--vfs-verbose` keeps cold-content/mutation boundaries explicit but aggregates high-volume metadata request counters;
+- Git blob reads reuse one long-lived `git cat-file --batch` process instead of spawning Git per CAS miss;
 
 ```bash
 ./scripts/smoke-plugin-vfs.sh

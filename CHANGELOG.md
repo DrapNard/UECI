@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.5.0-alpha.6] - 2026-08-12
+
+### Performance
+
+- Reuses one Unix-domain socket per native FUSE worker instead of `socket/connect/accept/close` for every metadata request, and buffers multi-entry `LIST` responses instead of flushing once per directory entry.
+- Enables 60-second kernel attribute/entry caching and cached directory enumeration; `readdir` now supplies complete child attributes so the kernel can prefill inode metadata.
+- Precomputes immutable lower-directory entry arrays and returns them directly when no COW upper/whiteout merge is necessary.
+- `--vfs-verbose` now aggregates high-volume STAT/LIST/read-open traffic while keeping cold CAS fills and mutations individually visible; the mounted plugin smoke enables this optimized verbosity by default.
+- Periodic FUSE summaries now report request throughput, connection count, and directory-entry volume; the mounted smoke also prints end-to-end command elapsed time for direct before/after comparisons.
+- Reuses a persistent `git cat-file --batch` process for lazy Git CAS fills instead of spawning one Git process per blob.
+- Batch-prefetches the known UBT managed-source seed with path-limited `git backfill` only when the Epic metadata repository is verified as a one-commit shallow snapshot; reused/deep repositories stay fully lazy to avoid historical overfetch.
+- Parallelizes uncached GitHub Git-tree size metadata requests across independent subtrees.
+
+### Fixed
+
+- Preserves unknown Git blob size as `-1` internally instead of silently converting it to zero, allowing READDIRPLUS to avoid caching false EOF metadata on non-GitHub fallbacks.
+- Disposes the persistent Git batch process with the virtual Engine context.
+
+### Changed
+
+- CLI version advanced to `0.5.0-alpha.6`.
+
 ## [0.5.0-alpha.5] - 2026-08-12
 
 ### Fixed

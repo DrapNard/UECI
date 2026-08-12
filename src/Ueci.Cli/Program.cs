@@ -10,7 +10,7 @@ namespace Ueci.Cli;
 
 internal static class Program
 {
-    private const string CliVersion = "0.5.0-alpha.5";
+    private const string CliVersion = "0.5.0-alpha.6";
 
     public static async Task<int> Main(string[] args)
     {
@@ -732,7 +732,7 @@ internal static class Program
               --cache-dir PATH           Shared content-addressed cache.
               --no-pack-cache            Keep blobs but discard compressed GitDependencies packs.
               --max-concurrent-packs N   Concurrent GitDependencies pack extraction limit.
-              --verbose                  Log individual FUSE requests after the always-on startup/index progress.
+              --verbose                  Log FUSE request summaries plus cold CAS fills/mutations.
 
             The mount exposes the complete Engine namespace from Git metadata + Commit.gitdeps.xml without
             checking out source files. readdir is metadata-only. Git tree objects do not contain blob sizes,
@@ -761,7 +761,7 @@ internal static class Program
               --platform PLATFORM        UBT platform override (default: derived from host RID).
               --configuration CONFIG     UBT configuration (default: Development).
               --backend MODE             materialized (default), fuse, or auto.
-              --vfs-verbose              Log individual FUSE requests for --backend fuse.
+              --vfs-verbose              Log FUSE request summaries plus cold CAS fills/mutations.
               --max-discovery-passes N   Materialized-backend retry cap (default: 32; unused by FUSE).
               --cache-dir PATH           Override the GitDependencies cache.
               --no-pack-cache            Discard compressed GitDependencies packs after extraction.
@@ -770,7 +770,7 @@ internal static class Program
             The materialized backend keeps the v0.4 sparse discovery/retry loop. The experimental FUSE
             backend mounts the complete pinned Engine namespace, compiles UBT inside that virtual Engine,
             installs the host toolchain outside the mount, then runs each UBT target once while Git/GitDeps
-            content hydrates into CAS on ordinary stat/open/read requests.
+            content hydrates into CAS only on real open/read requests.
             """);
     }
 

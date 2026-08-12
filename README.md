@@ -179,7 +179,7 @@ UECI injects the Git authorization header through per-process environment config
 
 The v0.5 mounted backend exposes the whole pinned Unreal namespace without checking out Engine source contents. Directory metadata comes from Git tree metadata + `Commit.gitdeps.xml`; the first `open()` of an immutable file blocks only that filesystem request while UECI fills the CAS. Writes go to a persistent copy-on-write upper layer outside the mount.
 
-`v0.5.0-alpha.5` keeps mount startup observable and fixes the `stat(2)` scan storm seen during real UBT builds. Local `git ls-tree` remains metadata-only (no `--long`), while UECI fetches exact blob lengths separately from GitHub Git-tree metadata and caches them by Epic commit. Directory enumeration and targeted `stat(2)` therefore remain content-free: a Git blob enters the CAS only when a process actually opens/reads it. `--verbose` still logs individual FUSE requests.
+`v0.5.0-alpha.6` attacks the mounted-build hot path itself. FUSE workers keep persistent Unix-socket sessions to the managed resolver, directory scans use `READDIRPLUS`-style attributes plus kernel metadata/readdir caching, immutable lower-directory listings are precomputed, and verbose mode aggregates metadata traffic instead of printing every `stat(2)`. Git content hydration also keeps a persistent `git cat-file --batch` process; on UECI's verified one-commit shallow Epic snapshot, the small known UBT bootstrap source seed is batch-prefetched before the mounted build. Exact Git sizes remain metadata-only and cached by Epic commit, so `stat(2)` does not fetch source contents.
 
 ```bash
 export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
@@ -299,7 +299,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.5.0-alpha.5
+- uses: your-org/ueci@v0.5.0-alpha.6
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release
