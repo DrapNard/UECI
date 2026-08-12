@@ -11,7 +11,9 @@ public sealed class UnrealBuildToolCompiler
     public async Task<UnrealBuildToolCompileResult> CompileAsync(
         string engineRoot,
         string dotNetRoot,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool reuseExistingOutput = false,
+        Action<string>? progress = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(engineRoot);
         ArgumentException.ThrowIfNullOrWhiteSpace(dotNetRoot);
@@ -21,17 +23,42 @@ public sealed class UnrealBuildToolCompiler
         string project = Path.Combine(
             root,
             "Engine", "Source", "Programs", "UnrealBuildTool", "UnrealBuildTool.csproj");
-        if (!File.Exists(project))
-        {
-            throw new FileNotFoundException(
-                "UnrealBuildTool.csproj was not materialized from the Epic Git source tree.",
-                project);
-        }
 
         string dotnet = Path.Combine(sdkRoot, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
         if (!File.Exists(dotnet))
         {
             throw new FileNotFoundException("Epic bundled dotnet SDK host is missing.", dotnet);
+        }
+
+        if (reuseExistingOutput)
+        {
+            try
+            {
+                UnrealBuildToolPaths existing = UnrealBuildToolLocator.LocateBuiltOutput(root, project);
+                string existingDirectory = Path.GetDirectoryName(existing.AssemblyPath)!;
+                string deps = Path.Combine(existingDirectory, "UnrealBuildTool.deps.json");
+                if (!File.Exists(deps) || new FileInfo(existing.AssemblyPath).Length == 0)
+                {
+                    throw new InvalidDataException("Cached UnrealBuildTool output is incomplete.");
+                }
+                progress?.Invoke($"Reusing cached UnrealBuildTool output: {existing.AssemblyPath}");
+                return new UnrealBuildToolCompileResult(
+                    project,
+                    dotnet,
+                    new ExternalProcessResult(0, "UECI reused commit-scoped UnrealBuildTool artifacts.", string.Empty),
+                    existing);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or InvalidDataException)
+            {
+                progress?.Invoke("No reusable UnrealBuildTool output was found; compiling it once for this commit...");
+            }
+        }
+
+        if (!File.Exists(project))
+        {
+            throw new FileNotFoundException(
+                "UnrealBuildTool.csproj was not materialized from the Epic Git source tree.",
+                project);
         }
 
         string ueciState = Path.Combine(root, ".ueci");

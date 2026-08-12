@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Ueci.Epic;
 using Ueci.GitDeps;
 
@@ -19,6 +20,8 @@ public sealed class VirtualEngineFileSystem : IDisposable
     private long _gitHydratedBytes;
     private long _gitDependenciesHydratedFiles;
     private long _gitDependenciesDownloadedBytes;
+    private readonly ConcurrentDictionary<string, byte> _accessedLowerPaths = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _missingLowerPaths = new(StringComparer.Ordinal);
 
     public VirtualEngineFileSystem(
         VirtualEngineIndex index,
@@ -44,6 +47,10 @@ public sealed class VirtualEngineFileSystem : IDisposable
     public string UpperRoot { get; }
     public string StateDirectory { get; }
     public int LowerEntryCount => _index.EntryCount;
+    internal VirtualEngineIndex LowerIndex => _index;
+    public int ProfileMissCount => _missingLowerPaths.Count;
+    public IReadOnlyCollection<string> AccessedLowerPaths => _accessedLowerPaths.Keys.ToArray();
+    public IReadOnlyCollection<string> MissingLowerPaths => _missingLowerPaths.Keys.ToArray();
     public VirtualEngineIoMetrics Metrics => new(
         Interlocked.Read(ref _gitHydratedFiles),
         Interlocked.Read(ref _gitHydratedBytes),
@@ -70,9 +77,11 @@ public sealed class VirtualEngineFileSystem : IDisposable
 
         if (!_index.TryGet(normalized, out VirtualEngineLowerEntry? lower))
         {
+            _missingLowerPaths.TryAdd(normalized, 0);
             return Task.FromResult<VirtualEngineMetadata?>(null);
         }
 
+        _accessedLowerPaths.TryAdd(normalized, 0);
         VirtualEngineMetadata metadata = lower!.Metadata;
         if (metadata.Source == VirtualEngineSourceKind.Git
             && metadata.Kind != VirtualEngineNodeKind.Directory
@@ -138,12 +147,20 @@ public sealed class VirtualEngineFileSystem : IDisposable
         bool upperDirectory = Directory.Exists(upper) && !IsSymbolicLink(upper);
         if (!lowerDirectory && !upperDirectory)
         {
+            _missingLowerPaths.TryAdd(normalized, 0);
             throw new DirectoryNotFoundException(normalized);
         }
 
         IReadOnlyList<VirtualEngineDirectoryEntry> lowerChildren = lowerDirectory
             ? _index.GetChildren(normalized)
             : Array.Empty<VirtualEngineDirectoryEntry>();
+        if (lowerDirectory)
+        {
+            // Record the traversal itself, but deliberately do not retain every child returned by
+            // readdir. A learned build profile is a pruned working set: files that UBT actually
+            // stats/opens are retained, while unrelated siblings disappear from future scans.
+            _accessedLowerPaths.TryAdd(normalized, 0);
+        }
 
         // UBT repeatedly opens the same immutable source directories while constructing rules and
         // module graphs. Avoid rebuilding/sorting a dictionary on every LIST when there is no upper
@@ -204,8 +221,10 @@ public sealed class VirtualEngineFileSystem : IDisposable
         if (!_index.TryGet(normalized, out VirtualEngineLowerEntry? entry)
             || entry!.Metadata.Kind == VirtualEngineNodeKind.Directory)
         {
+            _missingLowerPaths.TryAdd(normalized, 0);
             throw new FileNotFoundException("Virtual engine file does not exist.", normalized);
         }
+        _accessedLowerPaths.TryAdd(normalized, 0);
 
         if (entry.GitDependency is not null)
         {

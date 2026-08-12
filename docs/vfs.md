@@ -142,7 +142,7 @@ The standalone mount smoke is now validated on a real Linux host, and `build-plu
 
 Git tree objects contain path/mode/object-id but not blob length. On the Epic/GitHub backend, UECI enriches that local tree with exact `size` values from GitHub's Git Trees API, which exposes blob metadata without transferring file contents. Recursive responses that report `truncated` are split into smaller child-tree requests; the final SHA→size map is cached by commit. As a result, both `readdir(2)` and `stat(2)` stay metadata-only while still returning a truthful `st_size`; the first `open/read` remains the content-hydration boundary. Non-GitHub repositories keep a targeted hydration fallback when an exact size cannot be obtained.
 
-## Mounted plugin compilation (alpha.6)
+## Mounted plugin compilation (alpha.7)
 
 `ueci build-plugin --backend fuse` now consumes the mount as an actual Unreal Engine root:
 
@@ -156,6 +156,20 @@ Git tree objects contain path/mode/object-id but not blob length. On the Epic/Gi
 8. package the plugin and unmount in a `finally`/async-dispose path.
 
 The materialized backend remains the default because hosted CI cannot be assumed to expose `/dev/fuse`. The mounted backend is currently Linux x64 only.
+
+### Minimal build profiles
+
+The generic FUSE mount still builds the complete Git + GitDependencies namespace. `build-plugin --backend fuse` opts into a narrower profile layer:
+
+1. resolve the pinned Epic commit;
+2. load an exact profile from the shared UECI cache when one exists;
+3. otherwise build a small targeted index from the embedded alpha.6 Linux x64 working-set seed;
+4. if UBT reports a missing source/module/target requirement, retry once with the complete dynamic index;
+5. persist the files actually stat'ed/opened as the exact profile for that commit.
+
+A profile stores Git path/OID/mode/size metadata, so the warm path does not need the global local `ls-tree` or GitHub tree-size crawl. GitDependencies are reduced to the selected Epic .NET SDK plus files actually used by the build. Directory parents are synthesized from retained files; unrelated directory-listing siblings are intentionally dropped.
+
+The same shared cache has a commit-scoped generated-artifact area for UBT, shared managed projects and Engine Rules assemblies. These files are restored into the writable upper layer before UBT starts and are discarded if the Engine commit changes. If a fast profile must expand through the dynamic fallback, the cached UBT binary is kept but Engine Rules assemblies are invalidated so `UE5Rules.dll` is regenerated while the complete namespace is visible.
 
 ### Mounted hot-path performance
 

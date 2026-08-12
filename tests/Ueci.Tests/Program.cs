@@ -26,6 +26,8 @@ internal static class Program
         ("Epic sparse source seed materializes from a local partial clone", EpicSparseSourceMaterializationAsync),
         ("GitHub tree size metadata splits truncated subtrees without blob content", GitHubTreeSizeMetadataAsync),
         ("virtual Engine view overlays GitDependencies over Git and performs lazy COW", VirtualEngineViewCowAsync),
+        ("virtual Engine profile persists an accessed commit working set", VirtualEngineProfileRoundTripAsync),
+        ("commit-scoped generated artifact cache restores UBT outputs", VirtualEngineArtifactCacheRoundTripAsync),
         ("materializer extracts multiple blobs in one pack download", MaterializerExtractsMultiBlobPackAsync),
         ("materializer reuses compressed pack cache", MaterializerReusesPackCacheAsync),
         ("materializer repairs corrupt compressed pack cache", MaterializerRepairsCorruptPackCacheAsync),
@@ -328,6 +330,16 @@ internal static class Program
                 "main",
                 tokenVariable);
 
+            EpicGitTreeIndex targetedGitIndex = await EpicGitTreeIndex.LoadPathsAsync(
+                metadataRoot,
+                ["Engine/Source/Runtime/Core/Public/GitOnly.h"],
+                includeBlobSizes: true,
+                tokenEnvironmentVariable: tokenVariable);
+            Assert.Equal(1, targetedGitIndex.Entries.Count);
+            Assert.True(targetedGitIndex.TryGetValue(
+                "Engine/Source/Runtime/Core/Public/GitOnly.h", out EpicGitTreeEntry? targetedGitOnly));
+            Assert.Equal((long)"git-only\n".Length, targetedGitOnly!.Size);
+
             EpicGitTreeIndex rawGitIndex = await EpicGitTreeIndex.LoadAsync(metadataRoot, tokenVariable);
             Assert.True(rawGitIndex.TryGetValue(
                 "Engine/Source/Runtime/Core/Public/GitOnly.h", out EpicGitTreeEntry? rawGitOnly));
@@ -415,6 +427,111 @@ internal static class Program
         finally
         {
             Environment.SetEnvironmentVariable(tokenVariable, previousToken);
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task VirtualEngineProfileRoundTripAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            const string commit = "0123456789abcdef0123456789abcdef01234567";
+            EpicGitTreeIndex git = EpicGitTreeIndex.FromEntries(
+                commit,
+                [
+                    new EpicGitTreeEntry(
+                        "Engine/Source/Runtime/Core/Public/GitOnly.h",
+                        "1111111111111111111111111111111111111111",
+                        9,
+                        0x1a4,
+                        false),
+                    new EpicGitTreeEntry(
+                        "Engine/Source/Runtime/Core/Public/Unused.h",
+                        "2222222222222222222222222222222222222222",
+                        7,
+                        0x1a4,
+                        false),
+                ]);
+            SyntheticPack fixture = CreateSyntheticPack();
+            VirtualEngineIndex index = VirtualEngineIndex.Build(git, fixture.Manifest);
+
+            await VirtualEngineProfileStore.SaveAsync(
+                root,
+                commit,
+                index,
+                [
+                    "Engine/Source/Runtime/Core/Public/GitOnly.h",
+                    "Engine/Source/Runtime/Core/Public/Core.h",
+                ]);
+
+            VirtualEngineProfileDocument? loaded = await VirtualEngineProfileStore.TryLoadAsync(root, commit);
+            Assert.True(loaded is not null);
+            Assert.Equal(1, loaded!.GitEntries.Count);
+            Assert.Equal("Engine/Source/Runtime/Core/Public/GitOnly.h", loaded.GitEntries[0].Path);
+            Assert.Equal(1, loaded.GitDependencyPaths.Count);
+            Assert.Equal("Engine/Source/Runtime/Core/Public/Core.h", loaded.GitDependencyPaths[0]);
+
+            GitDependenciesManifest subset = VirtualEngineManifestSubset.Create(
+                fixture.Manifest,
+                loaded.GitDependencyPaths);
+            Assert.Equal(1, subset.Files.Count);
+            Assert.Equal(1, subset.Blobs.Count);
+            Assert.Equal(1, subset.Packs.Count);
+            Assert.True(subset.Resolve("Engine/Source/Runtime/Core/Public/Core.h") is not null);
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task VirtualEngineArtifactCacheRoundTripAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string upper = Path.Combine(root, "upper");
+            string state = Path.Combine(root, "state");
+            string cache = Path.Combine(root, "cache");
+            const string commit = "abcdef0123456789abcdef0123456789abcdef01";
+            string relative = Path.Combine(
+                "Engine", "Source", "Programs", "UnrealBuildTool", "bin", "Debug", "net10.0", "UnrealBuildTool.dll");
+            string source = Path.Combine(upper, relative);
+            Directory.CreateDirectory(Path.GetDirectoryName(source)!);
+            await File.WriteAllTextAsync(source, "cached-ubt");
+            string outputDirectory = Path.GetDirectoryName(source)!;
+            await File.WriteAllTextAsync(Path.Combine(outputDirectory, "UnrealBuildTool.deps.json"), "{}");
+            await File.WriteAllTextAsync(Path.Combine(outputDirectory, "UnrealBuildTool.runtimeconfig.json"), "{}");
+            string rules = Path.Combine(upper, "Engine", "Intermediate", "Build", "BuildRules", "UE5Rules.dll");
+            Directory.CreateDirectory(Path.GetDirectoryName(rules)!);
+            await File.WriteAllTextAsync(rules, "cached-rules");
+
+            var artifacts = new VirtualEngineArtifactCache(cache);
+            await artifacts.PrepareUpperForCommitAsync(upper, state, commit);
+            await artifacts.SaveAsync(upper, commit);
+
+            Directory.Delete(upper, recursive: true);
+            Directory.CreateDirectory(upper);
+            bool restored = await artifacts.RestoreAsync(upper, commit);
+            Assert.True(restored);
+            Assert.True(artifacts.HasReusableUnrealBuildTool(upper));
+            Assert.Equal("cached-ubt", await File.ReadAllTextAsync(Path.Combine(upper, relative)));
+            Assert.True(File.Exists(Path.Combine(upper, "Engine", "Intermediate", "Build", "BuildRules", "UE5Rules.dll")));
+
+            artifacts.ClearRuleArtifacts(upper);
+            Assert.True(artifacts.HasReusableUnrealBuildTool(upper));
+            Assert.False(File.Exists(Path.Combine(upper, "Engine", "Intermediate", "Build", "BuildRules", "UE5Rules.dll")));
+
+            // A commit change must invalidate generated upper artifacts before another restore.
+            await artifacts.PrepareUpperForCommitAsync(
+                upper,
+                state,
+                "bbbbbb0123456789abcdef0123456789abcdef01");
+            Assert.False(File.Exists(Path.Combine(upper, relative)));
+        }
+        finally
+        {
             DeleteDirectory(root);
         }
     }

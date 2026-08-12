@@ -26,6 +26,72 @@ public sealed class EpicGitTreeIndex
     public bool TryGetValue(string path, out EpicGitTreeEntry? entry)
         => _entries.TryGetValue(Normalize(path), out entry);
 
+
+    public static EpicGitTreeIndex FromEntries(string commit, IEnumerable<EpicGitTreeEntry> entries)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(commit);
+        ArgumentNullException.ThrowIfNull(entries);
+        var indexed = new Dictionary<string, EpicGitTreeEntry>(StringComparer.Ordinal);
+        foreach (EpicGitTreeEntry entry in entries)
+        {
+            string path = Normalize(entry.Path);
+            indexed[path] = entry with { Path = path };
+        }
+        return new EpicGitTreeIndex(commit.Trim(), indexed);
+    }
+
+    public static async Task<EpicGitTreeIndex> LoadPathsAsync(
+        string repositoryDirectory,
+        IEnumerable<string> paths,
+        bool includeBlobSizes,
+        string? tokenEnvironmentVariable = null,
+        Action<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        string root = Path.GetFullPath(repositoryDirectory);
+        var client = new EpicGitClient();
+        string commit = await client.GetPinnedCommitAsync(root, cancellationToken).ConfigureAwait(false);
+        string token = GitHubReadOnlyCredential.GetRequiredToken(tokenEnvironmentVariable);
+        IReadOnlyDictionary<string, string> environment = GitHubReadOnlyCredential.CreateGitEnvironment(token);
+        string[] normalized = paths
+            .Select(Normalize)
+            .Where(value => value.Length != 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (normalized.Length == 0)
+        {
+            throw new ArgumentException("At least one Git path is required.", nameof(paths));
+        }
+
+        var arguments = new List<string>(6 + normalized.Length) { "ls-tree", "-r", "-z" };
+        if (includeBlobSizes)
+        {
+            arguments.Add("--long");
+        }
+        arguments.Add(commit);
+        arguments.Add("--");
+        arguments.AddRange(normalized);
+
+        progress?.Invoke(
+            $"[vfs/profile] Indexing {normalized.Length:N0} targeted Git pathspec(s)" +
+            (includeBlobSizes ? " with local exact sizes..." : " without global tree scan..."));
+        GitProcessResult result = await GitProcess.RunAsync(root, arguments, environment, cancellationToken)
+            .ConfigureAwait(false);
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Unable to index targeted Epic Git paths: {result.StandardError.Trim()}");
+        }
+
+        var entries = new Dictionary<string, EpicGitTreeEntry>(StringComparer.Ordinal);
+        foreach (string raw in result.StandardOutput.Split('\0', StringSplitOptions.RemoveEmptyEntries))
+        {
+            ParseRecord(raw, entries);
+        }
+        progress?.Invoke($"[vfs/profile] Targeted Git index contains {entries.Count:N0} blobs.");
+        return new EpicGitTreeIndex(commit, entries);
+    }
+
     public EpicGitTreeIndex WithBlobSizes(IReadOnlyDictionary<string, long>? sizesByObjectId)
     {
         if (sizesByObjectId is null || sizesByObjectId.Count == 0)
@@ -149,7 +215,14 @@ public sealed class EpicGitTreeIndex
 
         int unixMode = Convert.ToInt32(fields[0], 8) & 0x0fff;
         bool symlink = fields[0] == "120000";
-        entries[path] = new EpicGitTreeEntry(path, fields[2], -1, unixMode, symlink);
+        long size = -1;
+        if (fields.Length >= 4 && fields[3] != "-"
+            && long.TryParse(fields[3], System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out long parsedSize))
+        {
+            size = parsedSize;
+        }
+        entries[path] = new EpicGitTreeEntry(path, fields[2], size, unixMode, symlink);
     }
 
     private static void ReportProgress(

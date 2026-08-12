@@ -6,5 +6,6 @@
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="Vfs/Linux/ueci-fuse-helper.c" />
+    <EmbeddedResource Include="Vfs/Profiles/*.seed" />
   </ItemGroup>
 </Project>

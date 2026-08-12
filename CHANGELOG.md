@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.5.0-alpha.7] - 2026-08-12
+
+### Performance
+
+- Adds commit-scoped minimal mounted-Engine profiles. Known Epic commits restore the exact Git OID/mode/size working set and GitDependencies subset directly from the shared UECI cache, skipping the global ~224k-file `git ls-tree`, GitHub blob-size crawl, and ~409k-path namespace build.
+- Seeds unknown commits from the observed alpha.6 Linux x64 UBT/UHT working set (2,215 cold Git blobs plus the stable UBT managed-source prefixes) and uses path-limited `git backfill` before constructing the small namespace.
+- Learns a pruned profile from files UBT actually stats/opens; unrelated `readdir` siblings are intentionally not retained, so later rules/UHT scans cannot rediscover the complete Engine by accident.
+- Adds a commit-scoped generated-artifact cache for UBT managed build outputs, shared project outputs, and Engine Rules assemblies. Warm runs restore these into the COW upper before the mount and reuse an already complete `UnrealBuildTool.dll` output when possible.
+- Stores learned Engine profiles and generated-artifact snapshots under the normal shared UECI cache so fresh CI workspaces can benefit when that cache is restored.
+
+### Reliability
+
+- Unknown/incomplete fast profiles automatically retry once through the complete dynamic Engine index when UECI or UBT reports a missing source/module/target requirement; the fallback run updates the exact commit profile for subsequent jobs.
+- Generated upper artifacts are commit-bound and discarded when the Epic commit changes, preventing stale UBT/Rules binaries from leaking across refs.
+- The generic `ueci mount` command keeps its complete Engine namespace; minimal profiles are enabled only by the mounted plugin-build backend.
+
+### Fixed
+
+- Mounted plugin targets no longer pass `-Module=<plugin>` to the monolithic synthetic Program host. Alpha.6 reached a valid target action graph and then failed in `BuildMode.GatherOutputItems()` with `Unable to find output items for module`; mounted builds now build the synthetic target once and let its enabled plugin modules participate normally.
+
+### Changed
+
+- CLI version advanced to `0.5.0-alpha.7`.
+
 ## [0.5.0-alpha.6] - 2026-08-12
 
 ### Performance

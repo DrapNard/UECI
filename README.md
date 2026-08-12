@@ -181,6 +181,8 @@ The v0.5 mounted backend exposes the whole pinned Unreal namespace without check
 
 `v0.5.0-alpha.6` attacks the mounted-build hot path itself. FUSE workers keep persistent Unix-socket sessions to the managed resolver, directory scans use `READDIRPLUS`-style attributes plus kernel metadata/readdir caching, immutable lower-directory listings are precomputed, and verbose mode aggregates metadata traffic instead of printing every `stat(2)`. Git content hydration also keeps a persistent `git cat-file --batch` process; on UECI's verified one-commit shallow Epic snapshot, the small known UBT bootstrap source seed is batch-prefetched before the mounted build. Exact Git sizes remain metadata-only and cached by Epic commit, so `stat(2)` does not fetch source contents.
 
+`v0.5.0-alpha.7` adds a build-only minimal Engine profile on top of that VFS. The first run for an unknown Epic commit starts from the observed alpha.6 UBT/UHT working set; if that seed is insufficient, UECI retries once with the complete virtual Engine and records the files UBT actually stats/opens. The learned commit profile is stored in the shared UECI cache with exact Git OIDs/modes/sizes and the GitDependencies subset, so later CI workspaces skip the global Git tree/size crawl and expose only the pruned working set. Generated UBT/Rules outputs are cached by commit as well. The standalone `ueci mount` command intentionally keeps the complete namespace for debugging and browsing.
+
 ```bash
 export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
 mkdir -p /tmp/ueci-engine-view
@@ -299,7 +301,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.5.0-alpha.6
+- uses: your-org/ueci@v0.5.0-alpha.7
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release
