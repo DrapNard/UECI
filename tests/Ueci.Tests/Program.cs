@@ -27,6 +27,7 @@ internal static class Program
         ("materializer repairs corrupt compressed pack cache", MaterializerRepairsCorruptPackCacheAsync),
         ("materializer can discard compressed pack cache", MaterializerNoPackCacheAsync),
         ("materializer rejects blob SHA-1 mismatch", MaterializerRejectsHashMismatchAsync),
+        ("GitDependencies overlay restores sparse-displaced files from CAS", GitDependenciesOverlayRestoresAsync),
         ("pack extractor rejects unknown magic", PackExtractorRejectsUnknownMagicAsync),
         ("runtimeconfig parser reads shared framework", RuntimeConfigParsesAsync),
         ("Epic bundled dotnet resolver selects host runtime", BundledDotNetResolverAsync),
@@ -462,6 +463,54 @@ internal static class Program
                 pack,
                 [blob],
                 _ => Path.Combine(root, "blob")));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task GitDependenciesOverlayRestoresAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            SyntheticPack fixture = CreateSyntheticPack();
+            var source = new MemoryPackSource(fixture.PackUri, fixture.CompressedBytes);
+            var fetch = new GitDependenciesFetchOptions(
+                Path.Combine(root, "cache"),
+                CacheCompressedPacks: false,
+                MaxConcurrentPacks: 1);
+            var overlay = new UnrealGitDependenciesOverlay(
+                fixture.Manifest,
+                fetch,
+                root,
+                [
+                    "Engine/Binaries/Linux/tool",
+                    "Engine/Source/Runtime/Core/Public/Core.h",
+                ],
+                () => source);
+
+            GitDependenciesBatchResult? first = await overlay.RestoreMissingAsync();
+            Assert.True(first is not null);
+            Assert.Equal(2, first!.FileCount);
+            Assert.Equal(1, source.DownloadCount);
+
+            string tool = Path.Combine(root, "Engine", "Binaries", "Linux", "tool");
+            string core = Path.Combine(root, "Engine", "Source", "Runtime", "Core", "Public", "Core.h");
+            Assert.True(File.Exists(tool));
+            Assert.True(File.Exists(core));
+
+            File.Delete(tool);
+            GitDependenciesBatchResult? repaired = await overlay.RestoreMissingAsync();
+            Assert.True(repaired is not null);
+            Assert.Equal(1, repaired!.FileCount);
+            Assert.Equal(0L, repaired.DownloadedBytes);
+            Assert.Equal(1, source.DownloadCount);
+            Assert.True(File.Exists(tool));
+
+            GitDependenciesBatchResult? warm = await overlay.RestoreMissingAsync();
+            Assert.True(warm is null);
         }
         finally
         {

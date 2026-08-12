@@ -174,6 +174,15 @@ public sealed class UnrealPluginBuilder
                 Array.Empty<string>());
         }
 
+        string[] bootstrapOverlayFiles = bootstrap.Dependencies.MaterializedFiles
+            .Select(path => ToEngineRelativePath(bootstrap.EngineRoot, path))
+            .ToArray();
+        var gitDependenciesOverlay = new UnrealGitDependenciesOverlay(
+            manifest,
+            options.FetchOptions,
+            bootstrap.EngineRoot,
+            bootstrapOverlayFiles);
+
         string[] sparseSeed = UbtSparseSeed.Concat(InitialNativeSeed).Distinct(StringComparer.Ordinal).ToArray();
         options.Progress?.Invoke("Materializing the minimal native UBT target seed (Core/TraceLog/Projects/Launch)...");
         await _epicClient.MaterializeSparseDirectoriesAsync(
@@ -182,6 +191,13 @@ public sealed class UnrealPluginBuilder
             options.TokenEnvironmentVariable,
             cancellationToken,
             message => options.Progress?.Invoke(message)).ConfigureAwait(false);
+
+        // Sparse checkout can displace GitDependencies-managed files when a dependency path also
+        // exists in the pinned Git tree. The bundled dotnet host observed in alpha.1 is one such
+        // case. Repair only missing overlay files from the content-addressed cache before UBT runs.
+        GitDependenciesBatchResult? repairedBootstrapOverlay = await gitDependenciesOverlay.RestoreMissingAsync(
+            options.Progress,
+            cancellationToken).ConfigureAwait(false);
 
         options.Progress?.Invoke("Indexing tracked Epic source paths for lazy dependency discovery...");
         IReadOnlyList<string> trackedPaths = await _epicClient.ListTrackedFilesAsync(
@@ -197,13 +213,15 @@ public sealed class UnrealPluginBuilder
             bootstrap.EngineRoot,
             options.TokenEnvironmentVariable,
             sparseSeed,
-            options.RuntimeIdentifier);
+            options.RuntimeIdentifier,
+            gitDependenciesOverlay);
 
         var phases = CreatePhases(plugin, host);
         var phaseResults = new List<UnrealPluginBuildPhaseResult>();
         var handledRequirements = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var materializedDescriptions = new List<string>();
-        long downloaded = bootstrap.Dependencies.DownloadedBytes;
+        long downloaded = bootstrap.Dependencies.DownloadedBytes
+            + (repairedBootstrapOverlay?.DownloadedBytes ?? 0);
         int totalPasses = 0;
         string dotNetRoot = bootstrap.BundledDotNetRoot;
         var runner = new UnrealBuildToolRunner();
@@ -312,6 +330,20 @@ public sealed class UnrealPluginBuilder
             downloaded,
             phaseResults,
             materializedDescriptions);
+    }
+
+    private static string ToEngineRelativePath(string engineRoot, string fullPath)
+    {
+        string root = Path.GetFullPath(engineRoot);
+        string absolute = Path.GetFullPath(fullPath);
+        string relative = Path.GetRelativePath(root, absolute).Replace('\\', '/');
+        if (relative.Equals("..", StringComparison.Ordinal)
+            || relative.StartsWith("../", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                $"GitDependencies materialized path escapes Engine root: '{fullPath}'.");
+        }
+        return GitDependencyPath.Normalize(relative);
     }
 
     private static IReadOnlyList<BuildPhase> CreatePhases(

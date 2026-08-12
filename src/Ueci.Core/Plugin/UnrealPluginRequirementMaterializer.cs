@@ -24,6 +24,7 @@ public sealed class UnrealPluginRequirementMaterializer
     private readonly HashSet<string> _sparseDirectories;
     private readonly string _runtimeIdentifier;
     private readonly UnrealLinuxNativeToolchainInstaller _linuxToolchainInstaller;
+    private readonly UnrealGitDependenciesOverlay _gitDependenciesOverlay;
 
     public UnrealPluginRequirementMaterializer(
         EpicGitClient epicClient,
@@ -34,6 +35,7 @@ public sealed class UnrealPluginRequirementMaterializer
         string? tokenEnvironmentVariable,
         IEnumerable<string> initialSparseDirectories,
         string runtimeIdentifier,
+        UnrealGitDependenciesOverlay gitDependenciesOverlay,
         IUnrealToolchainArchiveSource? toolchainArchiveSource = null)
     {
         _epicClient = epicClient ?? throw new ArgumentNullException(nameof(epicClient));
@@ -43,6 +45,7 @@ public sealed class UnrealPluginRequirementMaterializer
         _engineRoot = Path.GetFullPath(engineRoot);
         _tokenEnvironmentVariable = tokenEnvironmentVariable;
         _runtimeIdentifier = runtimeIdentifier ?? throw new ArgumentNullException(nameof(runtimeIdentifier));
+        _gitDependenciesOverlay = gitDependenciesOverlay ?? throw new ArgumentNullException(nameof(gitDependenciesOverlay));
         _linuxToolchainInstaller = new UnrealLinuxNativeToolchainInstaller(toolchainArchiveSource);
         _sparseDirectories = new HashSet<string>(
             initialSparseDirectories.Select(Normalize).Where(path => path.Length != 0),
@@ -173,24 +176,28 @@ public sealed class UnrealPluginRequirementMaterializer
         int materializedGitDeps = 0;
         if (gitDepsFiles.Count != 0 || gitDepsPrefixes.Count != 0)
         {
-            GitDependenciesPlan plan = GitDependenciesPlanner.CreatePlan(
-                _manifest,
+            GitDependenciesPlan newlyRequired = _gitDependenciesOverlay.TrackSelection(
                 gitDepsFiles,
                 gitDepsPrefixes);
+            materializedGitDeps = newlyRequired.FileCount;
             progress?.Invoke(
-                $"Materializing {plan.FileCount:N0} newly required GitDependencies files " +
-                $"({plan.UniquePackCount:N0} packs, {FormatBytes(plan.DownloadCompressedBytes)} compressed)...");
+                $"Tracking {newlyRequired.FileCount:N0} newly required GitDependencies files " +
+                $"({newlyRequired.UniquePackCount:N0} packs, {FormatBytes(newlyRequired.DownloadCompressedBytes)} compressed)...");
+        }
 
-            using var source = new HttpGitDependenciesPackSource();
-            var materializer = new GitDependenciesMaterializer(source);
-            GitDependenciesBatchResult result = await materializer.MaterializePlanAsync(
-                _manifest,
-                plan,
-                _engineRoot,
-                _fetchOptions,
+        // A sparse-checkout update may displace files that GitDependencies overlaid on paths which
+        // are also known to Git. Restore every tracked overlay file that is currently absent before
+        // the next UBT invocation. Newly discovered GitDependencies paths are included in the same
+        // restore, so one pass repairs both old and new requirements from the CAS/CDN.
+        if (sparseToAdd.Count != 0 || gitDepsFiles.Count != 0 || gitDepsPrefixes.Count != 0)
+        {
+            GitDependenciesBatchResult? restored = await _gitDependenciesOverlay.RestoreMissingAsync(
+                progress,
                 cancellationToken).ConfigureAwait(false);
-            downloadedBytes = result.DownloadedBytes;
-            materializedGitDeps = result.FileCount;
+            if (restored is not null)
+            {
+                downloadedBytes += restored.DownloadedBytes;
+            }
         }
 
         int platformSdkChanges = 0;
