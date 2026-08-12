@@ -1,9 +1,11 @@
 using System.Diagnostics;
+using System.Formats.Tar;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using Ueci.Epic;
 using Ueci.GitDeps;
+using Ueci.Plugin;
 using Ueci.Unreal;
 
 namespace Ueci.Tests;
@@ -31,6 +33,14 @@ internal static class Program
         ("Epic bundled dotnet SDK resolver selects latest SDK", BundledDotNetSdkResolverAsync),
         ("UBT locator requires compiled bootstrap files", UnrealBuildToolLocatorAsync),
         ("UBT locator discovers project bin output", UnrealBuildToolLocatorFindsProjectBinAsync),
+        ("plugin descriptor classifies runtime and editor modules", PluginDescriptorParsesAsync),
+        ("plugin host project is ephemeral and strips stale outputs", PluginHostProjectPreparesAsync),
+        ("plugin diagnostic parser derives lazy requirements", PluginDiagnosticsParseAsync),
+        ("tracked Epic index locates module rules and suffixes", EpicTrackedIndexFindsAsync),
+        ("plugin UBT invocation targets only requested modules", PluginBuildInvocationAsync),
+        ("plugin packager keeps binaries and drops Intermediate", PluginPackagerAsync),
+        ("Linux SDK descriptor resolves Epic native toolchain", LinuxToolchainDescriptorAsync),
+        ("Linux native toolchain installer is offline-testable and cached", LinuxToolchainInstallerAsync),
     ];
 
     public static async Task<int> Main(string[] args)
@@ -601,6 +611,271 @@ internal static class Program
         }
     }
 
+    private static async Task PluginDescriptorParsesAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string descriptor = Path.Combine(root, "Fixture.uplugin");
+            await File.WriteAllTextAsync(descriptor, """
+                {
+                  "FileVersion": 3,
+                  "FriendlyName": "UECI Fixture",
+                  "Modules": [
+                    { "Name": "FixtureRuntime", "Type": "Runtime" },
+                    { "Name": "FixtureEditor", "Type": "Editor" }
+                  ]
+                }
+                """);
+
+            UnrealPluginDescriptor plugin = await UnrealPluginDescriptor.ReadAsync(descriptor);
+            Assert.Equal("Fixture", plugin.Name);
+            Assert.Equal(2, plugin.Modules.Count);
+            Assert.False(plugin.Modules[0].IsEditorOnly);
+            Assert.True(plugin.Modules[1].IsEditorOnly);
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task PluginHostProjectPreparesAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string source = Path.Combine(root, "PluginSource");
+            Directory.CreateDirectory(Path.Combine(source, "Source", "Fixture"));
+            Directory.CreateDirectory(Path.Combine(source, "Binaries", "Linux"));
+            Directory.CreateDirectory(Path.Combine(source, "Binaries", "ThirdParty"));
+            Directory.CreateDirectory(Path.Combine(source, "Intermediate"));
+            string descriptor = Path.Combine(source, "Fixture.uplugin");
+            await File.WriteAllTextAsync(descriptor, "{ \"FileVersion\": 3, \"Modules\": [{ \"Name\": \"Fixture\", \"Type\": \"Runtime\" }] }");
+            await File.WriteAllTextAsync(Path.Combine(source, "Source", "Fixture", "Fixture.Build.cs"), "// fixture");
+            await File.WriteAllTextAsync(Path.Combine(source, "Binaries", "Linux", "stale.so"), "stale");
+            await File.WriteAllTextAsync(Path.Combine(source, "Binaries", "ThirdParty", "vendor.so"), "vendor");
+            await File.WriteAllTextAsync(Path.Combine(source, "Intermediate", "stale.obj"), "stale");
+
+            UnrealPluginDescriptor plugin = await UnrealPluginDescriptor.ReadAsync(descriptor);
+            string engine = Path.Combine(root, "EngineRoot");
+            Directory.CreateDirectory(engine);
+            UnrealPluginHostLayout host = await UnrealPluginHostProject.PrepareAsync(engine, plugin);
+
+            Assert.True(File.Exists(host.ProjectPath));
+            string projectJson = await File.ReadAllTextAsync(host.ProjectPath);
+            Assert.True(projectJson.Contains("\"Modules\"", StringComparison.Ordinal));
+            Assert.True(projectJson.Contains("\"UECIHost\"", StringComparison.Ordinal));
+            Assert.True(File.Exists(Path.Combine(host.Root, "Source", "UECIHost.Target.cs")));
+            Assert.True(File.Exists(Path.Combine(host.PluginRoot, "Source", "Fixture", "Fixture.Build.cs")));
+            Assert.False(File.Exists(Path.Combine(host.PluginRoot, "Binaries", "Linux", "stale.so")));
+            Assert.True(File.Exists(Path.Combine(host.PluginRoot, "Binaries", "ThirdParty", "vendor.so")));
+            Assert.False(Directory.Exists(Path.Combine(host.PluginRoot, "Intermediate")));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static Task PluginDiagnosticsParseAsync()
+    {
+        string diagnostics = """
+            ERROR: Could not find definition for module 'Core', (referenced via Fixture.Build.cs)
+            fatal error: 'HAL/Platform.h' file not found
+            System.IO.FileNotFoundException: Could not find file '/tmp/UE/Engine/Source/ThirdParty/Foo/libFoo.a'
+            Linux is not a valid platform to build. Check that the SDK is installed properly.
+            """;
+        IReadOnlyList<UnrealBuildRequirement> requirements = UnrealBuildDiagnosticParser.Parse(diagnostics);
+        Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.Module && r.Value == "Core"));
+        Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.PathSuffix && r.Value == "HAL/Platform.h"));
+        Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.EnginePath
+            && r.Value.Contains("Engine/Source/ThirdParty/Foo/libFoo.a", StringComparison.Ordinal)));
+        Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.PlatformSdk));
+        return Task.CompletedTask;
+    }
+
+    private static Task EpicTrackedIndexFindsAsync()
+    {
+        var index = new EpicTrackedFileIndex(
+        [
+            "Engine/Source/Runtime/Core/Core.Build.cs",
+            "Engine/Source/Runtime/Core/Public/HAL/Platform.h",
+            "Engine/Source/Editor/Other/Core.Build.cs",
+            "Engine/Platforms/Linux/Source/Runtime/LinuxRuntime/LinuxRuntime.Build.cs",
+            "Engine/Plugins/Runtime/Foo/Source/Foo/Foo.Build.cs",
+        ]);
+        IReadOnlyList<string> rules = index.FindModuleRules("Core");
+        Assert.Equal("Engine/Source/Runtime/Core/Core.Build.cs", rules[0]);
+        Assert.Equal("Engine/Source/Runtime/Core/Public/HAL/Platform.h", index.FindBySuffix("HAL/Platform.h")[0]);
+        Assert.True(index.HasPrefix("Engine/Source/Runtime/Core"));
+        Assert.Equal(
+            "Engine/Platforms/Linux/Source/Runtime/LinuxRuntime/LinuxRuntime.Build.cs",
+            index.FindModuleRules("LinuxRuntime")[0]);
+        Assert.Equal(
+            "Engine/Plugins/Runtime/Foo/Source/Foo/Foo.Build.cs",
+            index.FindModuleRules("Foo")[0]);
+        return Task.CompletedTask;
+    }
+
+    private static Task PluginBuildInvocationAsync()
+    {
+        var host = new UnrealPluginHostLayout(
+            "/tmp/host",
+            "/tmp/host/UECIHost.uproject",
+            "/tmp/host/Plugins/Fixture",
+            "/tmp/host/Plugins/Fixture/Fixture.uplugin",
+            "UECIHost",
+            "UECIHostEditor");
+        IReadOnlyList<string> arguments = UnrealPluginBuildInvocation.CreateArguments(
+            host,
+            "UECIHost",
+            "Linux",
+            "Development",
+            ["Fixture", "FixtureNet"],
+            "linux-arm64");
+        Assert.Equal("UECIHost", arguments[0]);
+        Assert.True(arguments.Contains("-Module=Fixture", StringComparer.Ordinal));
+        Assert.True(arguments.Contains("-Module=FixtureNet", StringComparer.Ordinal));
+        Assert.True(arguments.Contains("-Architecture=arm64", StringComparer.Ordinal));
+        Assert.True(arguments.Contains("-Project=/tmp/host/UECIHost.uproject", StringComparer.Ordinal));
+        return Task.CompletedTask;
+    }
+
+    private static async Task PluginPackagerAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string pluginRoot = Path.Combine(root, "host", "Plugins", "Fixture");
+            Directory.CreateDirectory(Path.Combine(pluginRoot, "Binaries", "Linux"));
+            Directory.CreateDirectory(Path.Combine(pluginRoot, "Intermediate"));
+            string descriptor = Path.Combine(pluginRoot, "Fixture.uplugin");
+            await File.WriteAllTextAsync(descriptor, "{ \"FileVersion\": 3 }");
+            await File.WriteAllTextAsync(Path.Combine(pluginRoot, "Binaries", "Linux", "Fixture.so"), "binary");
+            await File.WriteAllTextAsync(Path.Combine(pluginRoot, "Intermediate", "temp.obj"), "temp");
+
+            var host = new UnrealPluginHostLayout(
+                Path.Combine(root, "host"),
+                Path.Combine(root, "host", "UECIHost.uproject"),
+                pluginRoot,
+                descriptor,
+                "UECIHost",
+                "UECIHostEditor");
+            var plugin = new UnrealPluginDescriptor(descriptor, "Fixture", null, Array.Empty<UnrealPluginModule>());
+            string output = Path.Combine(root, "package");
+            string packaged = await UnrealPluginPackager.PackageAsync(
+                host,
+                plugin,
+                output,
+                new UnrealPluginPackageReport(
+                    "Fixture",
+                    new string('a', 40),
+                    "Linux",
+                    "Development",
+                    Array.Empty<string>(),
+                    1,
+                    0,
+                    DateTimeOffset.UnixEpoch));
+
+            Assert.True(File.Exists(Path.Combine(packaged, "Binaries", "Linux", "Fixture.so")));
+            Assert.False(Directory.Exists(Path.Combine(packaged, "Intermediate")));
+            Assert.True(File.Exists(Path.Combine(output, "ueci-build.json")));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+
+    private static async Task LinuxToolchainDescriptorAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string config = Path.Combine(root, "Engine", "Config", "Linux", "Linux_SDK.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(config)!);
+            await File.WriteAllTextAsync(
+                config,
+                "{ \"MainVersion\": \"v26_clang-20.1.8-rockylinux8\" }\n");
+
+            UnrealLinuxNativeToolchainDescriptor descriptor = await UnrealLinuxNativeToolchainDescriptor.ReadAsync(root);
+            Assert.Equal("v26_clang-20.1.8-rockylinux8", descriptor.Version);
+            Assert.Equal(
+                "https://cdn.unrealengine.com/Toolchain_Linux/native-linux-v26_clang-20.1.8-rockylinux8.tar.gz",
+                descriptor.DownloadUri.ToString());
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task LinuxToolchainInstallerAsync()
+    {
+        const string version = "v26_clang-20.1.8-rockylinux8";
+        string root = CreateTempDirectory();
+        try
+        {
+            string config = Path.Combine(root, "Engine", "Config", "Linux", "Linux_SDK.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(config)!);
+            await File.WriteAllTextAsync(config, $"{{ \"MainVersion\": \"{version}\" }}\n");
+
+            byte[] archive = CreateSyntheticToolchainArchive(root, version);
+            var source = new FakeToolchainArchiveSource(archive);
+            var installer = new UnrealLinuxNativeToolchainInstaller(source);
+            string cache = Path.Combine(root, "cache");
+            UnrealLinuxNativeToolchainResult first = await installer.EnsureAsync(root, cache, cacheArchive: true);
+
+            Assert.True(first.Installed);
+            Assert.False(first.ArchiveCacheHit);
+            Assert.Equal((long)archive.Length, first.DownloadedBytes);
+            Assert.Equal(1, source.DownloadCount);
+            Assert.True(File.Exists(Path.Combine(first.ToolchainDirectory, "ToolchainVersion.txt")));
+            Assert.True(File.Exists(Path.Combine(
+                first.ToolchainDirectory, "x86_64-unknown-linux-gnu", "bin", "clang++")));
+
+            UnrealLinuxNativeToolchainResult second = await installer.EnsureAsync(root, cache, cacheArchive: true);
+            Assert.False(second.Installed);
+            Assert.Equal(0L, second.DownloadedBytes);
+            Assert.Equal(1, source.DownloadCount);
+
+            Directory.Delete(first.ToolchainDirectory, recursive: true);
+            UnrealLinuxNativeToolchainResult third = await installer.EnsureAsync(root, cache, cacheArchive: false);
+            Assert.True(third.Installed);
+            Assert.True(third.ArchiveCacheHit);
+            Assert.Equal(0L, third.DownloadedBytes);
+            Assert.Equal(1, source.DownloadCount);
+            Assert.False(File.Exists(Path.Combine(
+                cache, "toolchains", $"native-linux-{version}.tar.gz")));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static byte[] CreateSyntheticToolchainArchive(string tempRoot, string version)
+    {
+        string source = Path.Combine(tempRoot, "toolchain-archive-source");
+        WriteFixtureFile(source, $"{version}/ToolchainVersion.txt", version + "\n");
+        WriteFixtureFile(
+            source,
+            $"{version}/x86_64-unknown-linux-gnu/bin/clang++",
+            "#!/bin/sh\necho synthetic clang\n");
+
+        using var tar = new MemoryStream();
+        TarFile.CreateFromDirectory(source, tar, includeBaseDirectory: false);
+        tar.Position = 0;
+        using var compressed = new MemoryStream();
+        using (var gzip = new GZipStream(compressed, CompressionLevel.SmallestSize, leaveOpen: true))
+        {
+            tar.CopyTo(gzip);
+        }
+        return compressed.ToArray();
+    }
+
     private static async Task RealManifestSmokeAsync(string path)
     {
         GitDependenciesSummary summary = await GitDependenciesManifestReader.ReadSummaryAsync(path);
@@ -616,6 +891,21 @@ internal static class Program
         EpicBundledDotNetSdkPlan sdk = EpicBundledDotNetSdkResolver.Resolve(manifest, "linux-x64");
         Assert.True(sdk.SdkVersion.Major >= 8);
         Assert.True(manifest.Files.Keys.Any(path => path.StartsWith(sdk.SdkPrefix, StringComparison.Ordinal)));
+    }
+
+    private sealed class FakeToolchainArchiveSource(byte[] payload) : IUnrealToolchainArchiveSource
+    {
+        public int DownloadCount { get; private set; }
+
+        public async Task<long> DownloadAsync(
+            Uri uri,
+            Stream destination,
+            CancellationToken cancellationToken = default)
+        {
+            DownloadCount++;
+            await destination.WriteAsync(payload.AsMemory(), cancellationToken).ConfigureAwait(false);
+            return payload.Length;
+        }
     }
 
     private static SyntheticPack CreateSyntheticPack()

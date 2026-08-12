@@ -1,13 +1,14 @@
 using System.Text.Json;
 using Ueci.Epic;
 using Ueci.GitDeps;
+using Ueci.Plugin;
 using Ueci.Unreal;
 
 namespace Ueci.Cli;
 
 internal static class Program
 {
-    private const string CliVersion = "0.3.0-alpha.5";
+    private const string CliVersion = "0.4.0-alpha.1";
 
     public static async Task<int> Main(string[] args)
     {
@@ -30,6 +31,7 @@ internal static class Program
                 "gitdeps" => await RunGitDepsAsync(args[1..]).ConfigureAwait(false),
                 "epic" => await RunEpicAsync(args[1..]).ConfigureAwait(false),
                 "ubt" => await RunUbtAsync(args[1..]).ConfigureAwait(false),
+                "build-plugin" => await RunBuildPluginAsync(args[1..]).ConfigureAwait(false),
                 "init" => await RunInitAsync(args[1..]).ConfigureAwait(false),
                 _ => Fail($"Unknown command '{args[0]}'."),
             };
@@ -374,6 +376,62 @@ internal static class Program
         }
     }
 
+    private static async Task<int> RunBuildPluginAsync(string[] args)
+    {
+        if (args.Length == 0 || IsHelp(args[0]))
+        {
+            PrintBuildPluginHelp();
+            return args.Length == 0 ? 2 : 0;
+        }
+
+        string pluginPath = args[0];
+        string engineRoot = GetOption(args, "--engine-dir") ?? Path.Combine(".ueci", "engine");
+        string output = GetOption(args, "--out") ?? Path.Combine(".ueci", "package");
+        string repo = GetOption(args, "--repo") ?? EpicGitClient.DefaultRepository;
+        string reference = GetOption(args, "--ref") ?? EpicGitClient.DefaultRef;
+        string? tokenEnv = GetOption(args, "--token-env");
+        string runtimeIdentifier = GetOption(args, "--host-rid") ?? UnrealHostRuntime.DetectRuntimeIdentifier();
+        string platform = GetOption(args, "--platform") ?? UnrealPluginBuilder.PlatformForHostRuntime(runtimeIdentifier);
+        string configuration = GetOption(args, "--configuration") ?? "Development";
+        string? maxRaw = GetOption(args, "--max-discovery-passes");
+        int maxPasses = maxRaw is null
+            ? 16
+            : int.TryParse(maxRaw, out int parsed)
+                ? parsed
+                : throw new ArgumentException("--max-discovery-passes must be an integer.");
+
+        var builder = new UnrealPluginBuilder();
+        UnrealPluginBuildResult result = await builder.BuildAsync(
+            new UnrealPluginBuildOptions(
+                pluginPath,
+                engineRoot,
+                repo,
+                reference,
+                tokenEnv,
+                GetFetchOptions(args),
+                runtimeIdentifier,
+                platform,
+                configuration,
+                output,
+                maxPasses,
+                Progress: message => Console.Error.WriteLine($"[ueci] {message}")))
+            .ConfigureAwait(false);
+
+        Console.WriteLine($"Plugin:             {result.PluginName}");
+        Console.WriteLine($"Engine root:        {result.EngineRoot}");
+        Console.WriteLine($"Epic commit:        {result.EpicCommit}");
+        Console.WriteLine($"Platform:           {result.Platform}");
+        Console.WriteLine($"Configuration:      {result.Configuration}");
+        Console.WriteLine($"Build passes:       {result.BuildPasses:N0}");
+        Console.WriteLine($"Downloaded:         {FormatBytes(result.DownloadedBytes)}");
+        Console.WriteLine($"Package:            {result.PackageDirectory}");
+        foreach (UnrealPluginBuildPhaseResult phase in result.Phases)
+        {
+            Console.WriteLine($"Built target:       {phase.Target} [{string.Join(", ", phase.Modules)}] in {phase.Passes} pass(es)");
+        }
+        return 0;
+    }
+
     private static string FindBundledDotNetRoot(string engineRoot, string runtimeIdentifier)
     {
         string baseRoot = Path.Combine(
@@ -507,9 +565,10 @@ internal static class Program
               ueci gitdeps <command> ...
               ueci epic <command> ...
               ueci ubt <command> ...
+              ueci build-plugin <Plugin.uplugin> [options]
               ueci --version
 
-            Run 'ueci gitdeps --help', 'ueci epic --help' or 'ueci ubt --help' for command details.
+            Run 'ueci build-plugin --help' or the command-specific help for details.
             """);
     }
 
@@ -529,6 +588,32 @@ internal static class Program
               --no-pack-cache            Delete compressed packs after extraction.
               --max-concurrent-packs N   Download/extract up to N packs concurrently (default: 2).
               --json                     Emit machine-readable output.
+            """);
+    }
+
+    private static void PrintBuildPluginHelp()
+    {
+        Console.WriteLine("""
+            Build a code plugin through the lazy Epic engine view:
+              ueci build-plugin <Plugin.uplugin> [options]
+
+            Options:
+              --engine-dir PATH          Lazy/materialized engine root (default: .ueci/engine).
+              --out PATH                 Package output root (default: .ueci/package).
+              --ref REF                  Epic Unreal Engine ref (default: release).
+              --repo URL                 Epic source repository override.
+              --token-env NAME           Environment variable containing the read-only GitHub token.
+              --host-rid RID             Host runtime override.
+              --platform PLATFORM        UBT platform override (default: derived from host RID).
+              --configuration CONFIG     UBT configuration (default: Development).
+              --max-discovery-passes N   Maximum lazy materialization/retry passes (default: 16).
+              --cache-dir PATH           Override the GitDependencies cache.
+              --no-pack-cache            Discard compressed GitDependencies packs after extraction.
+              --max-concurrent-packs N   Download/extract up to N packs concurrently.
+
+            UECI creates an ephemeral host project, asks the real UBT to build only the plugin modules,
+            materializes newly exposed Epic Git/GitDependencies requirements, retries, and packages the
+            resulting plugin without committing or redistributing Unreal Engine content.
             """);
     }
 

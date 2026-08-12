@@ -240,6 +240,30 @@ public sealed class EpicGitClient
             new[] { result.StandardOutput.Trim(), result.StandardError.Trim() }
                 .Where(value => value.Length != 0));
 
+    public async Task<IReadOnlyList<string>> ListTrackedFilesAsync(
+        string repositoryDirectory,
+        string? tokenEnvironmentVariable = null,
+        CancellationToken cancellationToken = default)
+    {
+        string token = GitHubReadOnlyCredential.GetRequiredToken(tokenEnvironmentVariable);
+        IReadOnlyDictionary<string, string> environment = GitHubReadOnlyCredential.CreateGitEnvironment(token);
+        string root = Path.GetFullPath(repositoryDirectory);
+        string commit = await GetPinnedCommitAsync(root, cancellationToken).ConfigureAwait(false);
+
+        GitProcessResult result = await RequireSuccessAsync(
+            root,
+            ["ls-tree", "-r", "--name-only", commit],
+            environment,
+            cancellationToken).ConfigureAwait(false);
+
+        return result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(path => path.Replace('\\', '/'))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
+    }
+
     public async Task<string> GetPinnedCommitAsync(
         string repositoryDirectory,
         CancellationToken cancellationToken = default)

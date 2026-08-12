@@ -47,6 +47,7 @@ public sealed class UnrealBuildToolRunner
             ubt.EngineRoot,
             processArguments,
             environment,
-            cancellationToken).ConfigureAwait(false);
+            unsetEnvironment: ["LINUX_ROOT", "LINUX_MULTIARCH_ROOT"],
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 }

@@ -57,7 +57,7 @@ public sealed class UnrealBuildToolCompiler
             root,
             ["build", project, "--nologo", "--verbosity:minimal"],
             environment,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken: cancellationToken).ConfigureAwait(false);
 
         if (!process.Succeeded)
         {

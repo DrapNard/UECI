@@ -1,0 +1,16 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1",
+  "FriendlyName": "UECI Minimal Fixture",
+  "Description": "Minimal runtime module used to smoke-test UECI plugin builds.",
+  "Category": "UECI",
+  "CanContainContent": false,
+  "Modules": [
+    {
+      "Name": "UECIMinimal",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ]
+}

@@ -1,5 +1,5 @@
-name: UECI UnrealBuildTool bootstrap
-description: Build and bootstrap UnrealBuildTool from Epic Git + GitDependencies.
+name: UECI Unreal plugin build
+description: Bootstrap UnrealBuildTool lazily and optionally build/package an Unreal Engine code plugin.
 author: UECI contributors
 branding:
   icon: box
@@ -24,6 +24,22 @@ inputs:
     description: Keep downloaded .gz packs after verified blobs are extracted.
     required: false
     default: "false"
+  plugin-path:
+    description: Optional .uplugin path. When empty, the action only bootstraps/probes UBT.
+    required: false
+    default: ""
+  package-dir:
+    description: Output root for build-plugin packages.
+    required: false
+    default: .ueci/package
+  platform:
+    description: Optional UBT target platform override (Linux, Win64, Mac).
+    required: false
+    default: ""
+  configuration:
+    description: UBT configuration used by build-plugin.
+    required: false
+    default: Development
 runs:
   using: composite
   steps:
@@ -32,19 +48,55 @@ runs:
       with:
         dotnet-version: 8.0.x
     - name: Bootstrap UnrealBuildTool
+      if: ${{ inputs.plugin-path == '' }}
       shell: bash
       env:
         UECI_EPIC_GITHUB_TOKEN: ${{ inputs.epic-token }}
+        UECI_ACTION_ENGINE_DIR: ${{ inputs.engine-dir }}
+        UECI_ACTION_CACHE_DIR: ${{ inputs.cache-dir }}
+        UECI_ACTION_ENGINE_REF: ${{ inputs.engine-ref }}
+        UECI_ACTION_CACHE_PACKS: ${{ inputs.cache-compressed-packs }}
       run: |
         set -euo pipefail
         extra=()
-        if [[ "${{ inputs.cache-compressed-packs }}" != "true" ]]; then
+        if [[ "$UECI_ACTION_CACHE_PACKS" != "true" ]]; then
           extra+=(--no-pack-cache)
         fi
         dotnet run --project "$GITHUB_ACTION_PATH/src/Ueci.Cli/Ueci.Cli.csproj" \
           -c Release -- \
           ubt bootstrap \
-          --dir "${{ inputs.engine-dir }}" \
-          --cache-dir "${{ inputs.cache-dir }}" \
-          --ref "${{ inputs.engine-ref }}" \
+          --dir "$UECI_ACTION_ENGINE_DIR" \
+          --cache-dir "$UECI_ACTION_CACHE_DIR" \
+          --ref "$UECI_ACTION_ENGINE_REF" \
+          "${extra[@]}"
+    - name: Build Unreal plugin
+      if: ${{ inputs.plugin-path != '' }}
+      shell: bash
+      env:
+        UECI_EPIC_GITHUB_TOKEN: ${{ inputs.epic-token }}
+        UECI_ACTION_PLUGIN_PATH: ${{ inputs.plugin-path }}
+        UECI_ACTION_ENGINE_DIR: ${{ inputs.engine-dir }}
+        UECI_ACTION_CACHE_DIR: ${{ inputs.cache-dir }}
+        UECI_ACTION_PACKAGE_DIR: ${{ inputs.package-dir }}
+        UECI_ACTION_CONFIGURATION: ${{ inputs.configuration }}
+        UECI_ACTION_ENGINE_REF: ${{ inputs.engine-ref }}
+        UECI_ACTION_PLATFORM: ${{ inputs.platform }}
+        UECI_ACTION_CACHE_PACKS: ${{ inputs.cache-compressed-packs }}
+      run: |
+        set -euo pipefail
+        extra=()
+        if [[ "$UECI_ACTION_CACHE_PACKS" != "true" ]]; then
+          extra+=(--no-pack-cache)
+        fi
+        if [[ -n "$UECI_ACTION_PLATFORM" ]]; then
+          extra+=(--platform "$UECI_ACTION_PLATFORM")
+        fi
+        dotnet run --project "$GITHUB_ACTION_PATH/src/Ueci.Cli/Ueci.Cli.csproj" \
+          -c Release -- \
+          build-plugin "$UECI_ACTION_PLUGIN_PATH" \
+          --engine-dir "$UECI_ACTION_ENGINE_DIR" \
+          --cache-dir "$UECI_ACTION_CACHE_DIR" \
+          --out "$UECI_ACTION_PACKAGE_DIR" \
+          --configuration "$UECI_ACTION_CONFIGURATION" \
+          --ref "$UECI_ACTION_ENGINE_REF" \
           "${extra[@]}"

@@ -14,6 +14,7 @@ internal static class ExternalProcess
         string workingDirectory,
         IReadOnlyList<string> arguments,
         IReadOnlyDictionary<string, string>? environment = null,
+        IReadOnlyCollection<string>? unsetEnvironment = null,
         CancellationToken cancellationToken = default)
     {
         var info = new ProcessStartInfo(executable)
@@ -33,6 +34,13 @@ internal static class ExternalProcess
             foreach ((string key, string value) in environment)
             {
                 info.Environment[key] = value;
+            }
+        }
+        if (unsetEnvironment is not null)
+        {
+            foreach (string key in unsetEnvironment)
+            {
+                info.Environment.Remove(key);
             }
         }
 
