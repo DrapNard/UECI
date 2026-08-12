@@ -57,6 +57,12 @@ public static class UnrealPluginBuildInvocation
             $"-Project={host.ProjectPath}",
             "-NoHotReloadFromIDE",
             "-NoUBTMakefiles",
+            // UE 5.8 Linux can append Engine/Binaries/Linux/dump_syms to the link script.
+            // Synthetic CI validation does not consume runtime crash symbols, and the minimal
+            // Engine intentionally does not materialize that standalone helper. Keep the command
+            // line guard in addition to BuildConfiguration.bDisableDumpSyms so UBT cannot inherit
+            // a conflicting config scope.
+            "-NoDumpSyms",
             "-Progress",
         };
 

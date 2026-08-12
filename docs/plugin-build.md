@@ -96,7 +96,7 @@ By default it builds `fixtures/MinimalPlugin/UECIMinimal.uplugin`, a single Runt
 Some UE 5.8 source builds pre-create Unreal Build Accelerator before platform/toolchain validation even when CI-oriented XML configuration asks for local executors. UECI therefore resolves `Engine/Source/Programs/Shared/EpicGames.UBA/Library.props` together with the host-specific `Engine/Binaries/*/UnrealBuildAccelerator` payload during the UBT bootstrap, before `UnrealBuildTool.csproj` is compiled. This matters on a warm cache because adding the native UBA payload after UBT was already built may leave the managed UBA integration unavailable. Missing-UBA diagnostics are still handled as a compatibility fallback; that fallback recompiles UBT after materializing UBA. The full UBT log at `Engine/Programs/UnrealBuildTool/Log.txt` is merged with stdout/stderr before requirement parsing, because that log can contain the Linux SDK requirement that the short console error omits.
 
 
-## Mounted backend (v0.5 alpha.10)
+## Mounted backend (v0.5 alpha.11)
 
 On Linux x64, `--backend fuse` bypasses the materialized discovery loop. Build mode first exposes a commit-scoped minimal Engine profile (or the embedded alpha.6 working-set seed); if that working set proves incomplete, UECI retries once with the complete virtual namespace and learns the additional lower paths for the next run. The generic `ueci mount` command still exposes every tracked Epic Git/GitDependencies path. UBT itself is compiled inside the mount with Epic's bundled .NET SDK. The synthetic project and plugin copy remain outside the mount, while Engine-generated outputs use the persistent COW upper.
 
@@ -106,6 +106,8 @@ Alpha.6 keeps the FUSE protocol connection persistent per worker, enables kernel
 Alpha.7 adds a second layer: the mounted **build** backend no longer has to expose the complete Engine after a commit has been learned. A commit profile stores exact Git entries plus only the GitDependencies files observed by the build. Profiles live under the shared UECI cache rather than the ephemeral build workspace. Unknown commits first use an embedded Linux x64 seed derived from the alpha.6 smoke run; a missing module/source requirement triggers one complete dynamic retry, and that retry writes the exact profile used by following jobs. `ueci mount` itself is unchanged and still exposes the complete namespace.
 
 Alpha.8 keeps that profile model and fixes the final Program-host link exposed by the first real alpha.7 run. `UECIHost` is still intentionally independent from Engine `Launch`; for the Linux runtime validation target it provides a tiny never-executed `main` plus the two Core globals normally owned by Launch. Plugin modules are emitted directly into `ExtraModuleNames`, while linker failures are excluded from the profile-fallback heuristic so an ordinary native error cannot cause a second full-Engine pass.
+
+Alpha.11 disables Linux `dump_syms` with both the exact UE 5.8 XML property `bDisableDumpSyms=true` and the documented `-NoDumpSyms` UBT argument. The synthetic validation executable is never distributed, so runtime crash-symbol extraction is intentionally outside the minimal Engine working set.
 
 Alpha.9 keeps the synthetic host lean through the post-link stage by setting `bAllowRuntimeSymbolFiles = false` on `UECIHost`. Runtime symbol extraction is not useful for UECI's never-executed validation binary, and disabling it prevents Linux UBT from requiring the standalone `dump_syms` tool solely to finish the smoke build.
 

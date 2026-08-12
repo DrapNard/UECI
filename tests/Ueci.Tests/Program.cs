@@ -1090,7 +1090,8 @@ internal static class Program
             string buildConfigXml = await File.ReadAllTextAsync(buildConfig);
             Assert.True(buildConfigXml.Contains("<bAllowUBAExecutor>false</bAllowUBAExecutor>", StringComparison.Ordinal));
             Assert.True(buildConfigXml.Contains("<bAllowUBALocalExecutor>false</bAllowUBALocalExecutor>", StringComparison.Ordinal));
-            Assert.True(buildConfigXml.Contains("<bDisableDumpSYMs>true</bDisableDumpSYMs>", StringComparison.Ordinal));
+            Assert.True(buildConfigXml.Contains("<bDisableDumpSyms>true</bDisableDumpSyms>", StringComparison.Ordinal));
+            Assert.False(buildConfigXml.Contains("bDisableDumpSYMs", StringComparison.Ordinal));
             string engineBuildConfig = Path.Combine(engine, "Engine", "Saved", "UnrealBuildTool", "BuildConfiguration.xml");
             Assert.True(File.Exists(engineBuildConfig));
             Assert.Equal(buildConfigXml, await File.ReadAllTextAsync(engineBuildConfig));
@@ -1311,6 +1312,7 @@ internal static class Program
         Assert.True(arguments.Contains("-Module=FixtureNet", StringComparer.Ordinal));
         Assert.True(arguments.Contains("-Architecture=arm64", StringComparer.Ordinal));
         Assert.True(arguments.Contains("-Project=/tmp/host/UECIHost.uproject", StringComparer.Ordinal));
+        Assert.True(arguments.Contains("-NoDumpSyms", StringComparer.Ordinal));
         return Task.CompletedTask;
     }
 

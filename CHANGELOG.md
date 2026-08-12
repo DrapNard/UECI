@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0-alpha.11] - 2026-08-13
+
+### Fixed
+
+- Corrects the UE 5.8 XML setting name from `bDisableDumpSYMs` to the case-sensitive documented `bDisableDumpSyms`. Alpha.10 wrote the wrong property casing, so UBT silently kept `dump_syms` in the Linux post-link script.
+- Adds the documented `-NoDumpSyms` UBT command-line guard to synthetic plugin validation builds as a second, scope-independent protection. The XML policy remains in Engine, Project, and isolated HOME configuration scopes.
+
+### Performance
+
+- Keeps the persisted 5,612-Git-file / 81-GitDependencies fast profile unchanged. The alpha.10 warm smoke still reached the final link in about 1m44s wall-clock with UHT at ~11 ms; alpha.11 only removes the unnecessary symbol-extraction post-link dependency.
+
+### Changed
+
+- CLI version advanced to `0.5.0-alpha.11`.
+
 ## [0.5.0-alpha.10] - 2026-08-13
 
 ### Fixed
