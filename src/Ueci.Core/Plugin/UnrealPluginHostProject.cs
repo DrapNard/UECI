@@ -1,3 +1,4 @@
+using Ueci.Unreal;
 using System.Text.Json;
 
 namespace Ueci.Plugin;
@@ -40,7 +41,7 @@ public static class UnrealPluginHostProject
         string projectPath = Path.Combine(workspace, "UECIHost.uproject");
         await WriteProjectAsync(projectPath, plugin.Name, cancellationToken).ConfigureAwait(false);
         await WriteHostSourceAsync(workspace, cancellationToken).ConfigureAwait(false);
-        await WriteBuildConfigurationAsync(workspace, cancellationToken).ConfigureAwait(false);
+        await WriteBuildConfigurationAsync(engineRoot, workspace, cancellationToken).ConfigureAwait(false);
 
         return new UnrealPluginHostLayout(
             workspace,
@@ -140,26 +141,27 @@ public static class UnrealPluginHostProject
     }
 
     private static async Task WriteBuildConfigurationAsync(
+        string engineRoot,
         string workspace,
         CancellationToken cancellationToken)
     {
-        string directory = Path.Combine(workspace, "Saved", "UnrealBuildTool");
-        Directory.CreateDirectory(directory);
-        string path = Path.Combine(directory, "BuildConfiguration.xml");
-        await File.WriteAllTextAsync(
-            path,
-            """
-            <?xml version="1.0" encoding="utf-8" ?>
-            <Configuration xmlns="https://www.unrealengine.com/BuildConfiguration">
-              <BuildConfiguration>
-                <bAllowUBAExecutor>false</bAllowUBAExecutor>
-                <bAllowXGE>false</bAllowXGE>
-                <bAllowFASTBuild>false</bAllowFASTBuild>
-                <bAllowSNDBS>false</bAllowSNDBS>
-              </BuildConfiguration>
-            </Configuration>
-            """ + Environment.NewLine,
-            cancellationToken).ConfigureAwait(false);
+        // UE 5.8 still evaluates both UBA switches when selecting an executor.
+        // bAllowUBALocalExecutor is deprecated, but leaving it at its default can still
+        // cause ExecutorFactory to pre-create UBA before platform/toolchain validation.
+        // Write the same policy at Engine and Project scope; UnrealBuildToolRunner also
+        // writes it into UECI's isolated user profile before every invocation.
+        string[] directories =
+        [
+            Path.Combine(Path.GetFullPath(engineRoot), "Engine", "Saved", "UnrealBuildTool"),
+            Path.Combine(workspace, "Saved", "UnrealBuildTool"),
+        ];
+
+        foreach (string directory in directories)
+        {
+            await UnrealBuildToolConfiguration.WriteHermeticLocalExecutorAsync(
+                directory,
+                cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private static void CopyDirectory(string sourceRoot, string destinationRoot, string relative)

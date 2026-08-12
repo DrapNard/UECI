@@ -720,6 +720,10 @@ internal static class Program
             Assert.True(File.Exists(buildConfig));
             string buildConfigXml = await File.ReadAllTextAsync(buildConfig);
             Assert.True(buildConfigXml.Contains("<bAllowUBAExecutor>false</bAllowUBAExecutor>", StringComparison.Ordinal));
+            Assert.True(buildConfigXml.Contains("<bAllowUBALocalExecutor>false</bAllowUBALocalExecutor>", StringComparison.Ordinal));
+            string engineBuildConfig = Path.Combine(engine, "Engine", "Saved", "UnrealBuildTool", "BuildConfiguration.xml");
+            Assert.True(File.Exists(engineBuildConfig));
+            Assert.Equal(buildConfigXml, await File.ReadAllTextAsync(engineBuildConfig));
             Assert.True(File.Exists(Path.Combine(host.PluginRoot, "Source", "Fixture", "Fixture.Build.cs")));
             Assert.False(File.Exists(Path.Combine(host.PluginRoot, "Binaries", "Linux", "stale.so")));
             Assert.True(File.Exists(Path.Combine(host.PluginRoot, "Binaries", "ThirdParty", "vendor.so")));
@@ -737,6 +741,9 @@ internal static class Program
             ERROR: Could not find definition for module 'Core', (referenced via Fixture.Build.cs)
             fatal error: 'HAL/Platform.h' file not found
             System.IO.FileNotFoundException: Could not find file '/tmp/UE/Engine/Source/ThirdParty/Foo/libFoo.a'
+            Unable to find valid SDK(s) for Linux:
+              Found Sdk Version, Required=v26_clang-20.1.8-rockylinux8.
+              Found AutoSdk Version, Required=v26_clang-20.1.8-rockylinux8.
             Linux is not a valid platform to build. Check that the SDK is installed properly.
             """;
         IReadOnlyList<UnrealBuildRequirement> requirements = UnrealBuildDiagnosticParser.Parse(diagnostics);
