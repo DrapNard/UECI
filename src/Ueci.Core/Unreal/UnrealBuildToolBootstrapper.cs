@@ -28,10 +28,12 @@ public sealed record UnrealBuildToolBootstrapResult(
 
 public sealed class UnrealBuildToolBootstrapper
 {
-    private static readonly string[] GitSeedPaths =
+    private static readonly string[] GitSeedDirectories =
     [
-        "Engine/Build/Build.version",
-        "Engine/Build/Commit.gitdeps.xml",
+        // Cone-mode sparse checkout keeps the Git source seed bounded while allowing backfill
+        // to batch the selected promisor blobs. Engine/Build is intentionally included as a
+        // directory because cone mode operates on directories, not individual files.
+        "Engine/Build",
         "Engine/Source/Programs/UnrealBuildTool",
         "Engine/Source/Programs/Shared",
     ];
@@ -88,11 +90,12 @@ public sealed class UnrealBuildToolBootstrapper
         // A source checkout does not contain a precompiled UnrealBuildTool.dll. Materialize the
         // C# project and its shared project references first; Git's blobless promisor remote only
         // downloads the source blobs touched by these pathspecs.
-        await _epicClient.MaterializePathsAsync(
+        await _epicClient.MaterializeSparseDirectoriesAsync(
             root,
-            GitSeedPaths,
+            GitSeedDirectories,
             options.TokenEnvironmentVariable,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            options.Progress).ConfigureAwait(false);
 
         string manifestPath = Path.Combine(root, "Engine", "Build", "Commit.gitdeps.xml");
         if (!File.Exists(manifestPath))

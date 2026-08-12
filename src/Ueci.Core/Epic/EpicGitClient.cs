@@ -111,6 +111,135 @@ public sealed class EpicGitClient
         await RequireSuccessAsync(root, arguments, environment, cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task MaterializeSparseDirectoriesAsync(
+        string repositoryDirectory,
+        IEnumerable<string> engineDirectories,
+        string? tokenEnvironmentVariable = null,
+        CancellationToken cancellationToken = default,
+        Action<string>? progress = null)
+    {
+        ArgumentNullException.ThrowIfNull(engineDirectories);
+        string token = GitHubReadOnlyCredential.GetRequiredToken(tokenEnvironmentVariable);
+        IReadOnlyDictionary<string, string> environment = GitHubReadOnlyCredential.CreateGitEnvironment(token);
+        string root = Path.GetFullPath(repositoryDirectory);
+        string commit = await GetPinnedCommitAsync(root, cancellationToken).ConfigureAwait(false);
+        string[] normalizedDirectories = engineDirectories
+            .Select(NormalizeGitPathspec)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (normalizedDirectories.Length == 0)
+        {
+            throw new ArgumentException(
+                "At least one Epic source directory is required.",
+                nameof(engineDirectories));
+        }
+
+        int trackedPathCount = await CountTrackedPathsAsync(
+            root,
+            commit,
+            normalizedDirectories,
+            environment,
+            cancellationToken).ConfigureAwait(false);
+        progress?.Invoke($"Epic sparse source seed contains {trackedPathCount:N0} tracked files.");
+
+        await RequireSuccessAsync(
+            root,
+            ["sparse-checkout", "init", "--cone"],
+            environment,
+            cancellationToken).ConfigureAwait(false);
+
+        var sparseSetArguments = new List<string>(2 + normalizedDirectories.Length)
+        {
+            "sparse-checkout",
+            "set",
+        };
+        sparseSetArguments.AddRange(normalizedDirectories);
+        await RequireSuccessAsync(
+            root, sparseSetArguments, environment, cancellationToken).ConfigureAwait(false);
+
+        // Populate HEAD/index without touching the working tree. This gives `git backfill --sparse`
+        // a current sparse specification while still avoiding lazy blob materialization.
+        await RequireSuccessAsync(
+            root,
+            ["reset", "--mixed", commit],
+            environment,
+            cancellationToken).ConfigureAwait(false);
+
+        progress?.Invoke("Batch-prefetching sparse Epic Git blobs with git backfill...");
+        GitProcessResult backfill = await GitProcess.RunAsync(
+            root,
+            ["backfill", "--sparse"],
+            environment,
+            cancellationToken).ConfigureAwait(false);
+
+        if (backfill.ExitCode == 0)
+        {
+            progress?.Invoke("git backfill completed; populating the sparse working tree from local objects...");
+        }
+        else if (IsBackfillUnavailable(backfill))
+        {
+            progress?.Invoke(
+                "git backfill is unavailable; populating the sparse working tree through Git's lazy promisor fallback. " +
+                "Upgrade Git for substantially faster Unreal source bootstrap.");
+        }
+        else
+        {
+            string diagnostics = CombineDiagnostics(backfill);
+            throw new InvalidOperationException(
+                "git backfill failed while prefetching the Epic sparse source seed."
+                + (diagnostics.Length == 0 ? string.Empty : Environment.NewLine + diagnostics));
+        }
+
+        // reset --hard honors the sparse-checkout specification. If backfill succeeded this is local-only;
+        // on older Git it becomes the compatibility lazy-fetch path. It does not remove untracked UECI
+        // state or generated build outputs.
+        await RequireSuccessAsync(
+            root,
+            ["reset", "--hard", "--quiet", commit],
+            environment,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<int> CountTrackedPathsAsync(
+        string root,
+        string commit,
+        IReadOnlyList<string> normalizedPaths,
+        IReadOnlyDictionary<string, string> environment,
+        CancellationToken cancellationToken)
+    {
+        var arguments = new List<string>(5 + normalizedPaths.Count)
+        {
+            "ls-tree",
+            "-r",
+            "--name-only",
+            commit,
+            "--",
+        };
+        arguments.AddRange(normalizedPaths);
+
+        GitProcessResult result = await RequireSuccessAsync(
+            root, arguments, environment, cancellationToken).ConfigureAwait(false);
+
+        return result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Length;
+    }
+
+    private static bool IsBackfillUnavailable(GitProcessResult result)
+    {
+        string diagnostics = result.StandardOutput + "\n" + result.StandardError;
+        return diagnostics.Contains("'backfill' is not a git command", StringComparison.OrdinalIgnoreCase)
+            || diagnostics.Contains("backfill is not a git command", StringComparison.OrdinalIgnoreCase)
+            || diagnostics.Contains("unknown subcommand: backfill", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string CombineDiagnostics(GitProcessResult result)
+        => string.Join(
+            Environment.NewLine,
+            new[] { result.StandardOutput.Trim(), result.StandardError.Trim() }
+                .Where(value => value.Length != 0));
+
     public async Task<string> GetPinnedCommitAsync(
         string repositoryDirectory,
         CancellationToken cancellationToken = default)

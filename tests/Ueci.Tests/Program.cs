@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
@@ -18,6 +19,7 @@ internal static class Program
         ("path normalization is platform neutral", PathNormalizationAsync),
         ("materialization path cannot escape root", MaterializationPathSafetyAsync),
         ("git credential is process-only config", GitCredentialEnvironmentAsync),
+        ("Epic sparse source seed materializes from a local partial clone", EpicSparseSourceMaterializationAsync),
         ("materializer extracts multiple blobs in one pack download", MaterializerExtractsMultiBlobPackAsync),
         ("materializer reuses compressed pack cache", MaterializerReusesPackCacheAsync),
         ("materializer repairs corrupt compressed pack cache", MaterializerRepairsCorruptPackCacheAsync),
@@ -146,6 +148,106 @@ internal static class Program
         Assert.True(env["GIT_CONFIG_VALUE_0"].StartsWith("AUTHORIZATION: basic ", StringComparison.Ordinal));
         Assert.False(env["GIT_CONFIG_VALUE_0"].Contains("super-secret", StringComparison.Ordinal));
         return Task.CompletedTask;
+    }
+
+    private static async Task EpicSparseSourceMaterializationAsync()
+    {
+        string root = CreateTempDirectory();
+        const string tokenVariable = "UECI_TEST_EPIC_TOKEN";
+        string? previousToken = Environment.GetEnvironmentVariable(tokenVariable);
+
+        try
+        {
+            string source = Path.Combine(root, "source");
+            string bare = Path.Combine(root, "remote.git");
+            string clientRoot = Path.Combine(root, "client");
+            Directory.CreateDirectory(source);
+
+            await RunGitAsync(source, ["init", "--quiet", "--initial-branch=main"]);
+            await RunGitAsync(source, ["config", "user.name", "UECI Tests"]);
+            await RunGitAsync(source, ["config", "user.email", "ueci@example.invalid"]);
+
+            WriteFixtureFile(source, "Engine/Build/Build.version", "{}\n");
+            WriteFixtureFile(source, "Engine/Build/Commit.gitdeps.xml", "<DependencyManifest />\n");
+            WriteFixtureFile(source, "Engine/Source/Programs/UnrealBuildTool/UnrealBuildTool.csproj", "<Project />\n");
+            WriteFixtureFile(source, "Engine/Source/Programs/Shared/EpicGames.Core/Core.cs", "namespace Fixture;\n");
+            WriteFixtureFile(source, "Other/Excluded/large.bin", "must-not-materialize\n");
+
+            await RunGitAsync(source, ["add", "."]);
+            await RunGitAsync(source, ["commit", "--quiet", "-m", "fixture"]);
+            await RunGitAsync(root, ["clone", "--quiet", "--bare", source, bare]);
+            await RunGitAsync(bare, ["config", "uploadpack.allowFilter", "true"]);
+
+            Environment.SetEnvironmentVariable(tokenVariable, "test-token");
+            var client = new EpicGitClient();
+            await client.InitializePartialRepositoryAsync(
+                clientRoot,
+                new Uri(bare).AbsoluteUri,
+                "main",
+                tokenVariable);
+
+            var progress = new List<string>();
+            await client.MaterializeSparseDirectoriesAsync(
+                clientRoot,
+                [
+                    "Engine/Build",
+                    "Engine/Source/Programs/UnrealBuildTool",
+                    "Engine/Source/Programs/Shared",
+                ],
+                tokenVariable,
+                progress: progress.Add);
+
+            Assert.True(File.Exists(Path.Combine(clientRoot, "Engine", "Build", "Commit.gitdeps.xml")));
+            Assert.True(File.Exists(Path.Combine(
+                clientRoot, "Engine", "Source", "Programs", "UnrealBuildTool", "UnrealBuildTool.csproj")));
+            Assert.True(File.Exists(Path.Combine(
+                clientRoot, "Engine", "Source", "Programs", "Shared", "EpicGames.Core", "Core.cs")));
+            Assert.False(File.Exists(Path.Combine(clientRoot, "Other", "Excluded", "large.bin")));
+            Assert.True(progress.Any(line => line.Contains("sparse source seed contains", StringComparison.Ordinal)));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(tokenVariable, previousToken);
+            DeleteDirectory(root);
+        }
+    }
+
+    private static void WriteFixtureFile(string root, string relativePath, string content)
+    {
+        string path = Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, content);
+    }
+
+    private static async Task RunGitAsync(string workingDirectory, IReadOnlyList<string> arguments)
+    {
+        var info = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = workingDirectory,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (string argument in arguments)
+        {
+            info.ArgumentList.Add(argument);
+        }
+
+        using var process = new Process { StartInfo = info };
+        process.Start();
+        Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+        Task<string> stderr = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync().ConfigureAwait(false);
+        string standardOutput = await stdout.ConfigureAwait(false);
+        string standardError = await stderr.ConfigureAwait(false);
+        if (process.ExitCode != 0)
+        {
+            throw new Exception(
+                $"git {string.Join(" ", arguments)} failed with {process.ExitCode}: " +
+                string.Join(Environment.NewLine, new[] { standardOutput.Trim(), standardError.Trim() }
+                    .Where(value => value.Length != 0)));
+        }
     }
 
     private static async Task MaterializerExtractsMultiBlobPackAsync()
