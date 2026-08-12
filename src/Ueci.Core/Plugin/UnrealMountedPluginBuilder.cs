@@ -109,13 +109,11 @@ internal sealed class UnrealMountedPluginBuilder
             context.FileSystem.UpperRoot,
             context.Commit,
             cancellationToken).ConfigureAwait(false);
-        if (forceDynamicProfile)
-        {
-            // The fallback exists because the previous visible source set was incomplete. Keep the
-            // commit-identical UBT managed binary, but force Engine Rules to be regenerated while
-            // the complete namespace is visible so a partial UE5Rules.dll cannot survive relearning.
-            artifactCache.ClearRuleArtifacts(context.FileSystem.UpperRoot);
-        }
+        // Rules assemblies are profile-sensitive: the same Epic commit can legitimately be mounted
+        // with the embedded seed, a learned minimal profile, or the complete dynamic namespace. Keep
+        // the commit-scoped UBT binary hot, but always rebuild UE5Rules/UE5ProgramRules against the
+        // namespace that is actually visible for this build (only a few seconds on the optimized VFS).
+        artifactCache.ClearRuleArtifacts(context.FileSystem.UpperRoot);
         bool reusableUbt = restoredArtifacts
             && artifactCache.HasReusableUnrealBuildTool(context.FileSystem.UpperRoot);
 
@@ -126,7 +124,7 @@ internal sealed class UnrealMountedPluginBuilder
                 context.Manifest,
                 options.RuntimeIdentifier);
 
-            // A warm commit cache already contains UBT + Rules outputs, so there is no reason to
+            // A warm commit cache already contains UBT managed outputs, so there is no reason to
             // hydrate their managed source trees again. On a cold cache, batch-prefetching these
             // stable bootstrap roots avoids thousands of individual promisor round-trips.
             if (!reusableUbt)
@@ -146,7 +144,7 @@ internal sealed class UnrealMountedPluginBuilder
             }
             else
             {
-                options.Progress?.Invoke("[vfs/artifacts] Warm UBT/Rules cache: skipping managed bootstrap source prefetch.");
+                options.Progress?.Invoke("[vfs/artifacts] Warm UBT cache: skipping managed bootstrap source prefetch.");
             }
 
             var fuse = new LinuxFuseMount();
@@ -385,23 +383,44 @@ internal sealed class UnrealMountedPluginBuilder
         }
 
         string text = exception.ToString();
-        string[] indicators =
+
+        // A complete Engine namespace cannot repair a genuine compile/link error. In alpha.7 the
+        // linker failure for the synthetic Program target was followed by harmless UBA probe text
+        // containing "No such file or directory", which made the broad heuristic perform a second
+        // full-Engine build for no benefit. Keep linker/compiler failures authoritative unless they
+        // also contain one of the explicit missing-Engine diagnostics below.
+        bool nativeBuildFailure = text.Contains("undefined symbol:", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("linker command failed", StringComparison.OrdinalIgnoreCase);
+
+        string[] explicitProfileIndicators =
         [
             "Could not find definition for module",
             "Unable to find module",
             "Could not find definition for target",
             "Unable to instantiate module",
-            "No such file or directory",
-            "file not found",
-            "cannot find",
-            "cannot open file",
             "was not materialized",
             "is missing from the Epic source seed",
             "bundled dotnet SDK host is missing",
-            "Unable to find output items for module",
-            "does not exist",
         ];
-        return indicators.Any(indicator => text.Contains(indicator, StringComparison.OrdinalIgnoreCase));
+        if (explicitProfileIndicators.Any(indicator =>
+                text.Contains(indicator, StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        if (nativeBuildFailure)
+        {
+            return false;
+        }
+
+        string[] fileIndicators =
+        [
+            "fatal error:",
+            "file not found",
+            "cannot open file",
+        ];
+        return fileIndicators.Any(indicator =>
+            text.Contains(indicator, StringComparison.OrdinalIgnoreCase));
     }
 
     private static IReadOnlyList<MountedBuildPhase> CreatePhases(

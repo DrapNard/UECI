@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0-alpha.8] - 2026-08-12
+
+### Fixed
+
+- Completes the lean synthetic `TargetType.Program` link without pulling the full Engine `Launch` module back into the runtime validation target. `UECIHost` now provides the three process-level symbols observed missing in the real alpha.7 smoke (`main`, `GInternalProjectName`, and `GForeignEngineDir`) behind a Program-only compile definition, so the same host module remains safe inside Editor targets.
+- Explicitly adds each plugin module to the generated target `ExtraModuleNames`. Runtime validation includes runtime modules; Editor validation includes runtime + editor modules, making the target build itself authoritative instead of relying only on plugin enablement side effects.
+- Tightens fast-profile fallback classification. Genuine native linker errors no longer trigger a complete dynamic Engine retry because unrelated UBA probe text happens to contain `No such file or directory`; full-Engine fallback is reserved for explicit missing Engine/module/target/materialization diagnostics.
+
+### Performance
+
+- Preserves the exact learned alpha.7 profile across the upgrade. A warm commit profile can therefore go straight back to the ~5.6k-file working set instead of repeating the 408k-path discovery pass. Engine Rules assemblies are rebuilt against the active profile instead of being reused across different profile shapes; the alpha.7 run measured this at only ~3.8 seconds total.
+
+### Changed
+
+- CLI version advanced to `0.5.0-alpha.8`.
+
 ## [0.5.0-alpha.7] - 2026-08-12
 
 ### Performance

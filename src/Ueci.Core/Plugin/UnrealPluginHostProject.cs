@@ -49,7 +49,7 @@ public static class UnrealPluginHostProject
         string copiedDescriptor = Path.Combine(pluginRoot, Path.GetFileName(plugin.DescriptorPath));
         string projectPath = Path.Combine(workspace, "UECIHost.uproject");
         await WriteProjectAsync(projectPath, plugin.Name, cancellationToken).ConfigureAwait(false);
-        await WriteHostSourceAsync(workspace, cancellationToken).ConfigureAwait(false);
+        await WriteHostSourceAsync(workspace, plugin, cancellationToken).ConfigureAwait(false);
         await WriteBuildConfigurationAsync(engineRoot, workspace, cancellationToken).ConfigureAwait(false);
 
         return new UnrealPluginHostLayout(
@@ -86,11 +86,31 @@ public static class UnrealPluginHostProject
         await File.WriteAllTextAsync(path, json + Environment.NewLine, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task WriteHostSourceAsync(string workspace, CancellationToken cancellationToken)
+    private static async Task WriteHostSourceAsync(
+        string workspace,
+        UnrealPluginDescriptor plugin,
+        CancellationToken cancellationToken)
     {
         string source = Path.Combine(workspace, "Source");
         string module = Path.Combine(source, GameTargetName);
         Directory.CreateDirectory(module);
+
+        string[] runtimeModules = plugin.Modules
+            .Where(candidate => !candidate.IsEditorOnly && !candidate.IsProgramOnly)
+            .Select(candidate => candidate.Name)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        string[] editorModules = plugin.Modules
+            .Where(candidate => !candidate.IsProgramOnly)
+            .Select(candidate => candidate.Name)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        string runtimeExtraModules = FormatExtraModules(runtimeModules.Prepend(GameTargetName));
+        string editorExtraModules = FormatExtraModules(editorModules.Prepend(GameTargetName));
+        string pluginNameLiteral = ToCSharpStringLiteral(plugin.Name);
 
         await File.WriteAllTextAsync(
             Path.Combine(source, GameTargetName + ".Target.cs"),
@@ -122,11 +142,16 @@ public static class UnrealPluginHostProject
                     bCompileWithPluginSupport = true;
                     bIncludePluginsForTargetPlatforms = true;
                     bAllowEnginePluginsEnabledByDefault = false;
+                    AdditionalPlugins.Add({{pluginNameLiteral}});
                     bUsesSlate = false;
                     bCompileICU = false;
                     bEnableTrace = false;
 
-                    ExtraModuleNames.Add("{{GameTargetName}}");
+                    // The synthetic Program launch module supplies a tiny non-running Linux
+                    // entrypoint. It exists only so UBT can complete the final link while still
+                    // compiling/linking every requested plugin module into the validation target.
+                    GlobalDefinitions.Add("UECI_SYNTHETIC_PROGRAM=1");
+            {{runtimeExtraModules}}
                 }
             }
             """ + Environment.NewLine,
@@ -144,7 +169,7 @@ public static class UnrealPluginHostProject
                     Type = TargetType.Editor;
                     DefaultBuildSettings = BuildSettingsVersion.Latest;
                     IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
-                    ExtraModuleNames.Add("{{GameTargetName}}");
+            {{editorExtraModules}}
                 }
             }
             """ + Environment.NewLine,
@@ -167,8 +192,51 @@ public static class UnrealPluginHostProject
 
         await File.WriteAllTextAsync(
             Path.Combine(module, GameTargetName + ".cpp"),
-            "#include \"Modules/ModuleManager.h\"\nIMPLEMENT_MODULE(FDefaultModuleImpl, UECIHost)\n",
+            """
+            #include "CoreTypes.h"
+            #include "CoreGlobals.h"
+            #include "Modules/ModuleManager.h"
+
+            #ifndef UECI_SYNTHETIC_PROGRAM
+            #define UECI_SYNTHETIC_PROGRAM 0
+            #endif
+
+            #if UECI_SYNTHETIC_PROGRAM
+            // A monolithic Core-only Program normally gets these from the Engine Launch module.
+            // UECI deliberately does not pull Launch into the runtime validation target, so the
+            // synthetic launch module owns the three process-level symbols needed by the linker.
+            TCHAR GInternalProjectName[64] = TEXT("UECIHost");
+            const TCHAR* GForeignEngineDir = nullptr;
+
+            int main(int, char**)
+            {
+                // The host executable is a build/link harness and is never executed by UECI.
+                return 0;
+            }
+            #endif
+
+            IMPLEMENT_MODULE(FDefaultModuleImpl, UECIHost)
+            """ + Environment.NewLine,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    private static string FormatExtraModules(IEnumerable<string> moduleNames)
+    {
+        return string.Join(
+            Environment.NewLine,
+            moduleNames
+                .Distinct(StringComparer.Ordinal)
+                .Select(name => $"        ExtraModuleNames.Add({ToCSharpStringLiteral(name)});"));
+    }
+
+    private static string ToCSharpStringLiteral(string value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+        return "\"" + value
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\"", "\\\"", StringComparison.Ordinal)
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal) + "\"";
     }
 
     private static async Task WriteBuildConfigurationAsync(

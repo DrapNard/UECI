@@ -1,9 +1,9 @@
 namespace Ueci.Vfs;
 
 /// <summary>
-/// Opportunistic commit-scoped cache for generated managed UBT/rules artifacts. Everything here is
-/// derivative of a pinned Epic commit; cache validation therefore never relies on timestamps from a
-/// previous Engine snapshot. UBT remains free to invalidate/rebuild restored Rules manifests.
+/// Opportunistic commit-scoped cache for generated managed UBT artifacts. Engine Rules assemblies
+/// are intentionally not persisted because their contents also depend on the visible minimal-profile
+/// namespace, not only on the pinned Epic commit.
 /// </summary>
 public sealed class VirtualEngineArtifactCache
 {
@@ -13,7 +13,6 @@ public sealed class VirtualEngineArtifactCache
         "Engine/Source/Programs/UnrealBuildTool/bin",
         "Engine/Source/Programs/UnrealBuildTool/obj",
         "Engine/Source/Programs/Shared",
-        "Engine/Intermediate/Build/BuildRules",
     ];
 
     private readonly string _cacheRoot;
@@ -53,7 +52,7 @@ public sealed class VirtualEngineArtifactCache
         if (Directory.Exists(rules))
         {
             Directory.Delete(rules, recursive: true);
-            _progress?.Invoke("[vfs/artifacts] Invalidated cached Engine Rules assemblies for dynamic profile relearning.");
+            _progress?.Invoke("[vfs/artifacts] Invalidated Engine Rules assemblies for the active Engine profile.");
         }
     }
 
@@ -94,8 +93,15 @@ public sealed class VirtualEngineArtifactCache
             return false;
         }
 
-        long copied = await CopyTreeAsync(source, Path.GetFullPath(upperRoot), cancellationToken).ConfigureAwait(false);
-        _progress?.Invoke($"[vfs/artifacts] Restored {copied:N0} cached UBT/Rules artifact files for {Short(commit)}.");
+        long copied = 0;
+        foreach (string relative in CachedRoots)
+        {
+            copied += await CopyTreeAsync(
+                Combine(source, relative),
+                Combine(upperRoot, relative),
+                cancellationToken).ConfigureAwait(false);
+        }
+        _progress?.Invoke($"[vfs/artifacts] Restored {copied:N0} cached UBT managed artifact files for {Short(commit)}.");
         return copied != 0;
     }
 
@@ -139,7 +145,7 @@ public sealed class VirtualEngineArtifactCache
                 Directory.Delete(destination, recursive: true);
             }
             Directory.Move(temp, destination);
-            _progress?.Invoke($"[vfs/artifacts] Cached {copied:N0} generated UBT/Rules artifact files for {Short(commit)}.");
+            _progress?.Invoke($"[vfs/artifacts] Cached {copied:N0} generated UBT managed artifact files for {Short(commit)}.");
         }
         finally
         {

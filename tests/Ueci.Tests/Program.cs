@@ -503,10 +503,6 @@ internal static class Program
             string outputDirectory = Path.GetDirectoryName(source)!;
             await File.WriteAllTextAsync(Path.Combine(outputDirectory, "UnrealBuildTool.deps.json"), "{}");
             await File.WriteAllTextAsync(Path.Combine(outputDirectory, "UnrealBuildTool.runtimeconfig.json"), "{}");
-            string rules = Path.Combine(upper, "Engine", "Intermediate", "Build", "BuildRules", "UE5Rules.dll");
-            Directory.CreateDirectory(Path.GetDirectoryName(rules)!);
-            await File.WriteAllTextAsync(rules, "cached-rules");
-
             var artifacts = new VirtualEngineArtifactCache(cache);
             await artifacts.PrepareUpperForCommitAsync(upper, state, commit);
             await artifacts.SaveAsync(upper, commit);
@@ -517,11 +513,12 @@ internal static class Program
             Assert.True(restored);
             Assert.True(artifacts.HasReusableUnrealBuildTool(upper));
             Assert.Equal("cached-ubt", await File.ReadAllTextAsync(Path.Combine(upper, relative)));
-            Assert.True(File.Exists(Path.Combine(upper, "Engine", "Intermediate", "Build", "BuildRules", "UE5Rules.dll")));
-
+            string rules = Path.Combine(upper, "Engine", "Intermediate", "Build", "BuildRules", "UE5Rules.dll");
+            Directory.CreateDirectory(Path.GetDirectoryName(rules)!);
+            await File.WriteAllTextAsync(rules, "profile-sensitive-rules");
             artifacts.ClearRuleArtifacts(upper);
             Assert.True(artifacts.HasReusableUnrealBuildTool(upper));
-            Assert.False(File.Exists(Path.Combine(upper, "Engine", "Intermediate", "Build", "BuildRules", "UE5Rules.dll")));
+            Assert.False(File.Exists(rules));
 
             // A commit change must invalidate generated upper artifacts before another restore.
             await artifacts.PrepareUpperForCommitAsync(
@@ -1043,8 +1040,14 @@ internal static class Program
             Directory.CreateDirectory(Path.Combine(source, "Binaries", "ThirdParty"));
             Directory.CreateDirectory(Path.Combine(source, "Intermediate"));
             string descriptor = Path.Combine(source, "Fixture.uplugin");
-            await File.WriteAllTextAsync(descriptor, "{ \"FileVersion\": 3, \"Modules\": [{ \"Name\": \"Fixture\", \"Type\": \"Runtime\" }] }");
+            await File.WriteAllTextAsync(
+                descriptor,
+                "{ \"FileVersion\": 3, \"Modules\": [" +
+                "{ \"Name\": \"Fixture\", \"Type\": \"Runtime\" }," +
+                "{ \"Name\": \"FixtureEditor\", \"Type\": \"Editor\" }] }");
             await File.WriteAllTextAsync(Path.Combine(source, "Source", "Fixture", "Fixture.Build.cs"), "// fixture");
+            Directory.CreateDirectory(Path.Combine(source, "Source", "FixtureEditor"));
+            await File.WriteAllTextAsync(Path.Combine(source, "Source", "FixtureEditor", "FixtureEditor.Build.cs"), "// fixture editor");
             await File.WriteAllTextAsync(Path.Combine(source, "Binaries", "Linux", "stale.so"), "stale");
             await File.WriteAllTextAsync(Path.Combine(source, "Binaries", "ThirdParty", "vendor.so"), "vendor");
             await File.WriteAllTextAsync(Path.Combine(source, "Intermediate", "stale.obj"), "stale");
@@ -1066,8 +1069,21 @@ internal static class Program
             Assert.True(runtimeTargetText.Contains("bCompileAgainstEngine = false", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("bBuildDeveloperTools = false", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("bCompileWithPluginSupport = true", StringComparison.Ordinal));
+            Assert.True(runtimeTargetText.Contains("AdditionalPlugins.Add(\"Fixture\")", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("bNeedsExtraShaderFormatsOverride = false", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("bCompileICU = false", StringComparison.Ordinal));
+            Assert.True(runtimeTargetText.Contains("GlobalDefinitions.Add(\"UECI_SYNTHETIC_PROGRAM=1\")", StringComparison.Ordinal));
+            Assert.True(runtimeTargetText.Contains("ExtraModuleNames.Add(\"UECIHost\")", StringComparison.Ordinal));
+            Assert.True(runtimeTargetText.Contains("ExtraModuleNames.Add(\"Fixture\")", StringComparison.Ordinal));
+            Assert.False(runtimeTargetText.Contains("ExtraModuleNames.Add(\"FixtureEditor\")", StringComparison.Ordinal));
+            string editorTargetText = await File.ReadAllTextAsync(Path.Combine(host.Root, "Source", "UECIHostEditor.Target.cs"));
+            Assert.True(editorTargetText.Contains("ExtraModuleNames.Add(\"Fixture\")", StringComparison.Ordinal));
+            Assert.True(editorTargetText.Contains("ExtraModuleNames.Add(\"FixtureEditor\")", StringComparison.Ordinal));
+            string hostSourceText = await File.ReadAllTextAsync(Path.Combine(host.Root, "Source", "UECIHost", "UECIHost.cpp"));
+            Assert.True(hostSourceText.Contains("TCHAR GInternalProjectName[64]", StringComparison.Ordinal));
+            Assert.True(hostSourceText.Contains("const TCHAR* GForeignEngineDir = nullptr", StringComparison.Ordinal));
+            Assert.True(hostSourceText.Contains("int main(int, char**)", StringComparison.Ordinal));
+            Assert.True(hostSourceText.Contains("#if UECI_SYNTHETIC_PROGRAM", StringComparison.Ordinal));
             string buildConfig = Path.Combine(host.Root, "Saved", "UnrealBuildTool", "BuildConfiguration.xml");
             Assert.True(File.Exists(buildConfig));
             string buildConfigXml = await File.ReadAllTextAsync(buildConfig);
