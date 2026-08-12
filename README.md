@@ -54,6 +54,7 @@ The long-term design supports both **materialized mode** (portable, no special p
 - Invokes the real UBT with `-Module=<PluginModule>` so plugin rules remain authoritative.
 - Converts missing-module/path/SDK diagnostics into bounded lazy Epic Git/GitDependencies materialization passes, including unresolved third-party library paths emitted by UBT.
 - Batches up to two levels of small `.Build.cs` dependency hints between UBT passes while refusing large hinted subtrees until UBT explicitly requires them.
+- Treats an explicit UBT missing-module diagnostic as authoritative over speculative prefetch: UECI force-refreshes the exact `*.Build.cs` from the pinned Epic commit and invalidates the generated Engine rules assembly before retrying.
 - On native Linux x86_64, resolves `Linux_SDK.json` and lazily downloads/extracts Epic's matching native clang/sysroot toolchain only when UBT reports that the Linux SDK is missing.
 - Packages the built plugin with `Binaries` plus a machine-readable `ueci-build.json` report.
 - Ships a minimal Runtime plugin fixture and an opt-in real plugin smoke test that runs on a normal workstation.
@@ -266,7 +267,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.4.0-alpha.10
+- uses: your-org/ueci@v0.4.0-alpha.11
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release

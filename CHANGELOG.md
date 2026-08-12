@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.0-alpha.11] - 2026-08-12
+
+### Fixed
+
+- Fixes a real lazy-discovery stall observed on `CorePreciseFP`: a module could already be present in the sparse worktree because of speculative Build.cs prefetch while UBT's generated `UE5Rules` assembly still lacked that module definition.
+- Explicit UBT missing-module diagnostics now force-refresh the selected `*.Build.cs` directly from the pinned Epic commit even when its directory is already sparse.
+- Invalidates `Engine/Intermediate/Build/BuildRules` after an explicit module-rule refresh so the next UBT process rebuilds Engine rules from the authoritative source set.
+
+### Testing
+
+- Adds an offline partial-Git regression test that preloads `CorePreciseFP`, corrupts its local rule file and creates a stale rules cache, then verifies that explicit requirement materialization restores the authoritative rule and removes the generated cache.
+
+### Changed
+
+- CLI version advanced to `0.4.0-alpha.11`.
+
 ## [0.4.0-alpha.10] - 2026-08-12
 
 ### Fixed
