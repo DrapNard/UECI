@@ -27,7 +27,10 @@ Epic bundled dotnet build
 Engine/Source/Programs/UnrealBuildTool/UnrealBuildTool.csproj
         |
         v
-Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll
+runnable UBT output discovered from MSBuild
+        |
+        +-- canonical Engine/Binaries/DotNET/UnrealBuildTool, or
+        +-- project-local bin/** output when the selected commit emits there
         |
         +-- generated UnrealBuildTool.runtimeconfig.json
         |
@@ -47,7 +50,7 @@ Engine/Binaries/ThirdParty/DotNet/<bundle>/<host-rid>/sdk/<sdk-version>/
 
 and materializes that host bundle from GitDependencies. This deliberately prefers correctness over micro-optimizing individual SDK files. The SDK is still tiny compared with a complete Unreal installation and remains content-addressed by the normal UECI cache.
 
-After UBT is compiled, UECI reads the generated `UnrealBuildTool.runtimeconfig.json` and verifies that its required shared frameworks resolve inside the same Epic .NET bundle used for compilation.
+After UBT is compiled, UECI discovers the runnable `UnrealBuildTool.dll` + `UnrealBuildTool.runtimeconfig.json` pair. It prefers the canonical Engine binary directory, but accepts a project-local `bin/**` output when that is what the selected Unreal commit/MSBuild configuration produced. UECI then verifies that the runtime config's required shared frameworks resolve inside the same Epic .NET bundle used for compilation.
 
 ## Source seed
 

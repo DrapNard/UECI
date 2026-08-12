@@ -227,7 +227,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` bootstraps, **compiles**, and probes UnrealBuildTool using the blobless Epic source plus a selective GitDependencies SDK/build-support overlay. It still intentionally does not pretend that plugin building is complete yet.
 
 ```yaml
-- uses: your-org/ueci@v0.3.0-alpha.4
+- uses: your-org/ueci@v0.3.0-alpha.5
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release

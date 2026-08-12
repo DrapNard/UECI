@@ -2,6 +2,20 @@
 
 All notable changes to UECI will be documented here.
 
+## [0.3.0-alpha.5] - 2026-08-12
+
+### Fixed
+
+- Stops assuming a successful `dotnet build` must place `UnrealBuildTool.dll` in `Engine/Binaries/DotNET/UnrealBuildTool`.
+- Discovers a runnable `UnrealBuildTool.dll` + `UnrealBuildTool.runtimeconfig.json` pair in the canonical output or the UBT project's `bin/**` output tree.
+- `ueci ubt run` uses the same post-build output resolver, so a non-canonical MSBuild output remains runnable after bootstrap.
+- A successful MSBuild invocation that produces no runnable UBT pair now reports captured MSBuild stdout/stderr and any DLL candidates instead of claiming the DLL should have come from Epic Git.
+- Bootstrap progress prints the resolved UBT assembly path before the runtime probe.
+
+### Tests
+
+- Adds an offline test for discovering a generated `bin/Debug/net10.0/UnrealBuildTool.dll` output.
+
 ## [0.3.0-alpha.4] - 2026-08-12
 
 ### Fixed
