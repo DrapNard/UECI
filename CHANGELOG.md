@@ -2,14 +2,27 @@
 
 All notable changes to UECI will be documented here.
 
+## [0.4.0-alpha.4] - 2026-08-12
+
+### Fixed
+
+- Fully disables both UE 5.8 UBA executor paths for the minimal plugin build by setting `bAllowUBAExecutor=false` and the still-read (but deprecated) `bAllowUBALocalExecutor=false`.
+- Writes the same hermetic executor policy into all UBT configuration scopes used by UECI: `Engine/Saved/UnrealBuildTool`, the isolated UECI user profile, and the synthetic HostProject. This avoids depending on `XmlConfig` precedence or generated defaults.
+- Fixes the real Linux smoke build still entering `ExecutorFactory.GetUBAExecutor()` even though the project-local remote UBA switch was disabled.
+- Strengthens the Linux SDK diagnostic fixture with the exact UE 5.8 `Unable to find valid SDK(s) for Linux` / `Required=v26_clang-20.1.8-rockylinux8` shape observed during the real build.
+
+### Changed
+
+- CLI version advanced to `0.4.0-alpha.4`.
+
 ## [0.4.0-alpha.3] - 2026-08-12
 
 ### Fixed
 
 - Makes plugin UBT invocations hermetic with respect to workstation-level `BuildConfiguration.xml` files by using an isolated UBT home/profile.
 - Generates `<PROJECT>/Saved/UnrealBuildTool/BuildConfiguration.xml` for the synthetic host project and disables UBA, XGE, FASTBuild, and SN-DBS executors so the minimal engine working set uses the local executor instead of requiring accelerator binaries.
-- Fixes the first real plugin discovery pass failing with `UBA is not available - please ensure the UBA binaries exist for your host platform`.
-- Prevents deprecated user settings such as `bAllowUBALocalExecutor` from leaking into reproducible UECI builds.
+- Attempts to isolate the first real plugin discovery pass from workstation UBA settings; alpha.4 completes this by disabling both UBA switches at every UBT config scope.
+- Prevents workstation-level deprecated settings from leaking into reproducible UECI builds.
 
 ### Tests
 
