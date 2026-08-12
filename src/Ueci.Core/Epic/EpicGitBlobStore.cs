@@ -78,8 +78,21 @@ public sealed class EpicGitBlobStore
         }
     }
 
+    public bool TryGetCachedSize(EpicGitTreeEntry entry, out long size)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        string path = Path.Combine(_cacheRoot, "git-blobs", ValidateObjectId(entry.ObjectId));
+        if (File.Exists(path))
+        {
+            size = new FileInfo(path).Length;
+            return true;
+        }
+        size = 0;
+        return false;
+    }
+
     private static bool IsPlausible(string path, long expectedSize)
-        => File.Exists(path) && (expectedSize == 0 || new FileInfo(path).Length == expectedSize);
+        => File.Exists(path) && (expectedSize <= 0 || new FileInfo(path).Length == expectedSize);
 
     private static string ValidateObjectId(string value)
     {

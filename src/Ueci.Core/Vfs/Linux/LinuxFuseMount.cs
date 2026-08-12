@@ -7,6 +7,7 @@ namespace Ueci.Vfs.Linux;
 public sealed record LinuxFuseMountOptions(
     string MountPoint,
     string CacheDirectory,
+    bool Verbose = false,
     Action<string>? Progress = null);
 
 public sealed class LinuxFuseMount
@@ -34,7 +35,7 @@ public sealed class LinuxFuseMount
         string helper = await compiler.EnsureCompiledAsync(options.CacheDirectory, options.Progress, cancellationToken)
             .ConfigureAwait(false);
         string socket = CreateShortSocketPath(mountPoint);
-        await using var server = new FuseProtocolServer(fileSystem, socket);
+        await using var server = new FuseProtocolServer(fileSystem, socket, options.Progress, options.Verbose);
         await server.StartAsync(cancellationToken).ConfigureAwait(false);
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

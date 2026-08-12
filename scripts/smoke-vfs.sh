@@ -11,6 +11,8 @@ MOUNT="${UECI_VFS_MOUNT:-/tmp/ueci-vfs-engine}"
 META="${UECI_VFS_METADATA:-/tmp/ueci-vfs-metadata}"
 STATE="${UECI_VFS_STATE:-/tmp/ueci-vfs-state}"
 REF="${UECI_EPIC_REF:-release}"
+START_TIMEOUT="${UECI_VFS_START_TIMEOUT:-600}"
+VERBOSE="${UECI_VFS_VERBOSE:-1}"
 
 mkdir -p "$MOUNT"
 if mountpoint -q "$MOUNT" 2>/dev/null; then
@@ -34,33 +36,59 @@ trap cleanup EXIT INT TERM
 cd "$ROOT"
 dotnet build Ueci.sln -c Release
 
-dotnet run --project src/Ueci.Cli/Ueci.Cli.csproj -c Release --no-build -- \
-  mount "$MOUNT" \
-  --metadata-dir "$META" \
-  --state-dir "$STATE" \
-  --ref "$REF" \
-  --no-pack-cache &
+args=(
+  mount "$MOUNT"
+  --metadata-dir "$META"
+  --state-dir "$STATE"
+  --ref "$REF"
+  --no-pack-cache
+)
+if [[ "$VERBOSE" != "0" ]]; then
+  args+=(--verbose)
+fi
+
+echo "[smoke] starting UECI VFS; startup timeout ${START_TIMEOUT}s; mount=$MOUNT" >&2
+dotnet run --project src/Ueci.Cli/Ueci.Cli.csproj -c Release --no-build -- "${args[@]}" &
 UECI_VFS_PID=$!
 
-for _ in {1..120}; do
-  if mountpoint -q "$MOUNT" 2>/dev/null; then
-    break
-  fi
+started_at=$SECONDS
+next_heartbeat=5
+while ! mountpoint -q "$MOUNT" 2>/dev/null; do
   if ! kill -0 "$UECI_VFS_PID" 2>/dev/null; then
+    set +e
     wait "$UECI_VFS_PID"
-    exit 1
+    status=$?
+    set -e
+    echo "[smoke] UECI exited before the FUSE mount became ready (exit=$status)." >&2
+    exit "$status"
   fi
-  sleep 0.25
+
+  elapsed=$((SECONDS - started_at))
+  if (( elapsed >= START_TIMEOUT )); then
+    echo "[smoke] timed out after ${elapsed}s waiting for $MOUNT to become a mountpoint." >&2
+    exit 124
+  fi
+  if (( elapsed >= next_heartbeat )); then
+    meta_size="$(du -sh "$META" 2>/dev/null | awk '{print $1}' || true)"
+    state_size="$(du -sh "$STATE" 2>/dev/null | awk '{print $1}' || true)"
+    echo "[smoke] waiting for mount... ${elapsed}s elapsed; metadata=${meta_size:-?}; state=${state_size:-?}; pid=$UECI_VFS_PID" >&2
+    next_heartbeat=$((next_heartbeat + 5))
+  fi
+  sleep 1
 done
 
-mountpoint -q "$MOUNT"
+echo "[smoke] FUSE mount READY after $((SECONDS - started_at))s: $MOUNT" >&2
 
 echo "[smoke] metadata-only directory listing"
 ls "$MOUNT/Engine/Source/Runtime/Core/Public" >/dev/null
 
-echo "[smoke] lazy Git/GitDependencies content read"
-test -s "$MOUNT/Engine/Source/Runtime/Core/Public/CoreMinimal.h"
-head -c 64 "$MOUNT/Engine/Source/Runtime/Core/Public/CoreMinimal.h" >/dev/null
+echo "[smoke] lazy Git content read"
+read_bytes="$(head -c 64 "$MOUNT/Engine/Source/Runtime/Core/Public/CoreMinimal.h" | wc -c)"
+if (( read_bytes <= 0 )); then
+  echo "[smoke] CoreMinimal.h returned no bytes through FUSE." >&2
+  exit 1
+fi
+echo "[smoke] lazy read returned ${read_bytes} bytes"
 
 echo "[smoke] copy-on-write output"
 mkdir -p "$MOUNT/Engine/Saved/UECI"

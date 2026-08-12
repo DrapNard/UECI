@@ -34,13 +34,16 @@ public sealed class VirtualEngineIndex
             : [];
     }
 
-    public static VirtualEngineIndex Build(EpicGitTreeIndex git, GitDependenciesManifest manifest)
+    public static VirtualEngineIndex Build(EpicGitTreeIndex git, GitDependenciesManifest manifest, Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(git);
         ArgumentNullException.ThrowIfNull(manifest);
 
         var entries = new Dictionary<string, VirtualEngineLowerEntry>(StringComparer.Ordinal);
         AddDirectory(entries, string.Empty);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        int gitProcessed = 0;
+        int gitDepsProcessed = 0;
 
         foreach (EpicGitTreeEntry gitEntry in git.Entries.Values)
         {
@@ -52,11 +55,18 @@ public sealed class VirtualEngineIndex
                 new VirtualEngineMetadata(
                     gitEntry.Path,
                     kind,
-                    gitEntry.Size,
+                    Math.Max(0, gitEntry.Size),
                     gitEntry.UnixMode == 0 ? 0x1a4 : gitEntry.UnixMode,
                     VirtualEngineSourceKind.Git),
                 gitEntry,
                 null);
+            gitProcessed++;
+            if (gitProcessed % 50_000 == 0)
+            {
+                progress?.Invoke(
+                    $"[vfs/namespace] Merged {gitProcessed:N0}/{git.Entries.Count:N0} Git blobs; " +
+                    $"{entries.Count:N0} virtual paths incl. directories; managed memory ~{GC.GetTotalMemory(false) / (1024d * 1024d):N1} MiB.");
+            }
         }
 
         // Setup/GitDependencies overlays files on top of the Git checkout. Preserve that precedence
@@ -75,8 +85,16 @@ public sealed class VirtualEngineIndex
                     VirtualEngineSourceKind.GitDependencies),
                 null,
                 resolution);
+            gitDepsProcessed++;
+            if (gitDepsProcessed % 50_000 == 0)
+            {
+                progress?.Invoke(
+                    $"[vfs/namespace] Overlayed {gitDepsProcessed:N0}/{manifest.Files.Count:N0} GitDependencies files; " +
+                    $"{entries.Count:N0} virtual paths; managed memory ~{GC.GetTotalMemory(false) / (1024d * 1024d):N1} MiB.");
+            }
         }
 
+        progress?.Invoke($"[vfs/namespace] Building directory child maps for {entries.Count:N0} virtual paths...");
         var children = new Dictionary<string, SortedDictionary<string, VirtualEngineLowerEntry>>(StringComparer.Ordinal);
         foreach ((string path, VirtualEngineLowerEntry entry) in entries)
         {
@@ -93,6 +111,9 @@ public sealed class VirtualEngineIndex
             list[VirtualEnginePath.Name(path)] = entry;
         }
 
+        progress?.Invoke(
+            $"[vfs/namespace] Complete: {entries.Count:N0} paths, {children.Count:N0} populated directories; " +
+            $"managed memory ~{GC.GetTotalMemory(false) / (1024d * 1024d):N1} MiB; elapsed {stopwatch.Elapsed:hh\\:mm\\:ss}.");
         return new VirtualEngineIndex(entries, children);
     }
 

@@ -75,21 +75,27 @@ public static class VirtualEngineMountFactory
                 cancellationToken).ConfigureAwait(false);
         }
 
-        options.Progress?.Invoke("Indexing the full Epic Git tree without checking out file contents...");
+        options.Progress?.Invoke("Indexing virtual Engine metadata (Git tree + GitDependencies in parallel)...");
+        var indexStopwatch = System.Diagnostics.Stopwatch.StartNew();
         Task<EpicGitTreeIndex> gitIndexTask = EpicGitTreeIndex.LoadAsync(
             metadataRoot,
             options.TokenEnvironmentVariable,
+            options.Progress,
             cancellationToken);
         Task<GitDependenciesManifest> manifestTask = GitDependenciesManifestReader.LoadAsync(
             manifestPath,
-            cancellationToken);
+            cancellationToken,
+            options.Progress);
         await Task.WhenAll(gitIndexTask, manifestTask).ConfigureAwait(false);
         EpicGitTreeIndex gitIndex = await gitIndexTask.ConfigureAwait(false);
         GitDependenciesManifest manifest = await manifestTask.ConfigureAwait(false);
+        options.Progress?.Invoke(
+            $"Metadata indexes loaded in {indexStopwatch.Elapsed:hh\\:mm\\:ss}: " +
+            $"{gitIndex.Entries.Count:N0} Git blobs + {manifest.Files.Count:N0} GitDependencies files.");
 
         options.Progress?.Invoke(
             $"Building virtual Engine namespace from {gitIndex.Entries.Count:N0} Git blobs + {manifest.Files.Count:N0} GitDependencies files...");
-        VirtualEngineIndex index = VirtualEngineIndex.Build(gitIndex, manifest);
+        VirtualEngineIndex index = VirtualEngineIndex.Build(gitIndex, manifest, options.Progress);
         string upperRoot = Path.GetFullPath(options.UpperDirectory ?? Path.Combine(stateRoot, "upper"));
 
         var source = new HttpGitDependenciesPackSource();

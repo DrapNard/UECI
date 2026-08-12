@@ -71,7 +71,8 @@ public static class GitDependenciesManifestReader
 
     public static async Task<GitDependenciesManifest> LoadAsync(
         string manifestPath,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Action<string>? progress = null)
     {
         await using FileStream stream = File.OpenRead(manifestPath);
         using XmlReader reader = CreateReader(stream);
@@ -80,6 +81,9 @@ public static class GitDependenciesManifestReader
         var files = new Dictionary<string, GitDependencyFile>(StringComparer.Ordinal);
         var blobs = new Dictionary<string, GitDependencyBlob>(StringComparer.OrdinalIgnoreCase);
         var packs = new Dictionary<string, GitDependencyPack>(StringComparer.OrdinalIgnoreCase);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        int nextProgress = 25_000;
+        progress?.Invoke($"[vfs/gitdeps] Parsing {new FileInfo(manifestPath).Length / (1024d * 1024d):N1} MiB Commit.gitdeps.xml...");
 
         while (await reader.ReadAsync().ConfigureAwait(false))
         {
@@ -123,6 +127,16 @@ public static class GitDependenciesManifestReader
                     break;
                 }
             }
+
+            int indexed = files.Count + blobs.Count + packs.Count;
+            if (indexed >= nextProgress)
+            {
+                double memoryMib = GC.GetTotalMemory(forceFullCollection: false) / (1024d * 1024d);
+                progress?.Invoke(
+                    $"[vfs/gitdeps] {files.Count:N0} files / {blobs.Count:N0} blobs / {packs.Count:N0} packs parsed; " +
+                    $"managed memory ~{memoryMib:N1} MiB; elapsed {stopwatch.Elapsed:hh\\:mm\\:ss}.");
+                nextProgress = ((indexed / 25_000) + 1) * 25_000;
+            }
         }
 
         if (string.IsNullOrWhiteSpace(baseUrl))
@@ -130,6 +144,9 @@ public static class GitDependenciesManifestReader
             throw new InvalidDataException("DependencyManifest is missing BaseUrl.");
         }
 
+        progress?.Invoke(
+            $"[vfs/gitdeps] Complete: {files.Count:N0} files / {blobs.Count:N0} blobs / {packs.Count:N0} packs; " +
+            $"elapsed {stopwatch.Elapsed:hh\\:mm\\:ss}.");
         return new GitDependenciesManifest(baseUrl, files, blobs, packs);
     }
 

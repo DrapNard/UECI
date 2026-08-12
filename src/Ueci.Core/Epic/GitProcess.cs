@@ -58,7 +58,7 @@ internal static class GitProcess
         }
     }
 
-    private static ProcessStartInfo CreateStartInfo(
+    internal static ProcessStartInfo CreateStartInfo(
         string workingDirectory,
         IReadOnlyList<string> arguments,
         IReadOnlyDictionary<string, string>? environment)

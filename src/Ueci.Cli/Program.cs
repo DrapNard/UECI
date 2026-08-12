@@ -10,7 +10,7 @@ namespace Ueci.Cli;
 
 internal static class Program
 {
-    private const string CliVersion = "0.5.0-alpha.1";
+    private const string CliVersion = "0.5.0-alpha.2";
 
     public static async Task<int> Main(string[] args)
     {
@@ -401,6 +401,7 @@ internal static class Program
         string reference = GetOption(args, "--ref") ?? EpicGitClient.DefaultRef;
         string? tokenEnv = GetOption(args, "--token-env");
         GitDependenciesFetchOptions fetchOptions = GetFetchOptions(args);
+        bool verbose = HasFlag(args, "--verbose");
         string effectiveUpperRoot = upperRoot ?? Path.Combine(stateRoot, "upper");
         ValidateMountBackingPaths(
             mountPoint,
@@ -442,6 +443,7 @@ internal static class Program
                 new LinuxFuseMountOptions(
                     mountPoint,
                     fetchOptions.CacheDirectory,
+                    Verbose: verbose,
                     Progress: message => Console.Error.WriteLine($"[ueci] {message}")),
                 cancellation.Token).ConfigureAwait(false);
             return cancellation.IsCancellationRequested ? 0 : exitCode;
@@ -719,6 +721,7 @@ internal static class Program
               --cache-dir PATH           Shared content-addressed cache.
               --no-pack-cache            Keep blobs but discard compressed GitDependencies packs.
               --max-concurrent-packs N   Concurrent GitDependencies pack extraction limit.
+              --verbose                  Log individual FUSE requests after the always-on startup/index progress.
 
             The mount exposes the complete Engine namespace from Git metadata + Commit.gitdeps.xml without
             checking out source files. stat/readdir are metadata-only. The first open of a missing immutable

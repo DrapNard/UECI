@@ -268,6 +268,8 @@ internal static class Program
             Assert.Equal(VirtualEngineSourceKind.GitDependencies, overlaid!.Metadata.Source);
             Assert.True(index.TryGet("Engine/Source/Runtime/Core/Public/GitOnly.h", out VirtualEngineLowerEntry? gitOnly));
             Assert.Equal(VirtualEngineSourceKind.Git, gitOnly!.Metadata.Source);
+            Assert.Equal(-1L, gitOnly.GitEntry!.Size);
+            Assert.Equal(0L, gitOnly.Metadata.Size);
 
             var packSource = new MemoryPackSource(fixture.PackUri, fixture.CompressedBytes);
             var fileSystem = new VirtualEngineFileSystem(
@@ -287,9 +289,15 @@ internal static class Program
             Assert.Equal(coreBacking, coreWarm);
             Assert.Equal(1, packSource.DownloadCount);
 
+            VirtualEngineMetadata? gitBeforeOpen = await fileSystem.GetMetadataAsync(
+                "Engine/Source/Runtime/Core/Public/GitOnly.h");
+            Assert.Equal(0L, gitBeforeOpen!.Size);
             string gitBacking = await fileSystem.ResolveReadBackingPathAsync(
                 "Engine/Source/Runtime/Core/Public/GitOnly.h");
             Assert.Equal("git-only\n", await File.ReadAllTextAsync(gitBacking));
+            VirtualEngineMetadata? gitAfterOpen = await fileSystem.GetMetadataAsync(
+                "Engine/Source/Runtime/Core/Public/GitOnly.h");
+            Assert.Equal(new FileInfo(gitBacking).Length, gitAfterOpen!.Size);
 
             string upper = await fileSystem.ResolveWriteBackingPathAsync(
                 "Engine/Source/Runtime/Core/Public/Core.h",

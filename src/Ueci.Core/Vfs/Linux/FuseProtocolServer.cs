@@ -8,14 +8,22 @@ internal sealed class FuseProtocolServer : IAsyncDisposable
 {
     private readonly VirtualEngineFileSystem _fileSystem;
     private readonly string _socketPath;
+    private readonly Action<string>? _progress;
+    private readonly bool _verbose;
     private Socket? _listener;
     private readonly List<Task> _connections = [];
     private readonly object _connectionGate = new();
 
-    public FuseProtocolServer(VirtualEngineFileSystem fileSystem, string socketPath)
+    public FuseProtocolServer(
+        VirtualEngineFileSystem fileSystem,
+        string socketPath,
+        Action<string>? progress = null,
+        bool verbose = false)
     {
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
         _socketPath = Path.GetFullPath(socketPath);
+        _progress = progress;
+        _verbose = verbose;
     }
 
     public string SocketPath => _socketPath;
@@ -107,6 +115,11 @@ internal sealed class FuseProtocolServer : IAsyncDisposable
         if (fields.Length == 0)
         {
             throw new InvalidDataException("Empty FUSE request.");
+        }
+
+        if (_verbose)
+        {
+            _progress?.Invoke(DescribeRequest(fields));
         }
 
         switch (fields[0])
@@ -219,6 +232,28 @@ internal sealed class FuseProtocolServer : IAsyncDisposable
             }
             default:
                 throw new InvalidDataException($"Unknown FUSE protocol command '{fields[0]}'.");
+        }
+    }
+
+    private static string DescribeRequest(string[] fields)
+    {
+        try
+        {
+            return fields[0] switch
+            {
+                "STATFS" => "[vfs/fuse] STATFS",
+                "STAT" or "LIST" or "READLINK" or "UNLINK" or "RMDIR"
+                    => $"[vfs/fuse] {fields[0]} {FuseProtocol.Decode(fields[1])}",
+                "RESOLVE" => $"[vfs/fuse] RESOLVE {(fields[1] == "W" ? "write" : "read")} {FuseProtocol.Decode(fields[3])}",
+                "MKDIR" or "CHMOD" => $"[vfs/fuse] {fields[0]} {FuseProtocol.Decode(fields[2])}",
+                "RENAME" => $"[vfs/fuse] RENAME {FuseProtocol.Decode(fields[1])} -> {FuseProtocol.Decode(fields[2])}",
+                "SYMLINK" => $"[vfs/fuse] SYMLINK {FuseProtocol.Decode(fields[2])} -> {FuseProtocol.Decode(fields[1])}",
+                _ => $"[vfs/fuse] {fields[0]}",
+            };
+        }
+        catch
+        {
+            return $"[vfs/fuse] {fields[0]} (malformed request details)";
         }
     }
 

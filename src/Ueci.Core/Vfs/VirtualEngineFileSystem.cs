@@ -59,9 +59,20 @@ public sealed class VirtualEngineFileSystem
             return Task.FromResult<VirtualEngineMetadata?>(upperMetadata);
         }
 
-        return Task.FromResult(_index.TryGet(normalized, out VirtualEngineLowerEntry? lower)
-            ? lower!.Metadata
-            : null);
+        if (!_index.TryGet(normalized, out VirtualEngineLowerEntry? lower))
+        {
+            return Task.FromResult<VirtualEngineMetadata?>(null);
+        }
+
+        VirtualEngineMetadata metadata = lower!.Metadata;
+        if (metadata.Source == VirtualEngineSourceKind.Git
+            && metadata.Kind != VirtualEngineNodeKind.Directory
+            && lower.GitEntry is not null
+            && _gitBlobs.TryGetCachedSize(lower.GitEntry, out long cachedSize))
+        {
+            metadata = metadata with { Size = cachedSize };
+        }
+        return Task.FromResult<VirtualEngineMetadata?>(metadata);
     }
 
     public Task<IReadOnlyList<VirtualEngineDirectoryEntry>> ListAsync(
