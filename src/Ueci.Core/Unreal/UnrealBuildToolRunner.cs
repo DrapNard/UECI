@@ -22,6 +22,8 @@ public sealed class UnrealBuildToolRunner
             ["DOTNET_MULTILEVEL_LOOKUP"] = "0",
             ["DOTNET_NOLOGO"] = "1",
             ["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1",
+            ["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"] = "1",
+            ["DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE"] = "1",
         };
 
         string[] processArguments = [ubt.AssemblyPath, .. arguments];

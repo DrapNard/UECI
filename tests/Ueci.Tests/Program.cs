@@ -26,7 +26,8 @@ internal static class Program
         ("pack extractor rejects unknown magic", PackExtractorRejectsUnknownMagicAsync),
         ("runtimeconfig parser reads shared framework", RuntimeConfigParsesAsync),
         ("Epic bundled dotnet resolver selects host runtime", BundledDotNetResolverAsync),
-        ("UBT locator requires managed bootstrap files", UnrealBuildToolLocatorAsync),
+        ("Epic bundled dotnet SDK resolver selects latest SDK", BundledDotNetSdkResolverAsync),
+        ("UBT locator requires compiled bootstrap files", UnrealBuildToolLocatorAsync),
     ];
 
     public static async Task<int> Main(string[] args)
@@ -415,6 +416,38 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+
+    private static Task BundledDotNetSdkResolverAsync()
+    {
+        var files = new Dictionary<string, GitDependencyFile>(StringComparer.Ordinal)
+        {
+            ["Engine/Binaries/ThirdParty/DotNet/9.0/linux-x64/dotnet"] =
+                new("Engine/Binaries/ThirdParty/DotNet/9.0/linux-x64/dotnet", "a", true),
+            ["Engine/Binaries/ThirdParty/DotNet/9.0/linux-x64/sdk/9.0.300/MSBuild.dll"] =
+                new("Engine/Binaries/ThirdParty/DotNet/9.0/linux-x64/sdk/9.0.300/MSBuild.dll", "b", false),
+            ["Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/dotnet"] =
+                new("Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/dotnet", "c", true),
+            ["Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/sdk/10.0.100/MSBuild.dll"] =
+                new("Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/sdk/10.0.100/MSBuild.dll", "d", false),
+            ["Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/sdk/10.0.203/MSBuild.dll"] =
+                new("Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/sdk/10.0.203/MSBuild.dll", "e", false),
+        };
+        var manifest = new GitDependenciesManifest(
+            "https://cdn.example.test/dependencies",
+            files,
+            new Dictionary<string, GitDependencyBlob>(),
+            new Dictionary<string, GitDependencyPack>());
+
+        EpicBundledDotNetSdkPlan plan = EpicBundledDotNetSdkResolver.Resolve(manifest, "linux-x64");
+        Assert.Equal("Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/", plan.BundlePrefix);
+        Assert.Equal(new Version(10, 0, 203), plan.SdkVersion);
+        Assert.Equal(
+            "Engine/Binaries/ThirdParty/DotNet/10.0/linux-x64/sdk/10.0.203/",
+            plan.SdkPrefix);
+        Assert.True(plan.Prefixes.Contains(plan.BundlePrefix, StringComparer.Ordinal));
+        return Task.CompletedTask;
+    }
+
     private static async Task UnrealBuildToolLocatorAsync()
     {
         string root = CreateTempDirectory();
@@ -449,6 +482,10 @@ internal static class Program
         GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(path);
         GitDependenciesIntegrityResult integrity = manifest.ValidateIntegrity();
         Assert.True(integrity.IsValid);
+
+        EpicBundledDotNetSdkPlan sdk = EpicBundledDotNetSdkResolver.Resolve(manifest, "linux-x64");
+        Assert.True(sdk.SdkVersion.Major >= 8);
+        Assert.True(manifest.Files.Keys.Any(path => path.StartsWith(sdk.SdkPrefix, StringComparison.Ordinal)));
     }
 
     private static SyntheticPack CreateSyntheticPack()

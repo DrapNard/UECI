@@ -7,7 +7,7 @@ namespace Ueci.Cli;
 
 internal static class Program
 {
-    private const string CliVersion = "0.3.0-alpha.1";
+    private const string CliVersion = "0.3.0-alpha.2";
 
     public static async Task<int> Main(string[] args)
     {
@@ -307,7 +307,8 @@ internal static class Program
                     tokenEnv,
                     GetFetchOptions(args),
                     runtimeIdentifier,
-                    ProbeUnrealBuildTool: !HasFlag(args, "--no-probe"));
+                    ProbeUnrealBuildTool: !HasFlag(args, "--no-probe"),
+                    Progress: message => Console.Error.WriteLine($"[ueci] {message}"));
                 UnrealBuildToolBootstrapResult result = await bootstrapper.BootstrapAsync(options)
                     .ConfigureAwait(false);
 
@@ -315,7 +316,9 @@ internal static class Program
                 Console.WriteLine($"Epic commit:        {result.EpicCommit}");
                 Console.WriteLine($"Host RID:           {result.RuntimeIdentifier}");
                 Console.WriteLine($"Bundled .NET:       {result.BundledDotNetRoot}");
+                Console.WriteLine($"Bundled SDK:        {result.BundledDotNetSdkVersion}");
                 Console.WriteLine($"UBT assembly:       {result.UnrealBuildToolAssembly}");
+                Console.WriteLine($"UBT compile:        {(result.CompileResult.Succeeded ? "OK" : $"FAILED ({result.CompileResult.ExitCode})")}");
                 Console.WriteLine($"GitDeps files:      {result.Dependencies.FileCount:N0}");
                 Console.WriteLine($"GitDeps blobs:      {result.Dependencies.UniqueBlobCount:N0}");
                 Console.WriteLine($"Downloaded:         {FormatBytes(result.Dependencies.DownloadedBytes)}");
@@ -536,9 +539,9 @@ internal static class Program
               ueci ubt bootstrap --dir PATH [--repo URL] [--ref REF] [--host-rid RID] [--token-env NAME] [fetch options]
               ueci ubt run --dir PATH [--host-rid RID] [--dotnet-root PATH] -- <UBT arguments...>
 
-            bootstrap creates/updates a blobless Epic source store, checks out only the managed UBT seed,
-            overlays the matching GitDependencies files, materializes Epic's bundled .NET runtime, then runs
-            UnrealBuildTool -help as a probe. Use --no-probe to only materialize the bootstrap.
+            bootstrap creates/updates a blobless Epic source store, checks out the UBT + shared C# source seed,
+            overlays the matching GitDependencies build support, materializes Epic's bundled .NET SDK, compiles
+            UnrealBuildTool, then runs -help as a probe. Use --no-probe to compile without probing.
 
             Host RIDs: win-x64, win-arm64, linux-x64, linux-arm64, mac-x64, mac-arm64.
             Fetch options are the same as 'ueci gitdeps materialize'.
