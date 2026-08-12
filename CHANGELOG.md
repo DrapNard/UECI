@@ -2,6 +2,22 @@
 
 All notable changes to UECI will be documented here.
 
+## [0.3.0-alpha.2] - 2026-08-12
+
+### Fixed
+
+- UBT bootstrap no longer assumes `UnrealBuildTool.dll` is tracked in Epic Git.
+- Materializes `Engine/Source/Programs/UnrealBuildTool` and shared managed sources, then compiles UBT from source.
+- Resolves the complete host-specific Epic bundled .NET SDK from `Commit.gitdeps.xml` before compilation.
+- Materializes root/managed build-support files from GitDependencies before invoking MSBuild.
+- Reads and validates `UnrealBuildTool.runtimeconfig.json` only after UBT has produced it.
+- Adds an isolated local NuGet/DOTNET home under the bootstrap root and disables multilevel runtime lookup for reproducibility.
+
+### Tests
+
+- Adds offline bundled SDK resolution coverage.
+- Real-manifest smoke validation now confirms a host SDK can be selected.
+
 ## [0.3.0-alpha.1] - 2026-08-12
 
 ### Added

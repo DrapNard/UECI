@@ -45,8 +45,8 @@ The long-term design supports both **materialized mode** (portable, no special p
 - Keeps separate compressed-pack and verified-blob caches, with `--no-pack-cache` for disk-constrained runners.
 - Restores executable bits from `IsExecutable` on Unix hosts.
 - Rejects output-root path traversal during batch materialization.
-- Reads `UnrealBuildTool.runtimeconfig.json` and resolves Epic's matching bundled .NET host/runtime from the manifest.
-- Bootstraps `UnrealBuildTool.dll` from a minimal Git seed plus GitDependencies overlay and probes it with the Epic-bundled `dotnet`.
+- Resolves and materializes Epic's bundled .NET **SDK** for the current host directly from `Commit.gitdeps.xml`.
+- Materializes the UBT + shared C# source seed, compiles `UnrealBuildTool.csproj`, validates the generated runtime config, then probes UBT with the same Epic-bundled `dotnet`.
 - Provides `ubt run` to forward arbitrary arguments to the bootstrapped UBT.
 - Provides a future-proof VFS contract without making FUSE/WinFsp mandatory.
 - Has dependency-free local tests: no GitHub runner and no Epic token are required.
@@ -164,7 +164,7 @@ UECI injects the Git authorization header through per-process environment config
 
 ## Bootstrap UnrealBuildTool
 
-Once the Epic token works, UECI can create a blobless source store, check out only the managed UBT seed, overlay the required GitDependencies files, select the correct bundled .NET runtime for the host, and probe UBT:
+Once the Epic token works, UECI can create a blobless source store, check out only the managed UBT/shared source seed, overlay the required GitDependencies files, select the correct bundled .NET SDK for the host, compile UBT, and probe it:
 
 ```bash
 export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
@@ -185,7 +185,7 @@ dotnet run --project src/Ueci.Cli -- \
   -- -help
 ```
 
-UECI itself still targets .NET 8 for easy development. The UBT process uses the .NET runtime shipped by the selected Unreal commit, resolved from `UnrealBuildTool.runtimeconfig.json` rather than from a hard-coded engine version. See [`docs/ubt-bootstrap.md`](docs/ubt-bootstrap.md).
+UECI itself still targets .NET 8 for easy development. UBT is compiled with the .NET SDK shipped by the selected Unreal commit; after compilation UECI validates the generated `UnrealBuildTool.runtimeconfig.json` against that same bundle. No Unreal/.NET version pair is hard-coded. See [`docs/ubt-bootstrap.md`](docs/ubt-bootstrap.md).
 
 ## Project config
 
@@ -221,10 +221,10 @@ The credential field stores only the **environment variable name**, never a secr
 
 ## GitHub Action (prototype)
 
-The root `action.yml` now bootstraps and probes UnrealBuildTool using the blobless Epic source plus minimal GitDependencies runtime. It still intentionally does not pretend that plugin building is complete yet.
+The root `action.yml` bootstraps, **compiles**, and probes UnrealBuildTool using the blobless Epic source plus a selective GitDependencies SDK/build-support overlay. It still intentionally does not pretend that plugin building is complete yet.
 
 ```yaml
-- uses: your-org/ueci@v0.3.0-alpha.1
+- uses: your-org/ueci@v0.3.0-alpha.2
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release

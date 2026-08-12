@@ -1,82 +1,76 @@
 # UnrealBuildTool bootstrap
 
-Milestone 0.3 introduces the first Unreal-aware bootstrap. The goal is intentionally narrower than a plugin build: produce a runnable UnrealBuildTool from a blobless Epic Git repository plus only the GitDependencies payloads required by UBT and its managed runtime.
+Milestone 0.3 bootstraps a **source-built** UnrealBuildTool from a blobless Epic Git repository plus a selective GitDependencies overlay. A source checkout does not contain a ready-to-run `Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll`; UECI therefore materializes the UBT C# source and compiles it with the .NET SDK shipped by the selected Unreal commit.
 
-## Data flow
+## Pipeline
 
 ```text
-EpicGames/UnrealEngine (blob:none)
-        │
-        ├── Engine/Binaries/DotNET/**          Git tracked seed
-        ├── Engine/Build/Build.version         Git tracked seed
-        └── Engine/Build/Commit.gitdeps.xml    Git tracked manifest
-                         │
-                         ▼
-              UnrealBuildTool.runtimeconfig.json
-                         │
-                         ▼
-              framework requirement(s)
-                         │
-                         ▼
-               Commit.gitdeps.xml index
-                         │
-          ┌──────────────┴─────────────────┐
-          │                                │
-Engine/Binaries/DotNET/**       ThirdParty/DotNet/<host>/**
-GitDependencies overlay         dotnet + host + shared runtime
-          │                                │
-          └──────────────┬─────────────────┘
-                         ▼
-              bundled Epic dotnet host
-                         │
-                         ▼
-                 UnrealBuildTool.dll
+EpicGames/UnrealEngine
+        |
+        | git fetch --filter=blob:none --depth=1
+        v
+pinned source commit
+        |
+        +-- Engine/Source/Programs/UnrealBuildTool
+        +-- Engine/Source/Programs/Shared
+        +-- Engine/Build/Commit.gitdeps.xml
+        |
+        v
+Commit.gitdeps.xml
+        |
+        +-- root Directory.Build.props / Directory.Build.targets
+        +-- managed build support overlay
+        +-- complete bundled .NET SDK for the current host RID
+        |
+        v
+Epic bundled dotnet build
+Engine/Source/Programs/UnrealBuildTool/UnrealBuildTool.csproj
+        |
+        v
+Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll
+        |
+        +-- generated UnrealBuildTool.runtimeconfig.json
+        |
+        v
+runtime validation + `UnrealBuildTool -help`
 ```
 
-UECI does not hard-code a particular .NET patch. It reads UnrealBuildTool's runtime config, finds a compatible host runtime in the selected commit's GitDependencies manifest, and chooses the highest available patch with the same major/minor framework version.
+## Why the complete bundled SDK?
 
-The initial runtime materialization intentionally includes only:
+The first alpha incorrectly expected `UnrealBuildTool.dll` to be present in the source seed. It is a build output. Compiling a C# project requires the SDK/MSBuild layer, not only the runtime host and shared framework.
 
-- the `dotnet` host executable for the current host RID;
-- the host/fxr subtree;
-- shared framework subtree(s) required by `UnrealBuildTool.runtimeconfig.json`;
-- the `Engine/Binaries/DotNET` GitDependencies overlay.
+UECI therefore resolves the newest SDK present under:
 
-It does not download the complete Epic .NET SDK.
+```text
+Engine/Binaries/ThirdParty/DotNet/<bundle>/<host-rid>/sdk/<sdk-version>/
+```
 
-## Command
+and materializes that host bundle from GitDependencies. This deliberately prefers correctness over micro-optimizing individual SDK files. The SDK is still tiny compared with a complete Unreal installation and remains content-addressed by the normal UECI cache.
+
+After UBT is compiled, UECI reads the generated `UnrealBuildTool.runtimeconfig.json` and verifies that its required shared frameworks resolve inside the same Epic .NET bundle used for compilation.
+
+## Source seed
+
+The Git source seed is intentionally limited to:
+
+- `Engine/Source/Programs/UnrealBuildTool`;
+- `Engine/Source/Programs/Shared`;
+- `Engine/Build/Build.version`;
+- `Engine/Build/Commit.gitdeps.xml`.
+
+Git remains a blobless promisor repository, so materializing these pathspecs fetches only the source blobs needed for the managed build rather than checking out the entire engine.
+
+The GitDependencies overlay additionally includes root managed build props/targets plus the small dependency files under the UBT/shared program trees and `Engine/Binaries/DotNET`.
+
+## Local smoke test
 
 ```bash
 export UECI_EPIC_GITHUB_TOKEN='...'
-
-dotnet run --project src/Ueci.Cli -- \
-  ubt bootstrap \
-  --dir /tmp/ueci-engine \
-  --ref release \
-  --no-pack-cache
+./scripts/smoke-ubt.sh
 ```
 
-By default the command finishes by invoking UBT with `-help`. Use `--no-probe` when only the filesystem bootstrap is desired.
+The expected end state is a successful UBT compilation followed by an `-help` probe. `--no-probe` skips only the final UBT execution; UBT is still compiled.
 
-After a successful bootstrap, arbitrary UBT arguments can be forwarded without repeating the bootstrap:
+## Security
 
-```bash
-dotnet run --project src/Ueci.Cli -- \
-  ubt run \
-  --dir /tmp/ueci-engine \
-  -- -help
-```
-
-## Host RIDs
-
-UECI currently maps normal desktop hosts to these Epic runtime identifiers:
-
-- `linux-x64`, `linux-arm64`
-- `win-x64`, `win-arm64`
-- `mac-x64`, `mac-arm64`
-
-The host RID can be overridden with `--host-rid` for diagnostics and resolver tests.
-
-## Scope and next step
-
-This milestone proves that UBT itself can be composed from the two providers. It does not yet claim that a complete plugin compile can succeed from this seed. A plugin build will cause UBT to inspect targets, modules, headers, toolchains, platform files, and third-party dependencies. Those accesses become the input for the next requirement-discovery/materialization loop rather than a reason to pre-install the full engine.
+Unreal `.Build.cs` and `.Target.cs` files are C# code evaluated by UBT. Never combine an Epic credential with untrusted build rules (for example arbitrary fork pull-request code) in the same process or workflow job.

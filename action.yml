@@ -1,5 +1,5 @@
 name: UECI UnrealBuildTool bootstrap
-description: Bootstrap a minimal UnrealBuildTool environment from Epic Git + GitDependencies.
+description: Build and bootstrap UnrealBuildTool from Epic Git + GitDependencies.
 author: UECI contributors
 branding:
   icon: box

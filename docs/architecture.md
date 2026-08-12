@@ -95,32 +95,28 @@ Commit.gitdeps.xml
 
 ## v0.3 UBT bootstrap
 
-The first Unreal-aware consumer composes a small physical engine root before attempting any C++ build:
-
 ```text
-blobless Epic Git
-   │
-   └── checkout selected pathspecs
-         Engine/Binaries/DotNET
-         Engine/Build/Build.version
-         Engine/Build/Commit.gitdeps.xml
-                    │
-                    ▼
-       UnrealBuildTool.runtimeconfig.json
-                    │
-                    ▼
-        Epic bundled runtime resolver
-                    │
-       Commit.gitdeps.xml + host RID
-                    │
-          ┌─────────┴─────────┐
-          │                   │
-Engine/Binaries/DotNET   ThirdParty/DotNet
- GitDeps overlay          dotnet + host + shared runtime
-          │                   │
-          └─────────┬─────────┘
-                    ▼
-           UnrealBuildTool.dll
+Epic blobless Git
+      │
+      ├── UBT + Shared C# source
+      └── Commit.gitdeps.xml
+                 │
+                 ▼
+       bundled .NET SDK resolver
+                 │
+                 ▼
+      GitDependencies overlay
+                 │
+                 ▼
+ dotnet build UnrealBuildTool.csproj
+                 │
+                 ▼
+       UnrealBuildTool.dll
+                 │
+       runtimeconfig validation
+                 │
+                 ▼
+             UBT -help
 ```
 
-This is intentionally a seed, not a static list claimed to be sufficient for plugin compilation. The next resolver stage will let UBT evaluate real target/module rule assemblies, observe requirements that are absent from the materialized tree, then request those paths from either Git or GitDependencies. The permanent architecture therefore keeps UBT above the providers rather than translating `.Build.cs` into a second UECI rule language.
+The source repository is the authority for UBT code. GitDependencies supplies Epic's managed build support and host SDK. A precompiled UBT binary is **not** assumed to exist in Git.

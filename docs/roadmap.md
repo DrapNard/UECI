@@ -29,7 +29,8 @@
 - [x] Obtain `Commit.gitdeps.xml` from the selected Git commit automatically
 - [ ] Ask UBT for real target/module rules instead of parsing `Build.cs` as YAML-like text
 - [ ] Requirement discovery/retry loop
-- [x] Host runtime filtering for bundled .NET
+- [x] Host runtime/SDK filtering for bundled .NET
+- [x] Source-build UnrealBuildTool with Epic bundled SDK
 - [ ] Target platform filtering for plugin builds
 
 ## Milestone 0.4 — plugin packaging
