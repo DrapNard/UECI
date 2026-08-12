@@ -265,7 +265,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.4.0-alpha.5
+- uses: your-org/ueci@v0.4.0-alpha.6
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release

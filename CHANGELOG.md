@@ -2,6 +2,15 @@
 
 All notable changes to UECI will be documented here.
 
+## [0.4.0-alpha.6] - 2026-08-12
+
+### Fixed
+
+- Linux native toolchain extraction now stages under the Engine SDK directory so installation stays on the destination filesystem and no longer fails with `EXDEV` / `Invalid cross-device link` when the UECI cache and Engine live on different mounts.
+- Toolchain installation keeps a validated cached archive after filesystem installation errors instead of deleting a good multi-hundred-megabyte download.
+- Added a defensive recursive-copy fallback that preserves symbolic links and Unix executable modes for unusual bind-mount or nested-mount layouts.
+- CLI version advanced to `0.4.0-alpha.6`.
+
 ## [0.4.0-alpha.5] - 2026-08-12
 
 ### Fixed
