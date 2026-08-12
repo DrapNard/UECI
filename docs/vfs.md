@@ -51,7 +51,7 @@ At mount preparation time UECI performs metadata-only work:
 4. merge both namespaces with **GitDependencies taking precedence over Git**, matching a normal Setup overlay;
 5. infer directory entries from the indexed paths.
 
-`stat()` and `readdir()` therefore do not need file content and do not trigger Engine source downloads. Git tree objects do not carry blob sizes, so an unopened Git-backed file initially reports size `0`; after its first `open()` materializes the blob into CAS, subsequent metadata reports the real cached size. GitDependencies entries always have exact sizes because the manifest contains them.
+`readdir()` is metadata-only and does not trigger Engine source downloads. Git tree objects do not carry blob sizes, so a targeted POSIX `stat()` on an uncached Git-backed file is treated as the first content demand: UECI hydrates that one blob into CAS and returns its exact size. This avoids both mass `ls-tree --long` hydration and false zero-length EOF behavior. GitDependencies entries always have exact sizes because the manifest contains them.
 
 ## Lazy reads
 
@@ -100,7 +100,7 @@ cc -std=c11 ... $(pkg-config --cflags --libs fuse3)
 
 No prebuilt native binary is committed. The runtime requirements are `pkg-config`, libfuse3 development files/library, and a C compiler.
 
-The helper implements the operations needed by normal build tools in the first MVP: `getattr`, `readdir`, `readlink`, `open`, `create`, `read`, `write`, `flush`, `fsync`, `release`, `mkdir`, `unlink`, `rmdir`, `rename`, `symlink`, `chmod`, `truncate`, `utimens`, `access`, and `statfs`.
+The helper implements the operations needed by normal build tools in the first MVP: `getattr`, `readdir`, `readlink`, `open`, `create`, `read`, `write`, `flush`, `fsync`, `release`, `mkdir`, `unlink`, `rmdir`, `rename`, `symlink`, `chmod`, `truncate`, `utimens`, `access`, `statfs`, `fallocate`, `copy_file_range`, and `lseek`. Local file locking remains handled by the kernel when no custom FUSE lock callback is supplied.
 
 ## Usage
 
@@ -134,10 +134,29 @@ The metadata repository, CAS, state, upper layer and Unix socket all live **outs
 
 The GitHub token remains process-only and is not stored in the virtual tree, Git remote URL, config files or logs.
 
-## Next integration step
+## Build integration status
 
-`ueci mount` is deliberately shipped before switching `build-plugin` to mounted mode. The existing v0.4 materialized build path remains the correctness fallback. Once the standalone mount smoke is validated on a real Linux host, the plugin builder can use the mounted root directly and remove the UBT diagnostic/sparse-checkout retry loop for Linux mounted builds.
+The standalone mount smoke is now validated on a real Linux host, and `build-plugin --backend fuse` consumes the mounted root directly. Linux mounted builds no longer use the UBT diagnostic/sparse-checkout retry loop: the virtual namespace is complete up front and individual Git/GitDependencies contents hydrate on ordinary filesystem demand. The v0.4 materialized build path remains the portable correctness fallback.
 
 ## POSIX size semantics
 
 Git tree metadata contains path/mode/object-id but not blob length. UECI therefore keeps `readdir` metadata-only, but a targeted `stat(2)` on an uncached Git file is treated as content demand: the single blob is materialized into CAS and its exact backing length is returned as `st_size`. Returning a fake zero length is incorrect because the kernel may treat the file as EOF without issuing a FUSE `read`.
+
+## Mounted plugin compilation (alpha.4)
+
+`ueci build-plugin --backend fuse` now consumes the mount as an actual Unreal Engine root:
+
+1. prepare Git/GitDependencies metadata and the COW state;
+2. start a private FUSE mount;
+3. locate Epic's bundled .NET SDK from `Commit.gitdeps.xml`;
+4. execute that `dotnet` binary **through FUSE** and compile `UnrealBuildTool.csproj` in the virtual Engine;
+5. create the synthetic plugin host outside the mount;
+6. install the Linux clang/sysroot toolchain into persistent UECI state and project it into `Engine/Extras/...`;
+7. invoke each UBT target once; UBT/clang resolve Engine sources and native libraries through normal filesystem calls;
+8. package the plugin and unmount in a `finally`/async-dispose path.
+
+The materialized backend remains the default because hosted CI cannot be assumed to expose `/dev/fuse`. The mounted backend is currently Linux x64 only.
+
+```bash
+./scripts/smoke-plugin-vfs.sh
+```

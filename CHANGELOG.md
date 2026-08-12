@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.5.0-alpha.4] - 2026-08-12
+
+### Added
+
+- Adds `build-plugin --backend fuse` for the first end-to-end Linux x64 mounted plugin build path. It prepares a private virtual Engine, compiles UnrealBuildTool through FUSE using Epic's bundled .NET SDK, installs the native Linux toolchain, runs each plugin target once, packages the result, and unmounts automatically.
+- Adds a reusable `LinuxFuseMountSession` so callers can start a mount, run arbitrary build processes against it, and reliably unmount/stop the protocol server through async disposal.
+- Adds `scripts/smoke-plugin-vfs.sh` as the real minimal-plugin compile gate for the mounted backend.
+- Adds mounted-build I/O metrics for hydrated Git blobs/bytes and GitDependencies downloads.
+
+### Changed
+
+- The synthetic plugin host can live outside the Engine root; mounted builds keep project/plugin build outputs on the normal host filesystem while only Engine writes use COW.
+- The Linux toolchain installer can use an explicit persistent store outside the Engine/mount and project it into the virtual Engine.
+- The embedded FUSE helper now forwards `fallocate`, `copy_file_range`, and `lseek` to backing file descriptors for build-tool compatibility. libfuse documents local locking as kernel-managed when lock/flock callbacks are absent.
+- CLI version advanced to `0.5.0-alpha.4`.
+
+### Compatibility
+
+- `materialized` remains the default `build-plugin` backend. FUSE is opt-in (`--backend fuse`) and currently Linux x64 only, preserving hosted-CI portability.
+
 ## [0.5.0-alpha.3] - 2026-08-12
 
 ### Fixed

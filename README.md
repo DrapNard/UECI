@@ -2,7 +2,7 @@
 
 **UECI is an experimental, minimal Unreal Engine substrate for CI/CD.** Its goal is to build Unreal Engine code plugins without installing a full Unreal Engine tree on every runner.
 
-> Status: **v0.5 alpha / technical prototype.** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, the materialized lazy plugin-build fallback, and a real Linux/FUSE3 virtual Engine mount now exist. Windows/macOS mounted backends and direct `build-plugin` integration with the mount remain roadmap items.
+> Status: **v0.5 alpha / technical prototype.** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, the materialized lazy plugin-build fallback, and a real Linux/FUSE3 virtual Engine mount now exist. `build-plugin --backend fuse` can compile UBT and the plugin directly through that mounted Engine on Linux x64. Windows/macOS mounted backends remain roadmap items.
 
 ## Why
 
@@ -179,7 +179,7 @@ UECI injects the Git authorization header through per-process environment config
 
 The v0.5 mounted backend exposes the whole pinned Unreal namespace without checking out Engine source contents. Directory metadata comes from Git tree metadata + `Commit.gitdeps.xml`; the first `open()` of an immutable file blocks only that filesystem request while UECI fills the CAS. Writes go to a persistent copy-on-write upper layer outside the mount.
 
-`v0.5.0-alpha.3` keeps mount startup observable: Git-tree indexing streams counters/rate/memory, GitDependencies parsing reports object counts, namespace construction reports merge progress, and `--verbose` additionally logs individual FUSE requests. Git source blob sizes are intentionally absent from the metadata-only `blob:none` index: directory enumeration stays metadata-only, while the first targeted `stat(2)`/open of an uncached Git file hydrates only that blob so FUSE can return an exact POSIX `st_size`. This avoids both mass blob hydration and the false zero-length EOF that an unknown size would otherwise create in the kernel.
+`v0.5.0-alpha.4` keeps mount startup observable: Git-tree indexing streams counters/rate/memory, GitDependencies parsing reports object counts, namespace construction reports merge progress, and `--verbose` additionally logs individual FUSE requests. Git source blob sizes are intentionally absent from the metadata-only `blob:none` index: directory enumeration stays metadata-only, while the first targeted `stat(2)`/open of an uncached Git file hydrates only that blob so FUSE can return an exact POSIX `st_size`. This avoids both mass blob hydration and the false zero-length EOF that an unknown size would otherwise create in the kernel.
 
 ```bash
 export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
@@ -234,7 +234,7 @@ Sparse worktree updates, GitDependencies overlays, and externally installed SDKs
 
 ## Build a plugin (experimental)
 
-The v0.4 path creates a temporary project under the lazy engine root, enables the source plugin, then asks the real UBT to build only the plugin modules. When UBT exposes a concrete missing Engine requirement, UECI materializes it from the pinned Epic Git commit or `Commit.gitdeps.xml` and retries.
+Two backends now coexist. `materialized` keeps the v0.4 sparse discovery/retry loop as the portable fallback. `fuse` (Linux x64) mounts the complete pinned Engine namespace, compiles UBT **inside the virtual Engine**, installs the Epic native toolchain in persistent state outside the mount, and invokes each UBT target once while Git/GitDependencies files hydrate into CAS on normal filesystem access.
 
 ```bash
 export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
@@ -244,19 +244,20 @@ dotnet run --project src/Ueci.Cli -- \
   --engine-dir /tmp/ueci-engine \
   --out /tmp/ueci-package \
   --ref release \
+  --backend fuse \
   --no-pack-cache
 ```
 
-The normal unit suite remains offline/token-free, including a synthetic `.tar.gz` Linux-toolchain test. On a native Linux x86_64 smoke build, UECI only downloads Epic's clang/sysroot toolchain if UBT reports that the Linux SDK is missing. The extracted toolchain remains in the Engine-local `.ueci/toolchains` store for reuse even when `--no-pack-cache` discards the downloaded archive.
+The mounted build keeps the host project and the extracted Linux toolchain outside the FUSE worktree. Engine-generated `Intermediate`, `Saved`, UBT `bin/obj`, and other writes land in the persistent COW upper. At the end UECI reports Git blobs/bytes hydrated and GitDependencies network bytes so the real working set can be measured.
 
-To exercise the real Epic path on a normal machine with the bundled fixture:
+Real-host smokes:
 
 ```bash
-export UECI_EPIC_GITHUB_TOKEN='...'
-./scripts/smoke-plugin.sh
+./scripts/smoke-plugin.sh       # materialized fallback
+./scripts/smoke-plugin-vfs.sh   # Linux/FUSE mounted build
 ```
 
-See [`docs/plugin-build.md`](docs/plugin-build.md) for the discovery loop, packaging behavior, and current alpha limitations.
+See [`docs/plugin-build.md`](docs/plugin-build.md) and [`docs/vfs.md`](docs/vfs.md).
 
 ## Project config
 
@@ -298,7 +299,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.5.0-alpha.3
+- uses: your-org/ueci@v0.5.0-alpha.4
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release
