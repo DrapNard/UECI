@@ -50,6 +50,7 @@ internal static class Program
         ("explicit module requirement force-refreshes an already-sparse Build.cs", ExplicitModuleRefreshAsync),
         ("plugin UBT invocation targets only requested modules", PluginBuildInvocationAsync),
         ("plugin failure excerpt preserves early actionable diagnostics", PluginFailureExcerptAsync),
+        ("plugin product collector harvests synthetic target binaries", PluginProductCollectorAsync),
         ("plugin packager keeps binaries and drops Intermediate", PluginPackagerAsync),
         ("Linux SDK descriptor resolves Epic native toolchain", LinuxToolchainDescriptorAsync),
         ("Linux native toolchain installer is offline-testable and cached", LinuxToolchainInstallerAsync),
@@ -1336,6 +1337,70 @@ internal static class Program
         Assert.True(excerpt.Contains("plugin module is not valid", StringComparison.Ordinal));
         Assert.True(excerpt.Length < string.Join('\n', lines).Length);
         return Task.CompletedTask;
+    }
+
+    private static async Task PluginProductCollectorAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string hostRoot = Path.Combine(root, "host");
+            string pluginRoot = Path.Combine(hostRoot, "Plugins", "Fixture");
+            string targetBinaries = Path.Combine(hostRoot, "Binaries", "Linux");
+            Directory.CreateDirectory(pluginRoot);
+            Directory.CreateDirectory(targetBinaries);
+
+            string descriptor = Path.Combine(pluginRoot, "Fixture.uplugin");
+            await File.WriteAllTextAsync(descriptor, "{ \"FileVersion\": 3 }");
+            await File.WriteAllTextAsync(
+                Path.Combine(targetBinaries, "libUECIHost-Fixture.so"),
+                "native-plugin-binary");
+            await File.WriteAllTextAsync(
+                Path.Combine(targetBinaries, "libUECIHost-Unrelated.so"),
+                "unrelated-binary");
+            await File.WriteAllTextAsync(
+                Path.Combine(targetBinaries, "UECIHost.modules"),
+                """
+                {
+                  "BuildId": "fixture-build",
+                  "Modules": {
+                    "UECIHost": "libUECIHost-UECIHost.so",
+                    "Fixture": "libUECIHost-Fixture.so",
+                    "Unrelated": "libUECIHost-Unrelated.so"
+                  }
+                }
+                """);
+
+            var host = new UnrealPluginHostLayout(
+                hostRoot,
+                Path.Combine(hostRoot, "UECIHost.uproject"),
+                pluginRoot,
+                descriptor,
+                "UECIHost",
+                "UECIHostEditor");
+
+            UnrealPluginBuildProductCollection products = UnrealPluginBuildProductCollector.Collect(
+                host,
+                ["Fixture"],
+                "Linux");
+
+            string pluginBinaries = Path.Combine(pluginRoot, "Binaries", "Linux");
+            Assert.Equal(1, products.NativeBinaries.Count);
+            Assert.True(File.Exists(Path.Combine(pluginBinaries, "libUECIHost-Fixture.so")));
+            Assert.False(File.Exists(Path.Combine(pluginBinaries, "libUECIHost-Unrelated.so")));
+            Assert.True(File.Exists(Path.Combine(pluginBinaries, "UECIHost.modules")));
+
+            using JsonDocument modules = JsonDocument.Parse(
+                await File.ReadAllTextAsync(Path.Combine(pluginBinaries, "UECIHost.modules")));
+            JsonElement moduleMap = modules.RootElement.GetProperty("Modules");
+            Assert.True(moduleMap.TryGetProperty("Fixture", out _));
+            Assert.False(moduleMap.TryGetProperty("UECIHost", out _));
+            Assert.False(moduleMap.TryGetProperty("Unrelated", out _));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
     }
 
     private static async Task PluginPackagerAsync()

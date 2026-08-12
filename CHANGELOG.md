@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0-alpha.15] - 2026-08-13
+
+### Fixed
+
+- Harvests modular native plugin build products emitted beside UECI's unique synthetic target and copies only binaries matching the requested plugin modules into `Plugins/<Name>/Binaries/<Platform>` before packaging. This addresses the alpha.14 smoke where UBT completed successfully but the packaged plugin contained only source files.
+- Preserves matching `.modules` metadata while filtering out synthetic host/unrelated module entries, so the packaged plugin metadata only references binaries that are actually included.
+- Fails inside `build-plugin` with the scanned output roots and observed native products when UBT reports success but no module binary can be located, instead of deferring the failure to the external smoke script.
+- Filters fast-profile fallback diagnostics through parsed missing include/Engine paths, preventing thousands of harmless `.git`, `.ueci`, generated-output and optional-runtime probes from obscuring the real missing source path.
+
+### Changed
+
+- CLI version advanced to `0.5.0-alpha.15`.
+
 ## [0.5.0-alpha.14] - 2026-08-13
 
 ### Fixed

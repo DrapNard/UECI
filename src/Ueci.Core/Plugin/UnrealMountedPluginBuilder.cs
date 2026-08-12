@@ -290,6 +290,21 @@ internal sealed class UnrealMountedPluginBuilder
                 phaseResults.Add(new UnrealPluginBuildPhaseResult(phase.Target, phase.Modules, 1, result));
             }
 
+            IReadOnlyList<string> builtModules = phases
+                .SelectMany(phase => phase.Modules)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+
+            // TargetBuildEnvironment.Unique can place modular products beside the synthetic target
+            // instead of directly in Plugins/<Name>/Binaries. Harvest only files whose binary/module
+            // metadata names resolve to the plugin modules, then package from the canonical plugin tree.
+            UnrealPluginBuildProductCollection collectedProducts = UnrealPluginBuildProductCollector.Collect(
+                host,
+                builtModules,
+                options.Platform,
+                virtualEngineRoot,
+                options.Progress);
+
             VirtualEngineIoMetrics metrics = context.FileSystem.Metrics;
             downloaded += metrics.GitDependenciesDownloadedBytes;
             options.Progress?.Invoke(
@@ -297,10 +312,6 @@ internal sealed class UnrealMountedPluginBuilder
                 $"{metrics.GitDependenciesHydratedFiles:N0} GitDependencies blobs; {FormatBytes(metrics.GitDependenciesDownloadedBytes)} GitDeps network; " +
                 $"profile={context.ProfileSource}, misses={context.FileSystem.ProfileMissCount:N0}.");
 
-            IReadOnlyList<string> builtModules = phases
-                .SelectMany(phase => phase.Modules)
-                .Distinct(StringComparer.Ordinal)
-                .ToArray();
             string packaged = await UnrealPluginPackager.PackageAsync(
                 host,
                 plugin,
@@ -335,6 +346,7 @@ internal sealed class UnrealMountedPluginBuilder
                     $"GitHydratedFiles:{metrics.GitHydratedFiles:N0}",
                     $"GitHydratedBytes:{metrics.GitHydratedBytes:N0}",
                     $"GitDepsHydratedFiles:{metrics.GitDependenciesHydratedFiles:N0}",
+                    $"CollectedNativeProducts:{collectedProducts.NativeBinaries.Count:N0}",
                 ]);
         }
         catch (Exception ex)
@@ -343,7 +355,7 @@ internal sealed class UnrealMountedPluginBuilder
             if (context.IsFastProfile && ShouldRetryWithDynamicProfile(ex))
             {
                 throw new FastProfileIncompleteException(
-                    context.FileSystem.MissingLowerPaths.OrderBy(value => value, StringComparer.Ordinal).ToArray(),
+                    SelectActionableMissingPaths(ex, context.FileSystem.MissingLowerPaths),
                     ex);
             }
             throw;
@@ -374,6 +386,52 @@ internal sealed class UnrealMountedPluginBuilder
                 }
             }
         }
+    }
+
+    private static IReadOnlyList<string> SelectActionableMissingPaths(
+        Exception exception,
+        IReadOnlyCollection<string> observedMissingPaths)
+    {
+        IReadOnlyList<UnrealBuildRequirement> requirements = UnrealBuildDiagnosticParser.Parse(exception.ToString());
+        string[] exactEnginePaths = requirements
+            .Where(requirement => requirement.Kind == UnrealBuildRequirementKind.EnginePath)
+            .Select(requirement => requirement.Value.Replace('\\', '/').TrimStart('/'))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        string[] suffixes = requirements
+            .Where(requirement => requirement.Kind == UnrealBuildRequirementKind.PathSuffix)
+            .Select(requirement => requirement.Value.Replace('\\', '/').TrimStart('/'))
+            .Where(value => value.Length != 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        string[] matched = observedMissingPaths
+            .Select(VirtualEnginePath.Normalize)
+            .Where(path => exactEnginePaths.Contains(path, StringComparer.Ordinal)
+                || suffixes.Any(suffix => path.Equals(suffix, StringComparison.Ordinal)
+                    || path.EndsWith('/' + suffix, StringComparison.Ordinal)))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToArray();
+        if (matched.Length != 0)
+        {
+            return matched;
+        }
+
+        // Keep fallback diagnostics focused on immutable Engine inputs. UBT probes many intentionally
+        // absent HOME/generated paths (.git, .ueci, Engine/Saved, Intermediate, optional runtime files)
+        // which are not evidence that the commit profile needs to grow.
+        return observedMissingPaths
+            .Select(VirtualEnginePath.Normalize)
+            .Where(path => path.StartsWith("Engine/Source/", StringComparison.Ordinal)
+                || path.StartsWith("Engine/Build/", StringComparison.Ordinal)
+                || path.StartsWith("Engine/Config/", StringComparison.Ordinal)
+                || path.StartsWith("Engine/Plugins/", StringComparison.Ordinal)
+                || path.StartsWith("Engine/Shaders/", StringComparison.Ordinal))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .Take(128)
+            .ToArray();
     }
 
     private static bool ShouldRetryWithDynamicProfile(Exception exception)

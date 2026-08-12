@@ -195,6 +195,8 @@ The v0.5 mounted backend exposes the whole pinned Unreal namespace without check
 
 `v0.5.0-alpha.14` gives that synthetic Runtime/Game target a **unique UBT build environment**. Its deliberately lean compile/plugin settings differ from UnrealGame, so sharing UnrealGame build products is rejected by UBT; isolating the target keeps the minimal settings legal without forcing an unsafe shared-environment override.
 
+The mounted backend also normalizes **synthetic-target build products** before packaging. UE may place modular plugin libraries beside a `TargetBuildEnvironment.Unique` host rather than directly under the plugin tree; UECI now harvests only native products whose names match the requested plugin modules, filters matching `.modules` metadata, and copies them into `Plugins/<Name>/Binaries/<Platform>` before the final package is assembled.
+
 ```bash
 export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
 mkdir -p /tmp/ueci-engine-view
@@ -313,7 +315,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.5.0-alpha.14
+- uses: your-org/ueci@v0.5.0-alpha.15
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release
