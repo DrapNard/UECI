@@ -26,6 +26,24 @@ public sealed class EpicGitTreeIndex
     public bool TryGetValue(string path, out EpicGitTreeEntry? entry)
         => _entries.TryGetValue(Normalize(path), out entry);
 
+    public EpicGitTreeIndex WithBlobSizes(IReadOnlyDictionary<string, long>? sizesByObjectId)
+    {
+        if (sizesByObjectId is null || sizesByObjectId.Count == 0)
+        {
+            return this;
+        }
+
+        var enriched = new Dictionary<string, EpicGitTreeEntry>(_entries.Count, StringComparer.Ordinal);
+        foreach ((string path, EpicGitTreeEntry entry) in _entries)
+        {
+            long size = sizesByObjectId.TryGetValue(entry.ObjectId, out long exactSize)
+                ? exactSize
+                : entry.Size;
+            enriched[path] = entry with { Size = size };
+        }
+        return new EpicGitTreeIndex(Commit, enriched);
+    }
+
     public static async Task<EpicGitTreeIndex> LoadAsync(
         string repositoryDirectory,
         string? tokenEnvironmentVariable = null,

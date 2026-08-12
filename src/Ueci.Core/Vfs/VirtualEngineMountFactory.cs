@@ -78,10 +78,18 @@ public static class VirtualEngineMountFactory
                 cancellationToken).ConfigureAwait(false);
         }
 
-        options.Progress?.Invoke("Indexing virtual Engine metadata (Git tree + GitDependencies in parallel)...");
+        options.Progress?.Invoke("Indexing virtual Engine metadata (Git tree + exact Git sizes + GitDependencies in parallel)...");
         var indexStopwatch = System.Diagnostics.Stopwatch.StartNew();
         Task<EpicGitTreeIndex> gitIndexTask = EpicGitTreeIndex.LoadAsync(
             metadataRoot,
+            options.TokenEnvironmentVariable,
+            options.Progress,
+            cancellationToken);
+        Task<GitHubGitTreeSizeIndex?> gitSizeTask = GitHubGitTreeSizeIndex.TryLoadAsync(
+            metadataRoot,
+            options.Repository,
+            commit,
+            stateRoot,
             options.TokenEnvironmentVariable,
             options.Progress,
             cancellationToken);
@@ -89,12 +97,21 @@ public static class VirtualEngineMountFactory
             manifestPath,
             cancellationToken,
             options.Progress);
-        await Task.WhenAll(gitIndexTask, manifestTask).ConfigureAwait(false);
-        EpicGitTreeIndex gitIndex = await gitIndexTask.ConfigureAwait(false);
+        await Task.WhenAll(gitIndexTask, gitSizeTask, manifestTask).ConfigureAwait(false);
+        EpicGitTreeIndex gitIndex = (await gitIndexTask.ConfigureAwait(false)).WithBlobSizes(
+            (await gitSizeTask.ConfigureAwait(false))?.SizesByObjectId);
         GitDependenciesManifest manifest = await manifestTask.ConfigureAwait(false);
+        long exactGitSizes = gitIndex.Entries.Values.LongCount(entry => entry.Size >= 0);
         options.Progress?.Invoke(
             $"Metadata indexes loaded in {indexStopwatch.Elapsed:hh\\:mm\\:ss}: " +
-            $"{gitIndex.Entries.Count:N0} Git blobs + {manifest.Files.Count:N0} GitDependencies files.");
+            $"{gitIndex.Entries.Count:N0} Git blobs ({exactGitSizes:N0} exact sizes) + " +
+            $"{manifest.Files.Count:N0} GitDependencies files.");
+        if (exactGitSizes != gitIndex.Entries.Count)
+        {
+            options.Progress?.Invoke(
+                $"[vfs/git-size] WARNING: {gitIndex.Entries.Count - exactGitSizes:N0} Git blobs lack remote size metadata; " +
+                "only those paths may use targeted-stat hydration fallback.");
+        }
 
         options.Progress?.Invoke(
             $"Building virtual Engine namespace from {gitIndex.Entries.Count:N0} Git blobs + {manifest.Files.Count:N0} GitDependencies files...");

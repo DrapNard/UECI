@@ -85,10 +85,10 @@ public sealed class VirtualEngineFileSystem
     }
 
     /// <summary>
-    /// Returns metadata suitable for a real POSIX stat(2). Git tree objects do not carry blob sizes,
-    /// so an uncached Git file has Size=0 in the metadata-only namespace. A targeted stat for such a
-    /// file is therefore the first content demand: hydrate only that blob, then report its exact size.
-    /// Directory enumeration remains metadata-only and never calls this method for every child.
+    /// Returns metadata suitable for a real POSIX stat(2). Mounted Epic/GitHub views are normally
+    /// enriched with exact blob sizes from GitHub tree metadata, so stat stays metadata-only. For
+    /// non-GitHub repositories (or an incomplete size index), this retains a correctness fallback that
+    /// hydrates only the explicitly stat'ed blob rather than returning a false zero length.
     /// </summary>
     public async Task<VirtualEngineMetadata?> GetStatMetadataAsync(
         string path,
@@ -116,7 +116,7 @@ public sealed class VirtualEngineFileSystem
             return metadata with { Size = cachedSize };
         }
 
-        _progress?.Invoke($"[vfs/stat] hydrating exact Git size: {normalized}");
+        _progress?.Invoke($"[vfs/stat] exact size metadata missing; hydrating fallback: {normalized}");
         string backing = await ResolveReadBackingPathAsync(normalized, cancellationToken).ConfigureAwait(false);
         return metadata with { Size = new FileInfo(backing).Length };
     }

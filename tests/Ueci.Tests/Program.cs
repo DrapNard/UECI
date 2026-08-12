@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Formats.Tar;
 using System.IO.Compression;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using Ueci.Epic;
@@ -23,6 +24,7 @@ internal static class Program
         ("materialization path cannot escape root", MaterializationPathSafetyAsync),
         ("git credential is process-only config", GitCredentialEnvironmentAsync),
         ("Epic sparse source seed materializes from a local partial clone", EpicSparseSourceMaterializationAsync),
+        ("GitHub tree size metadata splits truncated subtrees without blob content", GitHubTreeSizeMetadataAsync),
         ("virtual Engine view overlays GitDependencies over Git and performs lazy COW", VirtualEngineViewCowAsync),
         ("materializer extracts multiple blobs in one pack download", MaterializerExtractsMultiBlobPackAsync),
         ("materializer reuses compressed pack cache", MaterializerReusesPackCacheAsync),
@@ -231,6 +233,69 @@ internal static class Program
         }
     }
 
+    private static async Task GitHubTreeSizeMetadataAsync()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"ueci-github-tree-size-{Guid.NewGuid():N}");
+        string repo = Path.Combine(root, "repo");
+        string state = Path.Combine(root, "state");
+        const string tokenVariable = "UECI_TEST_GITHUB_TREE_TOKEN";
+        string? previousToken = Environment.GetEnvironmentVariable(tokenVariable);
+        try
+        {
+            Directory.CreateDirectory(repo);
+            await RunGitAsync(repo, ["init", "--quiet", "--initial-branch=main"]);
+            await RunGitAsync(repo, ["config", "user.name", "UECI Tests"]);
+            await RunGitAsync(repo, ["config", "user.email", "ueci@example.invalid"]);
+            WriteFixtureFile(repo, "root.txt", "root\n");
+            await RunGitAsync(repo, ["add", "."]);
+            await RunGitAsync(repo, ["commit", "--quiet", "-m", "fixture"]);
+            string commit = (await RunGitCaptureAsync(repo, ["rev-parse", "HEAD"])).Trim();
+            string rootTree = (await RunGitCaptureAsync(repo, ["rev-parse", "HEAD^{tree}"])).Trim();
+
+            Environment.SetEnvironmentVariable(tokenVariable, "test-token");
+            string treeA = new string('a', 40);
+            string treeB = new string('b', 40);
+            string blobRoot = new string('1', 40);
+            string blobA = new string('2', 40);
+            string blobB = new string('3', 40);
+
+            var responses = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [$"{rootTree}|0"] = $$"""{"sha":"{{rootTree}}","truncated":false,"tree":[{"path":"root.txt","mode":"100644","type":"blob","sha":"{{blobRoot}}","size":5},{"path":"Engine","mode":"040000","type":"tree","sha":"{{treeA}}"}]}""",
+                [$"{treeA}|1"] = $$"""{"sha":"{{treeA}}","truncated":true,"tree":[{"path":"partial.txt","mode":"100644","type":"blob","sha":"{{blobA}}","size":7}]}""",
+                [$"{treeA}|0"] = $$"""{"sha":"{{treeA}}","truncated":false,"tree":[{"path":"a.txt","mode":"100644","type":"blob","sha":"{{blobA}}","size":7},{"path":"Child","mode":"040000","type":"tree","sha":"{{treeB}}"}]}""",
+                [$"{treeB}|1"] = $$"""{"sha":"{{treeB}}","truncated":false,"tree":[{"path":"b.txt","mode":"100644","type":"blob","sha":"{{blobB}}","size":11}]}""",
+            };
+            using var http = new HttpClient(new TreeMetadataHandler(responses));
+            GitHubGitTreeSizeIndex? index = await GitHubGitTreeSizeIndex.TryLoadAsync(
+                repo,
+                EpicGitClient.DefaultRepository,
+                commit,
+                state,
+                tokenVariable,
+                httpClient: http);
+
+            Assert.True(index is not null);
+            Assert.Equal(5L, index!.SizesByObjectId[blobRoot]);
+            Assert.Equal(7L, index.SizesByObjectId[blobA]);
+            Assert.Equal(11L, index.SizesByObjectId[blobB]);
+            Assert.Equal(4, index.RequestCount);
+
+            // The second load must be commit-cache only: no HTTP requests are allowed.
+            using var cachedHttp = new HttpClient(new TreeMetadataHandler(new Dictionary<string, string>()));
+            GitHubGitTreeSizeIndex? cached = await GitHubGitTreeSizeIndex.TryLoadAsync(
+                repo, EpicGitClient.DefaultRepository, commit, state, tokenVariable, httpClient: cachedHttp);
+            Assert.True(cached is not null);
+            Assert.Equal(0, cached!.RequestCount);
+            Assert.Equal(11L, cached.SizesByObjectId[blobB]);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(tokenVariable, previousToken);
+            DeleteDirectory(root);
+        }
+    }
+
     private static async Task VirtualEngineViewCowAsync()
     {
         string root = CreateTempDirectory();
@@ -262,15 +327,22 @@ internal static class Program
                 "main",
                 tokenVariable);
 
-            EpicGitTreeIndex gitIndex = await EpicGitTreeIndex.LoadAsync(metadataRoot, tokenVariable);
+            EpicGitTreeIndex rawGitIndex = await EpicGitTreeIndex.LoadAsync(metadataRoot, tokenVariable);
+            Assert.True(rawGitIndex.TryGetValue(
+                "Engine/Source/Runtime/Core/Public/GitOnly.h", out EpicGitTreeEntry? rawGitOnly));
+            Assert.Equal(-1L, rawGitOnly!.Size);
+            EpicGitTreeIndex gitIndex = rawGitIndex.WithBlobSizes(new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
+            {
+                [rawGitOnly.ObjectId] = "git-only\n".Length,
+            });
             SyntheticPack fixture = CreateSyntheticPack();
             VirtualEngineIndex index = VirtualEngineIndex.Build(gitIndex, fixture.Manifest);
             Assert.True(index.TryGet("Engine/Source/Runtime/Core/Public/Core.h", out VirtualEngineLowerEntry? overlaid));
             Assert.Equal(VirtualEngineSourceKind.GitDependencies, overlaid!.Metadata.Source);
             Assert.True(index.TryGet("Engine/Source/Runtime/Core/Public/GitOnly.h", out VirtualEngineLowerEntry? gitOnly));
             Assert.Equal(VirtualEngineSourceKind.Git, gitOnly!.Metadata.Source);
-            Assert.Equal(-1L, gitOnly.GitEntry!.Size);
-            Assert.Equal(0L, gitOnly.Metadata.Size);
+            Assert.Equal((long)"git-only\n".Length, gitOnly.GitEntry!.Size);
+            Assert.Equal((long)"git-only\n".Length, gitOnly.Metadata.Size);
 
             var packSource = new MemoryPackSource(fixture.PackUri, fixture.CompressedBytes);
             var fileSystem = new VirtualEngineFileSystem(
@@ -292,13 +364,14 @@ internal static class Program
 
             VirtualEngineMetadata? gitBeforeOpen = await fileSystem.GetMetadataAsync(
                 "Engine/Source/Runtime/Core/Public/GitOnly.h");
-            Assert.Equal(0L, gitBeforeOpen!.Size);
+            Assert.Equal((long)"git-only\n".Length, gitBeforeOpen!.Size);
 
-            // A real POSIX stat must not lie about st_size. Because Git tree objects do not encode blob
-            // length, an exact stat becomes the first targeted content demand and hydrates only this blob.
+            // Exact size metadata must not hydrate Git content. The first actual open remains the
+            // content-demand boundary even though stat(2) can report a correct POSIX st_size.
             VirtualEngineMetadata? gitStat = await fileSystem.GetStatMetadataAsync(
                 "Engine/Source/Runtime/Core/Public/GitOnly.h");
             Assert.Equal((long)"git-only\n".Length, gitStat!.Size);
+            Assert.Equal(0L, fileSystem.Metrics.GitHydratedFiles);
 
             string gitBacking = await fileSystem.ResolveReadBackingPathAsync(
                 "Engine/Source/Runtime/Core/Public/GitOnly.h");
@@ -345,6 +418,11 @@ internal static class Program
 
     private static async Task RunGitAsync(string workingDirectory, IReadOnlyList<string> arguments)
     {
+        _ = await RunGitCaptureAsync(workingDirectory, arguments).ConfigureAwait(false);
+    }
+
+    private static async Task<string> RunGitCaptureAsync(string workingDirectory, IReadOnlyList<string> arguments)
+    {
         var info = new ProcessStartInfo("git")
         {
             WorkingDirectory = workingDirectory,
@@ -368,10 +446,9 @@ internal static class Program
         if (process.ExitCode != 0)
         {
             throw new Exception(
-                $"git {string.Join(" ", arguments)} failed with {process.ExitCode}: " +
-                string.Join(Environment.NewLine, new[] { standardOutput.Trim(), standardError.Trim() }
-                    .Where(value => value.Length != 0)));
+                $"git {string.Join(' ', arguments)} failed with {process.ExitCode}: {standardError.Trim()}");
         }
+        return standardOutput;
     }
 
     private static async Task MaterializerExtractsMultiBlobPackAsync()
@@ -1527,6 +1604,34 @@ internal static class Program
             DownloadCount++;
             await destination.WriteAsync(_bytes.AsMemory(), cancellationToken);
             return _bytes.Length;
+        }
+    }
+
+    private sealed class TreeMetadataHandler : HttpMessageHandler
+    {
+        private readonly IReadOnlyDictionary<string, string> _responses;
+
+        public TreeMetadataHandler(IReadOnlyDictionary<string, string> responses)
+        {
+            _responses = responses;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            string path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            string tree = path.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? string.Empty;
+            string recursive = request.RequestUri?.Query.Contains("recursive=1", StringComparison.Ordinal) == true ? "1" : "0";
+            if (!_responses.TryGetValue($"{tree}|{recursive}", out string? json))
+            {
+                throw new Exception($"unexpected GitHub tree request: {request.RequestUri}");
+            }
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            };
+            return Task.FromResult(response);
         }
     }
 
