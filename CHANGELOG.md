@@ -2,6 +2,13 @@
 
 All notable changes to UECI will be documented here.
 
+## [0.3.0-alpha.3] - 2026-08-12
+
+### Fixed
+
+- Fixes C# `CS0136` compilation errors in `EpicBundledDotNetSdkResolver` caused by local variable shadowing.
+- Keeps SDK candidate parsing semantically unchanged while using distinct candidate/selected variable names.
+
 ## [0.3.0-alpha.2] - 2026-08-12
 
 ### Fixed

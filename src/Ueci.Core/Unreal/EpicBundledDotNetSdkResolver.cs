@@ -39,13 +39,13 @@ public static class EpicBundledDotNetSdkResolver
                 || parts[3] != "DotNet"
                 || parts[5] != runtimeIdentifier
                 || parts[6] != "sdk"
-                || !Version.TryParse(parts[7], out Version? sdkVersion))
+                || !Version.TryParse(parts[7], out Version? parsedSdkVersion))
             {
                 continue;
             }
 
-            string bundlePrefix = string.Join("/", parts.Take(6)) + "/";
-            candidates[(bundlePrefix, sdkVersion)] = path;
+            string candidateBundlePrefix = string.Join("/", parts.Take(6)) + "/";
+            candidates[(candidateBundlePrefix, parsedSdkVersion)] = path;
         }
 
         if (candidates.Count == 0)
