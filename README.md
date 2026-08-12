@@ -179,6 +179,8 @@ UECI injects the Git authorization header through per-process environment config
 
 The v0.5 mounted backend exposes the whole pinned Unreal namespace without checking out Engine source contents. Directory metadata comes from Git tree metadata + `Commit.gitdeps.xml`; the first `open()` of an immutable file blocks only that filesystem request while UECI fills the CAS. Writes go to a persistent copy-on-write upper layer outside the mount.
 
+`v0.5.0-alpha.2` keeps mount startup observable: Git-tree indexing streams counters/rate/memory, GitDependencies parsing reports object counts, namespace construction reports merge progress, and `--verbose` additionally logs individual FUSE requests. Git source blob sizes are intentionally deferred until first open so the metadata-only `blob:none` index never forces a mass blob download.
+
 ```bash
 export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
 mkdir -p /tmp/ueci-engine-view
@@ -188,7 +190,8 @@ dotnet run --project src/Ueci.Cli -- \
   --metadata-dir .ueci/vfs-source \
   --state-dir .ueci/vfs-state \
   --ref release \
-  --no-pack-cache
+  --no-pack-cache \
+  --verbose
 ```
 
 Then, from another terminal:
@@ -295,7 +298,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.5.0-alpha.1
+- uses: your-org/ueci@v0.5.0-alpha.2
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0-alpha.2] - 2026-08-12
+
+### Fixed
+
+- The VFS Git-tree index no longer runs `git ls-tree --long`. In a `blob:none` partial clone, requesting every blob size can force Git to hydrate missing blobs and turn a metadata-only mount bootstrap into a massive source download. Git source sizes are now deferred until the file is actually opened and cached.
+- Git-backed `stat` metadata upgrades from an unknown/zero size to the real CAS file size after first open. GitDependencies files keep exact manifest sizes from startup.
+- The real VFS smoke no longer kills a healthy startup after 30 seconds; it waits up to 10 minutes by default, prints a five-second heartbeat, and reports the mount process exit code if startup fails.
+
+### Added
+
+- Streaming Git-tree progress every 25k blobs with path rate, metadata bytes, managed-memory estimate, and elapsed time.
+- GitDependencies manifest progress, virtual namespace merge progress, and explicit READY timing in the smoke test.
+- `ueci mount --verbose` request tracing for FUSE `STAT`, `LIST`, `RESOLVE`, write/COW, rename and link operations. The VFS smoke enables it by default (`UECI_VFS_VERBOSE=0` disables request tracing).
+- Regression coverage for deferred Git blob sizes and size promotion after CAS materialization.
+
 ## [0.5.0-alpha.1] - 2026-08-12
 
 ### Added

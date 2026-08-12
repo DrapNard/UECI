@@ -46,12 +46,12 @@ The native helper does **not** contain Unreal/GitDependencies logic. It forwards
 At mount preparation time UECI performs metadata-only work:
 
 1. fetch the selected Epic ref with `--filter=blob:none`;
-2. parse `git ls-tree -r -l -z` for all tracked blob names, object IDs, modes and sizes;
+2. stream `git ls-tree -r -z` for tracked blob names, object IDs and modes **without asking Git for blob sizes**;
 3. load `Commit.gitdeps.xml`;
 4. merge both namespaces with **GitDependencies taking precedence over Git**, matching a normal Setup overlay;
 5. infer directory entries from the indexed paths.
 
-`stat()` and `readdir()` therefore do not need file content and do not trigger Engine source downloads.
+`stat()` and `readdir()` therefore do not need file content and do not trigger Engine source downloads. Git tree objects do not carry blob sizes, so an unopened Git-backed file initially reports size `0`; after its first `open()` materializes the blob into CAS, subsequent metadata reports the real cached size. GitDependencies entries always have exact sizes because the manifest contains them.
 
 ## Lazy reads
 
@@ -113,7 +113,8 @@ dotnet run --project src/Ueci.Cli -- \
   --metadata-dir .ueci/vfs-source \
   --state-dir .ueci/vfs-state \
   --ref release \
-  --no-pack-cache
+  --no-pack-cache \
+  --verbose
 ```
 
 In another terminal:
@@ -125,7 +126,7 @@ mkdir -p /tmp/ueci-engine/Engine/Saved/UECI
 printf 'hello\n' >/tmp/ueci-engine/Engine/Saved/UECI/cow-test.txt
 ```
 
-The first content read may block while its backing blob enters CAS. Repeating the same read should be a warm CAS hit with no network traffic.
+The first content read may block while its backing blob enters CAS. Repeating the same read should be a warm CAS hit with no network traffic. Startup/index progress is always printed; `--verbose` additionally traces individual FUSE requests. The real smoke prints a heartbeat every five seconds while it waits for the mount and defaults to a 10-minute startup timeout (`UECI_VFS_START_TIMEOUT`).
 
 ## Security / deadlock boundary
 
