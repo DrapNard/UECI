@@ -7,6 +7,7 @@ using Ueci.Epic;
 using Ueci.GitDeps;
 using Ueci.Plugin;
 using Ueci.Unreal;
+using Ueci.Vfs;
 
 namespace Ueci.Tests;
 
@@ -22,6 +23,7 @@ internal static class Program
         ("materialization path cannot escape root", MaterializationPathSafetyAsync),
         ("git credential is process-only config", GitCredentialEnvironmentAsync),
         ("Epic sparse source seed materializes from a local partial clone", EpicSparseSourceMaterializationAsync),
+        ("virtual Engine view overlays GitDependencies over Git and performs lazy COW", VirtualEngineViewCowAsync),
         ("materializer extracts multiple blobs in one pack download", MaterializerExtractsMultiBlobPackAsync),
         ("materializer reuses compressed pack cache", MaterializerReusesPackCacheAsync),
         ("materializer repairs corrupt compressed pack cache", MaterializerRepairsCorruptPackCacheAsync),
@@ -220,6 +222,96 @@ internal static class Program
                 clientRoot, "Engine", "Source", "Programs", "Shared", "EpicGames.Core", "Core.cs")));
             Assert.False(File.Exists(Path.Combine(clientRoot, "Other", "Excluded", "large.bin")));
             Assert.True(progress.Any(line => line.Contains("sparse source seed contains", StringComparison.Ordinal)));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(tokenVariable, previousToken);
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task VirtualEngineViewCowAsync()
+    {
+        string root = CreateTempDirectory();
+        const string tokenVariable = "UECI_TEST_VFS_TOKEN";
+        string? previousToken = Environment.GetEnvironmentVariable(tokenVariable);
+        try
+        {
+            string sourceRoot = Path.Combine(root, "source");
+            string bareRoot = Path.Combine(root, "remote.git");
+            string metadataRoot = Path.Combine(root, "metadata");
+            string cacheRoot = Path.Combine(root, "cache");
+            Directory.CreateDirectory(sourceRoot);
+
+            await RunGitAsync(sourceRoot, ["init", "--quiet", "--initial-branch=main"]);
+            await RunGitAsync(sourceRoot, ["config", "user.name", "UECI Tests"]);
+            await RunGitAsync(sourceRoot, ["config", "user.email", "ueci@example.invalid"]);
+            WriteFixtureFile(sourceRoot, "Engine/Source/Runtime/Core/Public/GitOnly.h", "git-only\n");
+            WriteFixtureFile(sourceRoot, "Engine/Source/Runtime/Core/Public/Core.h", "git-version-is-overlaid\n");
+            await RunGitAsync(sourceRoot, ["add", "."]);
+            await RunGitAsync(sourceRoot, ["commit", "--quiet", "-m", "fixture"]);
+            await RunGitAsync(root, ["clone", "--quiet", "--bare", sourceRoot, bareRoot]);
+            await RunGitAsync(bareRoot, ["config", "uploadpack.allowFilter", "true"]);
+
+            Environment.SetEnvironmentVariable(tokenVariable, "test-token");
+            var gitClient = new EpicGitClient();
+            await gitClient.InitializePartialRepositoryAsync(
+                metadataRoot,
+                new Uri(bareRoot).AbsoluteUri,
+                "main",
+                tokenVariable);
+
+            EpicGitTreeIndex gitIndex = await EpicGitTreeIndex.LoadAsync(metadataRoot, tokenVariable);
+            SyntheticPack fixture = CreateSyntheticPack();
+            VirtualEngineIndex index = VirtualEngineIndex.Build(gitIndex, fixture.Manifest);
+            Assert.True(index.TryGet("Engine/Source/Runtime/Core/Public/Core.h", out VirtualEngineLowerEntry? overlaid));
+            Assert.Equal(VirtualEngineSourceKind.GitDependencies, overlaid!.Metadata.Source);
+            Assert.True(index.TryGet("Engine/Source/Runtime/Core/Public/GitOnly.h", out VirtualEngineLowerEntry? gitOnly));
+            Assert.Equal(VirtualEngineSourceKind.Git, gitOnly!.Metadata.Source);
+
+            var packSource = new MemoryPackSource(fixture.PackUri, fixture.CompressedBytes);
+            var fileSystem = new VirtualEngineFileSystem(
+                index,
+                new EpicGitBlobStore(metadataRoot, cacheRoot, tokenVariable),
+                new GitDependenciesMaterializer(packSource),
+                new GitDependenciesFetchOptions(cacheRoot, CacheCompressedPacks: true, MaxConcurrentPacks: 1),
+                Path.Combine(root, "upper"),
+                Path.Combine(root, "state"));
+
+            string coreBacking = await fileSystem.ResolveReadBackingPathAsync(
+                "Engine/Source/Runtime/Core/Public/Core.h");
+            Assert.SequenceEqual(fixture.BlobB, await File.ReadAllBytesAsync(coreBacking));
+            Assert.Equal(1, packSource.DownloadCount);
+            string coreWarm = await fileSystem.ResolveReadBackingPathAsync(
+                "Engine/Source/Runtime/Core/Public/Core.h");
+            Assert.Equal(coreBacking, coreWarm);
+            Assert.Equal(1, packSource.DownloadCount);
+
+            string gitBacking = await fileSystem.ResolveReadBackingPathAsync(
+                "Engine/Source/Runtime/Core/Public/GitOnly.h");
+            Assert.Equal("git-only\n", await File.ReadAllTextAsync(gitBacking));
+
+            string upper = await fileSystem.ResolveWriteBackingPathAsync(
+                "Engine/Source/Runtime/Core/Public/Core.h",
+                create: false);
+            await File.WriteAllTextAsync(upper, "changed-in-upper\n");
+            Assert.Equal(upper, await fileSystem.ResolveReadBackingPathAsync(
+                "Engine/Source/Runtime/Core/Public/Core.h"));
+            Assert.Equal("changed-in-upper\n", await File.ReadAllTextAsync(upper));
+
+            IReadOnlyList<VirtualEngineDirectoryEntry> children = await fileSystem.ListAsync(
+                "Engine/Source/Runtime/Core/Public");
+            Assert.True(children.Any(entry => entry.Name == "Core.h"));
+            Assert.True(children.Any(entry => entry.Name == "CoreAlias.h"));
+            Assert.True(children.Any(entry => entry.Name == "GitOnly.h"));
+
+            await fileSystem.DeleteAsync("Engine/Source/Runtime/Core/Public/Core.h", directory: false);
+            Assert.True(await fileSystem.GetMetadataAsync("Engine/Source/Runtime/Core/Public/Core.h") is null);
+            string recreated = await fileSystem.ResolveWriteBackingPathAsync(
+                "Engine/Source/Runtime/Core/Public/Core.h",
+                create: true);
+            await File.WriteAllTextAsync(recreated, "recreated\n");
+            Assert.True(await fileSystem.GetMetadataAsync("Engine/Source/Runtime/Core/Public/Core.h") is not null);
         }
         finally
         {

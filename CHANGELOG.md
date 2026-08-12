@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0-alpha.1] - 2026-08-12
+
+### Added
+
+- Adds `ueci mount <mountpoint>` as the first real mounted Engine backend on Linux using FUSE3.
+- Builds a complete virtual namespace from a metadata-only Epic Git tree index plus `Commit.gitdeps.xml`; `stat`/`readdir` do not check out Engine source contents.
+- Adds lazy immutable content providers for Epic Git blobs and verified GitDependencies blobs. The first file open may block while its content enters the shared CAS; warm opens reuse the local backing blob.
+- Adds a persistent writable copy-on-write upper layer with whiteouts, file copy-up, generated directories/files, symlinks, mode changes, deletes and file renames.
+- Adds an embedded native libfuse3 helper that forwards metadata/path-resolution requests to Ueci.Core over a Unix-domain socket and serves opened files through real backing descriptors.
+- Adds `scripts/smoke-vfs.sh` for an opt-in real Linux mount/read/write smoke test.
+
+### Changed
+
+- Extends `GitDependenciesMaterializer` with a CAS-only `EnsureBlobAsync` path so VFS reads do not require a throwaway materialized output file.
+- Keeps the v0.4 materialized plugin-build discovery loop as the portable fallback while mounted-mode plugin orchestration is integrated in a later v0.5 alpha.
+- CLI version advanced to `0.5.0-alpha.1`.
+
+### Testing
+
+- Adds an offline virtual-engine test that overlays GitDependencies over a local blobless Git fixture, validates lazy Git/GitDependencies reads, verifies CAS reuse, exercises copy-up/whiteout/recreate semantics, and checks merged directory enumeration without requiring FUSE.
+
 ## [0.4.0-alpha.11] - 2026-08-12
 
 ### Fixed

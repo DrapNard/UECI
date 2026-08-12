@@ -3,12 +3,14 @@ using Ueci.Epic;
 using Ueci.GitDeps;
 using Ueci.Plugin;
 using Ueci.Unreal;
+using Ueci.Vfs;
+using Ueci.Vfs.Linux;
 
 namespace Ueci.Cli;
 
 internal static class Program
 {
-    private const string CliVersion = "0.4.0-alpha.11";
+    private const string CliVersion = "0.5.0-alpha.1";
 
     public static async Task<int> Main(string[] args)
     {
@@ -32,6 +34,7 @@ internal static class Program
                 "epic" => await RunEpicAsync(args[1..]).ConfigureAwait(false),
                 "ubt" => await RunUbtAsync(args[1..]).ConfigureAwait(false),
                 "build-plugin" => await RunBuildPluginAsync(args[1..]).ConfigureAwait(false),
+                "mount" => await RunMountAsync(args[1..]).ConfigureAwait(false),
                 "init" => await RunInitAsync(args[1..]).ConfigureAwait(false),
                 _ => Fail($"Unknown command '{args[0]}'."),
             };
@@ -376,6 +379,83 @@ internal static class Program
         }
     }
 
+    private static async Task<int> RunMountAsync(string[] args)
+    {
+        if (args.Length == 0 || IsHelp(args[0]))
+        {
+            PrintMountHelp();
+            return args.Length == 0 ? 2 : 0;
+        }
+
+        if (!OperatingSystem.IsLinux())
+        {
+            return Fail("The v0.5 mounted backend currently requires Linux + FUSE3. Use the materialized backend on other hosts.");
+        }
+
+        string mountPoint = args[0];
+        string metadataRoot = GetOption(args, "--metadata-dir") ?? Path.Combine(".ueci", "vfs-source");
+        string stateRoot = GetOption(args, "--state-dir") ?? Path.Combine(".ueci", "vfs-state");
+        string? upperRoot = GetOption(args, "--upper-dir");
+        string? manifestPath = GetOption(args, "--manifest");
+        string repo = GetOption(args, "--repo") ?? EpicGitClient.DefaultRepository;
+        string reference = GetOption(args, "--ref") ?? EpicGitClient.DefaultRef;
+        string? tokenEnv = GetOption(args, "--token-env");
+        GitDependenciesFetchOptions fetchOptions = GetFetchOptions(args);
+        string effectiveUpperRoot = upperRoot ?? Path.Combine(stateRoot, "upper");
+        ValidateMountBackingPaths(
+            mountPoint,
+            metadataRoot,
+            stateRoot,
+            effectiveUpperRoot,
+            fetchOptions.CacheDirectory);
+
+        using var cancellation = new CancellationTokenSource();
+        ConsoleCancelEventHandler handler = (_, eventArgs) =>
+        {
+            eventArgs.Cancel = true;
+            cancellation.Cancel();
+        };
+        Console.CancelKeyPress += handler;
+        try
+        {
+            using VirtualEngineMountContext context = await VirtualEngineMountFactory.PrepareAsync(
+                new VirtualEngineMountPreparationOptions(
+                    metadataRoot,
+                    stateRoot,
+                    manifestPath,
+                    repo,
+                    reference,
+                    tokenEnv,
+                    fetchOptions,
+                    upperRoot,
+                    Progress: message => Console.Error.WriteLine($"[ueci] {message}")),
+                cancellation.Token).ConfigureAwait(false);
+
+            Console.Error.WriteLine($"[ueci] Epic commit: {context.Commit}");
+            Console.Error.WriteLine($"[ueci] Writable upper: {context.FileSystem.UpperRoot}");
+            Console.Error.WriteLine("[ueci] Reads are lazy: the first open may block while its Git/GitDependencies blob enters the CAS.");
+            Console.Error.WriteLine("[ueci] Press Ctrl+C to unmount.");
+
+            var mount = new LinuxFuseMount();
+            int exitCode = await mount.RunAsync(
+                context.FileSystem,
+                new LinuxFuseMountOptions(
+                    mountPoint,
+                    fetchOptions.CacheDirectory,
+                    Progress: message => Console.Error.WriteLine($"[ueci] {message}")),
+                cancellation.Token).ConfigureAwait(false);
+            return cancellation.IsCancellationRequested ? 0 : exitCode;
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            return 0;
+        }
+        finally
+        {
+            Console.CancelKeyPress -= handler;
+        }
+    }
+
     private static async Task<int> RunBuildPluginAsync(string[] args)
     {
         if (args.Length == 0 || IsHelp(args[0]))
@@ -555,6 +635,36 @@ internal static class Program
         return 2;
     }
 
+    private static void ValidateMountBackingPaths(string mountPoint, params string[] backingPaths)
+    {
+        string mount = Path.GetFullPath(mountPoint);
+        foreach (string backingPath in backingPaths)
+        {
+            string backing = Path.GetFullPath(backingPath);
+            if (PathsOverlap(mount, backing))
+            {
+                throw new ArgumentException(
+                    $"FUSE backing path '{backing}' must not overlap mount point '{mount}'. " +
+                    "Keep metadata, CAS, state and the writable upper outside the mounted tree.");
+            }
+        }
+    }
+
+    private static bool PathsOverlap(string left, string right)
+        => IsSameOrDescendant(left, right) || IsSameOrDescendant(right, left);
+
+    private static bool IsSameOrDescendant(string path, string candidateParent)
+    {
+        string fullPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        string parent = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidateParent));
+        if (string.Equals(fullPath, parent, StringComparison.Ordinal))
+        {
+            return true;
+        }
+        string prefix = parent + Path.DirectorySeparatorChar;
+        return fullPath.StartsWith(prefix, StringComparison.Ordinal);
+    }
+
     private static void PrintHelp()
     {
         Console.WriteLine("""
@@ -566,9 +676,10 @@ internal static class Program
               ueci epic <command> ...
               ueci ubt <command> ...
               ueci build-plugin <Plugin.uplugin> [options]
+              ueci mount <mountpoint> [options]
               ueci --version
 
-            Run 'ueci build-plugin --help' or the command-specific help for details.
+            Run 'ueci mount --help', 'ueci build-plugin --help' or the command-specific help for details.
             """);
     }
 
@@ -588,6 +699,34 @@ internal static class Program
               --no-pack-cache            Delete compressed packs after extraction.
               --max-concurrent-packs N   Download/extract up to N packs concurrently (default: 2).
               --json                     Emit machine-readable output.
+            """);
+    }
+
+    private static void PrintMountHelp()
+    {
+        Console.WriteLine("""
+            Mount a lazy virtual Unreal Engine tree (Linux/FUSE3 MVP):
+              ueci mount <mountpoint> [options]
+
+            Options:
+              --metadata-dir PATH        Blobless Epic Git metadata store (default: .ueci/vfs-source).
+              --state-dir PATH           Persistent VFS/COW state (default: .ueci/vfs-state).
+              --upper-dir PATH           Writable copy-on-write layer override.
+              --manifest PATH            Use an existing Commit.gitdeps.xml instead of fetching it from Git.
+              --ref REF                  Epic Unreal Engine ref (default: release).
+              --repo URL                 Epic source repository override.
+              --token-env NAME           Environment variable containing the read-only GitHub token.
+              --cache-dir PATH           Shared content-addressed cache.
+              --no-pack-cache            Keep blobs but discard compressed GitDependencies packs.
+              --max-concurrent-packs N   Concurrent GitDependencies pack extraction limit.
+
+            The mount exposes the complete Engine namespace from Git metadata + Commit.gitdeps.xml without
+            checking out source files. stat/readdir are metadata-only. The first open of a missing immutable
+            file blocks that filesystem request while UECI fetches the backing blob into CAS. Writes use a
+            persistent copy-on-write upper layer outside the FUSE mount. Press Ctrl+C to unmount.
+
+            Build dependency: pkg-config + libfuse3 headers/library + a C compiler. The tiny native helper is
+            embedded in Ueci.Core and compiled once into the UECI cache.
             """);
     }
 

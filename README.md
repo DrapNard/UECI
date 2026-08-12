@@ -2,7 +2,7 @@
 
 **UECI is an experimental, minimal Unreal Engine substrate for CI/CD.** Its goal is to build Unreal Engine code plugins without installing a full Unreal Engine tree on every runner.
 
-> Status: **v0.4 alpha / technical prototype.** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, and an experimental lazy code-plugin build loop now exist. Mounted VFS backends and broad cross-platform plugin validation are still roadmap items.
+> Status: **v0.5 alpha / technical prototype.** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, the materialized lazy plugin-build fallback, and a real Linux/FUSE3 virtual Engine mount now exist. Windows/macOS mounted backends and direct `build-plugin` integration with the mount remain roadmap items.
 
 ## Why
 
@@ -27,7 +27,7 @@ A normal Unreal source setup materializes a very large source/dependency tree be
 
 The long-term design supports both **materialized mode** (portable, no special privileges) and **mounted mode** (FUSE on Linux, WinFsp on Windows, an appropriate macOS backend) behind the same engine-view contract.
 
-## What v0.4 already does
+## What UECI already does
 
 - Streams huge `Commit.gitdeps.xml` files without loading the whole XML document.
 - Builds deterministic `path → blob → pack` indexes.
@@ -59,6 +59,8 @@ The long-term design supports both **materialized mode** (portable, no special p
 - Packages the built plugin with `Binaries` plus a machine-readable `ueci-build.json` report.
 - Ships a minimal Runtime plugin fixture and an opt-in real plugin smoke test that runs on a normal workstation.
 - Provides a future-proof VFS contract without making FUSE/WinFsp mandatory.
+- Mounts a complete virtual Unreal Engine namespace on Linux through FUSE3 with metadata-only `stat`/`readdir`, lazy Git/GitDependencies content fetches, a shared CAS, and a persistent copy-on-write upper layer.
+- Embeds a small libfuse3 helper as source and compiles it once into the local UECI cache instead of shipping a prebuilt native binary.
 - Has dependency-free local tests: no GitHub runner and no Epic token are required.
 
 ## Requirements
@@ -68,6 +70,7 @@ For development/tests:
 - .NET SDK 8.x
 - Git 2.x (Git 2.49+ strongly recommended for fast blobless source materialization via `git backfill`)
 - Linux, Windows, or macOS
+- Mounted mode on Linux: FUSE3 + `pkg-config` + a C compiler (`cc`, Clang, or GCC)
 
 Epic integration additionally requires a GitHub account with access to the private `EpicGames/UnrealEngine` repository and a read-only token for that account.
 
@@ -172,6 +175,31 @@ The lower-level `epic init` and `epic materialize` commands are also available i
 
 UECI injects the Git authorization header through per-process environment configuration. It does not persist the token to `.git/config`, the remote URL, `.ueci.yml`, or normal logs.
 
+## Mount a virtual Engine (Linux/FUSE3)
+
+The v0.5 mounted backend exposes the whole pinned Unreal namespace without checking out Engine source contents. Directory metadata comes from Git tree metadata + `Commit.gitdeps.xml`; the first `open()` of an immutable file blocks only that filesystem request while UECI fills the CAS. Writes go to a persistent copy-on-write upper layer outside the mount.
+
+```bash
+export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
+mkdir -p /tmp/ueci-engine-view
+
+dotnet run --project src/Ueci.Cli -- \
+  mount /tmp/ueci-engine-view \
+  --metadata-dir .ueci/vfs-source \
+  --state-dir .ueci/vfs-state \
+  --ref release \
+  --no-pack-cache
+```
+
+Then, from another terminal:
+
+```bash
+ls /tmp/ueci-engine-view/Engine/Source/Runtime/Core/Public
+head /tmp/ueci-engine-view/Engine/Source/Runtime/Core/Public/CoreMinimal.h
+```
+
+Use `./scripts/smoke-vfs.sh` for the opt-in real-host smoke. Unit tests still do not require `/dev/fuse`. See [`docs/vfs.md`](docs/vfs.md).
+
 ## Bootstrap UnrealBuildTool
 
 Once the Epic token works, UECI can create a blobless source store, check out only the managed UBT/shared source seed, overlay the required GitDependencies files, select the correct bundled .NET SDK for the host, compile UBT, and probe it:
@@ -267,7 +295,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.4.0-alpha.11
+- uses: your-org/ueci@v0.5.0-alpha.1
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release

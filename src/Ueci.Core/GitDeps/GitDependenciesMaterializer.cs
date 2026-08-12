@@ -1,12 +1,50 @@
+using System.Collections.Concurrent;
+
 namespace Ueci.GitDeps;
 
 public sealed class GitDependenciesMaterializer
 {
     private readonly IGitDependenciesPackSource _packSource;
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _packLocks = new(StringComparer.OrdinalIgnoreCase);
 
     public GitDependenciesMaterializer(IGitDependenciesPackSource packSource)
     {
         _packSource = packSource ?? throw new ArgumentNullException(nameof(packSource));
+    }
+
+    public async Task<GitDependenciesCachedBlobResult> EnsureBlobAsync(
+        GitDependencyResolution resolution,
+        GitDependenciesFetchOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(resolution);
+        options ??= GitDependenciesFetchOptions.CreateDefault();
+        ValidateOptions(options);
+
+        var cache = new GitDependenciesCache(options.CacheDirectory);
+        cache.EnsureDirectories();
+        bool blobCacheHit = await cache.IsBlobCachedAndValidAsync(resolution.Blob, cancellationToken)
+            .ConfigureAwait(false);
+        PackMaterializationOutcome packOutcome = PackMaterializationOutcome.None;
+        if (!blobCacheHit)
+        {
+            packOutcome = await EnsureBlobsFromPackWithLockAsync(
+                cache,
+                resolution.Pack,
+                resolution.PackUri,
+                [resolution.Blob],
+                options.CacheCompressedPacks,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        return new GitDependenciesCachedBlobResult(
+            resolution.File.Name,
+            cache.GetBlobPath(resolution.Blob.Hash),
+            resolution.Blob.Hash,
+            resolution.Pack.Hash,
+            blobCacheHit,
+            packOutcome.PackCacheHit,
+            packOutcome.DownloadedBytes);
     }
 
     public async Task<GitDependenciesFetchResult> MaterializeFileAsync(
@@ -18,30 +56,14 @@ public sealed class GitDependenciesMaterializer
         ArgumentNullException.ThrowIfNull(resolution);
         ArgumentException.ThrowIfNullOrWhiteSpace(outputPath);
 
-        options ??= GitDependenciesFetchOptions.CreateDefault();
-        ValidateOptions(options);
-
-        var cache = new GitDependenciesCache(options.CacheDirectory);
-        cache.EnsureDirectories();
-
-        bool blobCacheHit = await cache.IsBlobCachedAndValidAsync(resolution.Blob, cancellationToken)
-            .ConfigureAwait(false);
-        PackMaterializationOutcome packOutcome = PackMaterializationOutcome.None;
-
-        if (!blobCacheHit)
-        {
-            packOutcome = await EnsureBlobsFromPackAsync(
-                cache,
-                resolution.Pack,
-                resolution.PackUri,
-                [resolution.Blob],
-                options.CacheCompressedPacks,
-                cancellationToken).ConfigureAwait(false);
-        }
+        GitDependenciesCachedBlobResult cached = await EnsureBlobAsync(
+            resolution,
+            options,
+            cancellationToken).ConfigureAwait(false);
 
         string fullOutputPath = Path.GetFullPath(outputPath);
         await MaterializeBlobToPathAsync(
-            cache.GetBlobPath(resolution.Blob.Hash),
+            cached.BlobPath,
             fullOutputPath,
             resolution.File.IsExecutable,
             cancellationToken).ConfigureAwait(false);
@@ -51,9 +73,9 @@ public sealed class GitDependenciesMaterializer
             fullOutputPath,
             resolution.Blob.Hash,
             resolution.Pack.Hash,
-            blobCacheHit,
-            packOutcome.PackCacheHit,
-            packOutcome.DownloadedBytes);
+            cached.BlobCacheHit,
+            cached.PackCacheHit,
+            cached.DownloadedBytes);
     }
 
     public async Task<GitDependenciesBatchResult> MaterializePlanAsync(
@@ -125,7 +147,7 @@ public sealed class GitDependenciesMaterializer
             await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                outcomes[index] = await EnsureBlobsFromPackAsync(
+                outcomes[index] = await EnsureBlobsFromPackWithLockAsync(
                     cache,
                     work.Pack,
                     work.PackUri,
@@ -163,6 +185,47 @@ public sealed class GitDependenciesMaterializer
             outcomes.Count(outcome => outcome.DownloadedBytes > 0),
             outcomes.Sum(outcome => outcome.DownloadedBytes),
             materializedFiles);
+    }
+
+    private async Task<PackMaterializationOutcome> EnsureBlobsFromPackWithLockAsync(
+        GitDependenciesCache cache,
+        GitDependencyPack pack,
+        Uri packUri,
+        IReadOnlyCollection<GitDependencyBlob> blobs,
+        bool cacheCompressedPack,
+        CancellationToken cancellationToken)
+    {
+        SemaphoreSlim gate = _packLocks.GetOrAdd(pack.Hash, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            bool allCached = true;
+            foreach (GitDependencyBlob blob in blobs)
+            {
+                if (!await cache.IsBlobCachedAndValidAsync(blob, cancellationToken).ConfigureAwait(false))
+                {
+                    allCached = false;
+                    break;
+                }
+            }
+
+            if (allCached)
+            {
+                return PackMaterializationOutcome.None;
+            }
+
+            return await EnsureBlobsFromPackAsync(
+                cache,
+                pack,
+                packUri,
+                blobs,
+                cacheCompressedPack,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     private async Task<PackMaterializationOutcome> EnsureBlobsFromPackAsync(

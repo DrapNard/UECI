@@ -27,3 +27,12 @@ public sealed record GitDependenciesBatchResult(
     int DownloadedPacks,
     long DownloadedBytes,
     IReadOnlyList<string> MaterializedFiles);
+
+public sealed record GitDependenciesCachedBlobResult(
+    string EnginePath,
+    string BlobPath,
+    string BlobHash,
+    string PackHash,
+    bool BlobCacheHit,
+    bool PackCacheHit,
+    long DownloadedBytes);

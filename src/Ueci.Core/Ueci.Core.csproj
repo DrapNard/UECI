@@ -4,4 +4,7 @@
     <AssemblyName>Ueci.Core</AssemblyName>
     <RootNamespace>Ueci</RootNamespace>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Vfs/Linux/ueci-fuse-helper.c" />
+  </ItemGroup>
 </Project>

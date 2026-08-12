@@ -15,7 +15,7 @@ public sealed class HttpGitDependenciesPackSource : IGitDependenciesPackSource, 
 
         if (!_httpClient.DefaultRequestHeaders.UserAgent.Any())
         {
-            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("UECI/0.3");
+            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("UECI/0.5");
         }
     }
 

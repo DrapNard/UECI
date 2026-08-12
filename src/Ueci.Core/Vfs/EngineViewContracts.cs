@@ -1,8 +1,8 @@
 namespace Ueci.Vfs;
 
 /// <summary>
-/// Logical engine tree consumed by future materialized, FUSE, WinFsp and macOS backends.
-/// Keeping this contract in the first release prevents the resolver from depending on a mount driver.
+/// Logical engine tree consumed by materialized, FUSE, WinFsp and future macOS backends.
+/// Paths use repository-relative forward slashes (for example Engine/Source/Runtime/Core/Core.Build.cs).
 /// </summary>
 public interface IEngineReadLayer
 {
@@ -22,3 +22,30 @@ public enum EnginePresentationMode
     Materialized,
     Mounted,
 }
+
+public enum VirtualEngineNodeKind
+{
+    File,
+    Directory,
+    SymbolicLink,
+}
+
+public enum VirtualEngineSourceKind
+{
+    Git,
+    GitDependencies,
+    Upper,
+}
+
+public sealed record VirtualEngineMetadata(
+    string Path,
+    VirtualEngineNodeKind Kind,
+    long Size,
+    int UnixMode,
+    VirtualEngineSourceKind Source);
+
+public sealed record VirtualEngineDirectoryEntry(
+    string Name,
+    VirtualEngineNodeKind Kind,
+    long Size,
+    int UnixMode);
