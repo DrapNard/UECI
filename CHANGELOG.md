@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0-alpha.9] - 2026-08-13
+
+### Fixed
+
+- Disables runtime symbol-file generation on the synthetic Linux `UECIHost` Program target. Unreal Build Tool otherwise appends `dump_syms` to the post-link script; the alpha.8 smoke completed the native link but failed with exit code 127 because the deliberately minimal mounted Engine does not materialize `Engine/Binaries/Linux/dump_syms`. The validation host is never executed or distributed, so runtime crash-symbol generation provides no value here.
+- Keeps the fix scoped to the synthetic runtime validation target; plugin compilation/linking, normal debug information, and Editor validation behavior are unchanged.
+
+### Performance
+
+- Retains the persisted 5,612-Git-file / 81-GitDependencies commit profile learned by alpha.7/alpha.8. The alpha.8 warm smoke reached the final post-link step in about 1m42s wall-clock without rebuilding the complete 408k-path Engine namespace.
+
+### Changed
+
+- CLI version advanced to `0.5.0-alpha.9`.
+
 ## [0.5.0-alpha.8] - 2026-08-12
 
 ### Fixed

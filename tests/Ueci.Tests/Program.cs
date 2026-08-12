@@ -1072,6 +1072,7 @@ internal static class Program
             Assert.True(runtimeTargetText.Contains("AdditionalPlugins.Add(\"Fixture\")", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("bNeedsExtraShaderFormatsOverride = false", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("bCompileICU = false", StringComparison.Ordinal));
+            Assert.True(runtimeTargetText.Contains("bAllowRuntimeSymbolFiles = false", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("GlobalDefinitions.Add(\"UECI_SYNTHETIC_PROGRAM=1\")", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("ExtraModuleNames.Add(\"UECIHost\")", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("ExtraModuleNames.Add(\"Fixture\")", StringComparison.Ordinal));

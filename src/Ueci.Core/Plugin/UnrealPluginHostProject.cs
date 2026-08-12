@@ -147,6 +147,11 @@ public static class UnrealPluginHostProject
                     bCompileICU = false;
                     bEnableTrace = false;
 
+                    // This target is a compile/link harness, not a distributable executable.
+                    // Linux runtime symbol generation adds dump_syms as a post-link action; the
+                    // minimal mounted Engine intentionally does not carry that standalone tool.
+                    bAllowRuntimeSymbolFiles = false;
+
                     // The synthetic Program launch module supplies a tiny non-running Linux
                     // entrypoint. It exists only so UBT can complete the final link while still
                     // compiling/linking every requested plugin module into the validation target.
