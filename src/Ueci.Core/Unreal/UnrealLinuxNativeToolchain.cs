@@ -252,7 +252,13 @@ public sealed class UnrealLinuxNativeToolchainInstaller
         }
 
         progress?.Invoke($"Extracting Epic Linux native toolchain {descriptor.Version}...");
-        string extraction = Path.Combine(cacheRoot, $"extract-{Guid.NewGuid():N}");
+
+        // Keep extraction staging on the Engine filesystem, not beside the archive cache.
+        // UECI commonly keeps its cache under $HOME while the ephemeral Engine lives under
+        // /tmp or a dedicated CI volume. Moving a directory from the cache filesystem into
+        // the Engine would fail with EXDEV ("Invalid cross-device link") on Linux.
+        Directory.CreateDirectory(sdkRoot);
+        string extraction = Path.Combine(sdkRoot, $".ueci-extract-{Guid.NewGuid():N}");
         Directory.CreateDirectory(extraction);
         try
         {
@@ -265,17 +271,16 @@ public sealed class UnrealLinuxNativeToolchainInstaller
                 cancellationToken: cancellationToken).ConfigureAwait(false);
 
             string extracted = LocateExtractedToolchain(extraction, descriptor.Version);
-            Directory.CreateDirectory(sdkRoot);
             if (Directory.Exists(target))
             {
                 Directory.Delete(target, recursive: true);
             }
-            Directory.Move(extracted, target);
+            InstallDirectory(extracted, target);
         }
-        catch
+        catch (InvalidDataException)
         {
-            // A damaged archive should not poison future builds, regardless of whether it
-            // came from a previous cache hit or the current download.
+            // Only malformed gzip/tar content should invalidate the cached archive. An
+            // installation filesystem failure must leave the archive reusable on retry.
             TryDelete(archive);
             throw;
         }
@@ -301,6 +306,86 @@ public sealed class UnrealLinuxNativeToolchainInstaller
             true,
             cacheHit,
             downloaded);
+    }
+
+
+    private static void InstallDirectory(string source, string destination)
+    {
+        try
+        {
+            Directory.Move(source, destination);
+            return;
+        }
+        catch (IOException)
+        {
+            // A same-filesystem staging directory should make this rare, but mount points,
+            // bind mounts and unusual CI layouts can still surface EXDEV. Fall back to a
+            // recursive copy that preserves Unix executable bits, then remove the staging
+            // source only after the copy completed successfully.
+        }
+
+        CopyDirectory(source, destination);
+        Directory.Delete(source, recursive: true);
+    }
+
+    private static void CopyDirectory(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+
+        foreach (FileSystemInfo entry in new DirectoryInfo(source).EnumerateFileSystemInfos())
+        {
+            string output = Path.Combine(destination, entry.Name);
+            string? linkTarget = entry.LinkTarget;
+            if (linkTarget is not null)
+            {
+                if ((entry.Attributes & FileAttributes.Directory) != 0)
+                {
+                    Directory.CreateSymbolicLink(output, linkTarget);
+                }
+                else
+                {
+                    File.CreateSymbolicLink(output, linkTarget);
+                }
+                continue;
+            }
+
+            if ((entry.Attributes & FileAttributes.Directory) != 0)
+            {
+                CopyDirectory(entry.FullName, output);
+            }
+            else
+            {
+                File.Copy(entry.FullName, output, overwrite: true);
+                CopyUnixMode(entry.FullName, output);
+            }
+        }
+
+        // Apply directory permissions after its children were created so a read-only source
+        // directory does not prevent the copy itself.
+        CopyUnixMode(source, destination);
+    }
+
+    private static void CopyUnixMode(string source, string destination)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        try
+        {
+            UnixFileMode mode = File.GetUnixFileMode(source);
+            File.SetUnixFileMode(destination, mode);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Some mounted filesystems do not expose Unix modes. The copied content is still
+            // usable on those filesystems, so do not turn a fallback into a hard failure.
+        }
+        catch (PlatformNotSupportedException)
+        {
+            // Same rationale for non-POSIX filesystems mounted on Unix hosts.
+        }
     }
 
     private static string LocateExtractedToolchain(string extractionRoot, string version)

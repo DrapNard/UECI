@@ -878,6 +878,7 @@ internal static class Program
     {
         const string version = "v26_clang-20.1.8-rockylinux8";
         string root = CreateTempDirectory();
+        string cacheRoot = CreateTempDirectory();
         try
         {
             string config = Path.Combine(root, "Engine", "Config", "Linux", "Linux_SDK.json");
@@ -887,7 +888,7 @@ internal static class Program
             byte[] archive = CreateSyntheticToolchainArchive(root, version);
             var source = new FakeToolchainArchiveSource(archive);
             var installer = new UnrealLinuxNativeToolchainInstaller(source);
-            string cache = Path.Combine(root, "cache");
+            string cache = Path.Combine(cacheRoot, "cache");
             UnrealLinuxNativeToolchainResult first = await installer.EnsureAsync(root, cache, cacheArchive: true);
 
             Assert.True(first.Installed);
@@ -915,6 +916,7 @@ internal static class Program
         finally
         {
             DeleteDirectory(root);
+            DeleteDirectory(cacheRoot);
         }
     }
 
