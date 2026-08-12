@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.4.0-alpha.10] - 2026-08-12
+
+### Fixed
+
+- Replaces the synthetic Runtime host's `TargetType.Game` with a lean standalone `TargetType.Program`. The real alpha.9 smoke reached 16 passes because the Game target pulled unrelated `Launch -> SessionServices -> TargetPlatform -> TextureFormat` developer-tool rules into a Core-only plugin build.
+- Disables implicit Engine/CoreUObject/ApplicationCore, developer tools, target/shader formats, Slate, ICU, trace, and enabled-by-default Engine plugins for the Runtime host while explicitly retaining plugin support. UBT remains free to report additional requirements for plugins that genuinely need broader surfaces.
+- Parses UBT's `Library '<path>' was not resolvable to a file` diagnostics and routes those exact/suffix paths through the GitDependencies resolver. This covers the BLAKE3, Oodle, zlib, jemalloc, and ICU-style diagnostics observed in the real Linux smoke.
+
+### Changed
+
+- Adds a bounded two-level prefetch of standard `.Build.cs` module dependency lists (`Public/PrivateDependencyModuleNames`, include-path module lists, dynamically-loaded modules). This is an optimization only; UBT still evaluates the real C# rules and remains the build authority.
+- Refuses prefetch hints whose module subtree exceeds 1,500 tracked files, preventing heuristic discovery from accidentally materializing another very large Engine subtree.
+- Raises the plugin discovery safety ceiling from 16 to 32 passes for genuinely deep graphs and prints each newly discovered requirement in the progress log.
+- Runtime-only smoke seeds no longer include `Engine/Source/Runtime/Launch`; Editor plugins still add Launch when needed.
+- CLI version advanced to `0.4.0-alpha.10`.
+
+### Testing
+
+- Adds offline tests for the lean Program target, unresolved-library diagnostics, module dependency hint parsing, and tracked-subtree sizing.
+
 ## [0.4.0-alpha.9] - 2026-08-12
 
 ### Fixed

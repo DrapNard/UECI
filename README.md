@@ -49,10 +49,11 @@ The long-term design supports both **materialized mode** (portable, no special p
 - Resolves and materializes Epic's bundled .NET **SDK** for the current host directly from `Commit.gitdeps.xml`.
 - Materializes the UBT + shared C# source seed, compiles `UnrealBuildTool.csproj`, validates the generated runtime config, then probes UBT with the same Epic-bundled `dotnet`.
 - Provides `ubt run` to forward arbitrary arguments to the bootstrapped UBT.
-- Parses `.uplugin` module descriptors without interpreting `.Build.cs` semantics.
-- Creates an ephemeral project with Game/Editor targets and copies the plugin without stale build outputs.
+- Parses `.uplugin` module descriptors and keeps UBT as the authority for executable `.Build.cs` rules; a bounded parser only uses standard module dependency lists as optional prefetch hints.
+- Creates an ephemeral project with a lean standalone Program target for Runtime modules and an Editor target when required, then copies the plugin without stale build outputs.
 - Invokes the real UBT with `-Module=<PluginModule>` so plugin rules remain authoritative.
-- Converts missing-module/path/SDK diagnostics into bounded lazy Epic Git/GitDependencies materialization passes.
+- Converts missing-module/path/SDK diagnostics into bounded lazy Epic Git/GitDependencies materialization passes, including unresolved third-party library paths emitted by UBT.
+- Batches up to two levels of small `.Build.cs` dependency hints between UBT passes while refusing large hinted subtrees until UBT explicitly requires them.
 - On native Linux x86_64, resolves `Linux_SDK.json` and lazily downloads/extracts Epic's matching native clang/sysroot toolchain only when UBT reports that the Linux SDK is missing.
 - Packages the built plugin with `Binaries` plus a machine-readable `ueci-build.json` report.
 - Ships a minimal Runtime plugin fixture and an opt-in real plugin smoke test that runs on a normal workstation.
@@ -265,7 +266,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.4.0-alpha.9
+- uses: your-org/ueci@v0.4.0-alpha.10
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release
@@ -292,8 +293,8 @@ For pull requests from untrusted forks, do not expose an Epic token to checked-o
    - real UBT remains the rules authority ✅
 4. **v0.4 — plugin build** 🚧
    - UBT bootstrap includes host UBA support before managed compilation; hermetic executor config remains in place ✅
-   - synthetic project + Game/Editor targets ✅
-   - bounded diagnostic-driven materialization/retry loop ✅ experimental
+   - synthetic project + lean Program/Editor targets ✅
+   - bounded diagnostic-driven materialization/retry loop with conservative Build.cs prefetch hints ✅ experimental
    - package plugin + build report ✅
    - validate minimal Linux fixture, then Windows/macOS
 5. **v0.5 — mounted engine view**

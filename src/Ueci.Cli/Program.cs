@@ -8,7 +8,7 @@ namespace Ueci.Cli;
 
 internal static class Program
 {
-    private const string CliVersion = "0.4.0-alpha.9";
+    private const string CliVersion = "0.4.0-alpha.10";
 
     public static async Task<int> Main(string[] args)
     {
@@ -395,7 +395,7 @@ internal static class Program
         string configuration = GetOption(args, "--configuration") ?? "Development";
         string? maxRaw = GetOption(args, "--max-discovery-passes");
         int maxPasses = maxRaw is null
-            ? 16
+            ? 32
             : int.TryParse(maxRaw, out int parsed)
                 ? parsed
                 : throw new ArgumentException("--max-discovery-passes must be an integer.");
@@ -606,7 +606,7 @@ internal static class Program
               --host-rid RID             Host runtime override.
               --platform PLATFORM        UBT platform override (default: derived from host RID).
               --configuration CONFIG     UBT configuration (default: Development).
-              --max-discovery-passes N   Maximum lazy materialization/retry passes (default: 16).
+              --max-discovery-passes N   Maximum lazy materialization/retry passes (default: 32).
               --cache-dir PATH           Override the GitDependencies cache.
               --no-pack-cache            Discard compressed GitDependencies packs after extraction.
               --max-concurrent-packs N   Download/extract up to N packs concurrently.

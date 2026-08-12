@@ -36,7 +36,7 @@
 ## Milestone 0.4 — plugin packaging
 
 - [x] Discover/parse `.uplugin` module descriptors
-- [x] Synthetic `.uproject` + Game/Editor targets
+- [x] Synthetic `.uproject` + lean Program/Editor targets
 - [x] UBT module-targeted compile loop (experimental; real smoke validation pending)
 - [x] Package plugin + build report
 - [x] Lazy native Linux x86_64 clang/sysroot toolchain acquisition (real compile validation pending)
