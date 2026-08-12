@@ -43,7 +43,7 @@ internal static class Program
         ("plugin packager keeps binaries and drops Intermediate", PluginPackagerAsync),
         ("Linux SDK descriptor resolves Epic native toolchain", LinuxToolchainDescriptorAsync),
         ("Linux native toolchain installer is offline-testable and cached", LinuxToolchainInstallerAsync),
-        ("Epic sparse expansion preserves protected external Linux toolchain", LinuxToolchainSparseProtectionAsync),
+        ("Linux toolchain projection is restored after sparse expansion", LinuxToolchainSparseProtectionAsync),
     ];
 
     public static async Task<int> Main(string[] args)
@@ -933,14 +933,14 @@ internal static class Program
             Assert.Equal(0L, second.DownloadedBytes);
             Assert.Equal(1, source.DownloadCount);
 
-            Directory.Delete(first.ToolchainDirectory, recursive: true);
+            DeleteDirectoryEntry(first.ToolchainDirectory);
             UnrealLinuxNativeToolchainResult third = await installer.EnsureAsync(root, cache, cacheArchive: false);
             Assert.True(third.Installed);
-            Assert.True(third.ArchiveCacheHit);
+            Assert.False(third.ArchiveCacheHit);
             Assert.Equal(0L, third.DownloadedBytes);
             Assert.Equal(1, source.DownloadCount);
-            Assert.False(File.Exists(Path.Combine(
-                cache, "toolchains", $"native-linux-{version}.tar.gz")));
+            Assert.True(File.Exists(Path.Combine(
+                third.ToolchainDirectory, "x86_64-unknown-linux-gnu", "bin", "clang++")));
         }
         finally
         {
@@ -992,37 +992,47 @@ internal static class Program
                 tokenVariable);
 
             byte[] archive = CreateSyntheticToolchainArchive(root, version);
-            var installer = new UnrealLinuxNativeToolchainInstaller(new FakeToolchainArchiveSource(archive));
+            var toolchainSource = new FakeToolchainArchiveSource(archive);
+            var installer = new UnrealLinuxNativeToolchainInstaller(toolchainSource);
             UnrealLinuxNativeToolchainResult installed = await installer.EnsureAsync(
                 clientRoot,
                 Path.Combine(cacheRoot, "cache"),
-                cacheArchive: true);
+                cacheArchive: false);
 
-            string protectedRelativePath = Path.GetRelativePath(clientRoot, installed.ToolchainDirectory)
-                .Replace(Path.DirectorySeparatorChar, '/');
             string clang = Path.Combine(
                 installed.ToolchainDirectory,
                 "x86_64-unknown-linux-gnu",
                 "bin",
                 "clang++");
+            string storedClang = Path.Combine(
+                clientRoot,
+                ".ueci",
+                "toolchains",
+                "linux-x64",
+                version,
+                "x86_64-unknown-linux-gnu",
+                "bin",
+                "clang++");
             Assert.True(File.Exists(clang));
-            IReadOnlyList<string> installedProtections =
-                UnrealLinuxNativeToolchainInstaller.FindInstalledSparseProtectionPaths(clientRoot);
-            Assert.True(installedProtections.Contains(protectedRelativePath, StringComparer.Ordinal));
+            Assert.True(File.Exists(storedClang));
 
+            // Reproduce the real build's sparse expansion without attempting to keep the ignored
+            // Engine-side SDK path in the cone. Git may remove the projection; if it does not on
+            // this Git/filesystem combination, explicitly remove it to exercise the same recovery.
             await client.MaterializeSparseDirectoriesAsync(
                 clientRoot,
-                [
-                    "Engine/Config/Linux",
-                    "Engine/Source/Runtime/Core",
-                    "Engine/Source/Runtime/Extra",
-                    protectedRelativePath,
-                ],
+                ["Engine/Config/Linux", "Engine/Source/Runtime/Core", "Engine/Source/Runtime/Extra"],
                 tokenVariable);
+            if (File.Exists(clang))
+            {
+                DeleteDirectoryEntry(installed.ToolchainDirectory);
+            }
 
+            Assert.True(File.Exists(storedClang));
+            bool restored = await installer.TryRestoreProjectionAsync(clientRoot);
+            Assert.True(restored);
             Assert.True(File.Exists(clang));
-            Assert.True(File.Exists(Path.Combine(
-                clientRoot, "Engine", "Source", "Runtime", "Extra", "Extra.Build.cs")));
+            Assert.Equal(1, toolchainSource.DownloadCount);
         }
         finally
         {
@@ -1157,6 +1167,36 @@ internal static class Program
         string path = Path.Combine(Path.GetTempPath(), "ueci-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(path);
         return path;
+    }
+
+    private static void DeleteDirectoryEntry(string path)
+    {
+        string? parent = Path.GetDirectoryName(path);
+        if (parent is null || !Directory.Exists(parent))
+        {
+            return;
+        }
+
+        FileSystemInfo? entry = new DirectoryInfo(parent)
+            .EnumerateFileSystemInfos(Path.GetFileName(path))
+            .FirstOrDefault();
+        if (entry is null)
+        {
+            return;
+        }
+
+        if (entry.LinkTarget is not null)
+        {
+            entry.Delete();
+        }
+        else if (entry is DirectoryInfo directory)
+        {
+            directory.Delete(recursive: true);
+        }
+        else
+        {
+            entry.Delete();
+        }
     }
 
     private static void DeleteDirectory(string path)

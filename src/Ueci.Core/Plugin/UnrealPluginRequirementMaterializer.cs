@@ -25,6 +25,7 @@ public sealed class UnrealPluginRequirementMaterializer
     private readonly string _runtimeIdentifier;
     private readonly UnrealLinuxNativeToolchainInstaller _linuxToolchainInstaller;
     private readonly UnrealGitDependenciesOverlay _gitDependenciesOverlay;
+    private bool _linuxToolchainActive;
 
     public UnrealPluginRequirementMaterializer(
         EpicGitClient epicClient,
@@ -170,6 +171,19 @@ public sealed class UnrealPluginRequirementMaterializer
                 _tokenEnvironmentVariable,
                 cancellationToken,
                 message => progress?.Invoke(message)).ConfigureAwait(false);
+
+            // Git sparse updates are allowed to delete the small Engine-side projection. The
+            // authoritative Linux toolchain is stored under .ueci/toolchains, so restore its
+            // projection immediately before the next UBT pass without touching the network.
+            if (_linuxToolchainActive
+                && platform.Equals("Linux", StringComparison.OrdinalIgnoreCase)
+                && _runtimeIdentifier.Equals("linux-x64", StringComparison.OrdinalIgnoreCase))
+            {
+                await _linuxToolchainInstaller.TryRestoreProjectionAsync(
+                    _engineRoot,
+                    progress,
+                    cancellationToken).ConfigureAwait(false);
+            }
         }
 
         foreach (string path in gitFiles)
@@ -225,22 +239,9 @@ public sealed class UnrealPluginRequirementMaterializer
                 cancellationToken: cancellationToken).ConfigureAwait(false);
             downloadedBytes += toolchain.DownloadedBytes;
 
-            // `git sparse-checkout set` may remove ignored/untracked files that live outside
-            // the active sparse cone. Epic's native Linux SDK is installed by Setup.sh/UECI
-            // under Engine/Extras/ThirdPartyNotUE/SDKs and is intentionally not a tracked Git
-            // subtree. Keep the exact installed toolchain directory in the sparse specification
-            // so later lazy module expansions cannot silently delete the compiler we just installed.
-            string protectedToolchainDirectory = Normalize(Path.GetRelativePath(
-                _engineRoot,
-                toolchain.ToolchainDirectory));
-            if (protectedToolchainDirectory.Length != 0
-                && _sparseDirectories.Add(protectedToolchainDirectory))
-            {
-                details.Add(
-                    $"protected external sparse path {protectedToolchainDirectory} for Epic Linux toolchain {toolchain.Version}");
-                progress?.Invoke(
-                    $"Protecting Epic Linux toolchain from future sparse updates ({protectedToolchainDirectory}).");
-            }
+            _linuxToolchainActive = true;
+            details.Add(
+                $"Linux toolchain {toolchain.Version} projected from persistent .ueci storage -> {toolchain.ToolchainDirectory}");
 
             if (toolchain.Installed)
             {

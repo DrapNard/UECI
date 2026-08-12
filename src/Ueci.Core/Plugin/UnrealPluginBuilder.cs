@@ -186,6 +186,13 @@ public sealed class UnrealPluginBuilder
             bootstrapOverlayFiles);
 
         string[] sparseSeed = UbtSparseSeed.Concat(InitialNativeSeed).Distinct(StringComparer.Ordinal).ToArray();
+        if (options.Platform.Equals("Linux", StringComparison.OrdinalIgnoreCase)
+            && options.RuntimeIdentifier.Equals("linux-x64", StringComparison.OrdinalIgnoreCase))
+        {
+            UnrealLinuxNativeToolchainInstaller.MigrateExistingToolchainsToPersistentStore(
+                bootstrap.EngineRoot,
+                options.Progress);
+        }
         options.Progress?.Invoke("Materializing the minimal native UBT target seed (Core/TraceLog/Projects/Launch)...");
         await _epicClient.MaterializeSparseDirectoriesAsync(
             bootstrap.EngineRoot,
@@ -193,6 +200,16 @@ public sealed class UnrealPluginBuilder
             options.TokenEnvironmentVariable,
             cancellationToken,
             message => options.Progress?.Invoke(message)).ConfigureAwait(false);
+
+        if (options.Platform.Equals("Linux", StringComparison.OrdinalIgnoreCase)
+            && options.RuntimeIdentifier.Equals("linux-x64", StringComparison.OrdinalIgnoreCase))
+        {
+            var linuxToolchain = new UnrealLinuxNativeToolchainInstaller();
+            await linuxToolchain.TryRestoreProjectionAsync(
+                bootstrap.EngineRoot,
+                options.Progress,
+                cancellationToken).ConfigureAwait(false);
+        }
 
         // Sparse checkout can displace GitDependencies-managed files when a dependency path also
         // exists in the pinned Git tree. The bundled dotnet host observed in alpha.1 is one such

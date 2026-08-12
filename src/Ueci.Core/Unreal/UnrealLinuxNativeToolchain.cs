@@ -179,6 +179,9 @@ public sealed class UnrealLinuxNativeToolchainInstaller
 
     public static IReadOnlyList<string> FindInstalledSparseProtectionPaths(string engineRoot)
     {
+        // Compatibility bridge for working sets created by alpha.6-alpha.8, where the native
+        // toolchain lived only inside Engine/. Preserve those paths long enough for alpha.9 to
+        // migrate them into .ueci/toolchains before later sparse expansions.
         ArgumentException.ThrowIfNullOrWhiteSpace(engineRoot);
 
         string root = Path.GetFullPath(engineRoot);
@@ -190,8 +193,35 @@ public sealed class UnrealLinuxNativeToolchainInstaller
             return Array.Empty<string>();
         }
 
-        var protectedPaths = new List<string>();
+        var paths = new List<string>();
         foreach (string candidate in Directory.EnumerateDirectories(sdkRoot))
+        {
+            string version = Path.GetFileName(candidate);
+            if (!string.IsNullOrWhiteSpace(version) && IsUsable(candidate, version))
+            {
+                paths.Add(Path.GetRelativePath(root, candidate).Replace(Path.DirectorySeparatorChar, '/'));
+            }
+        }
+        return paths;
+    }
+
+    public static int MigrateExistingToolchainsToPersistentStore(
+        string engineRoot,
+        Action<string>? progress = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(engineRoot);
+
+        string root = Path.GetFullPath(engineRoot);
+        string sdkRoot = Path.Combine(
+            root,
+            "Engine", "Extras", "ThirdPartyNotUE", "SDKs", "HostLinux", "Linux_x64");
+        if (!Directory.Exists(sdkRoot))
+        {
+            return 0;
+        }
+
+        int migrated = 0;
+        foreach (string candidate in Directory.EnumerateDirectories(sdkRoot).ToArray())
         {
             string version = Path.GetFileName(candidate);
             if (string.IsNullOrWhiteSpace(version) || !IsUsable(candidate, version))
@@ -199,11 +229,51 @@ public sealed class UnrealLinuxNativeToolchainInstaller
                 continue;
             }
 
-            protectedPaths.Add(Path.GetRelativePath(root, candidate)
-                .Replace(Path.DirectorySeparatorChar, '/'));
+            string store = Path.Combine(root, ".ueci", "toolchains", "linux-x64", version);
+            if (!IsUsable(store, version))
+            {
+                progress?.Invoke($"Migrating existing Epic Linux toolchain {version} into the UECI persistent toolchain store...");
+                Directory.CreateDirectory(Path.GetDirectoryName(store)!);
+                CopyDirectory(candidate, store);
+                migrated++;
+            }
+        }
+        return migrated;
+    }
+
+    public async Task<bool> TryRestoreProjectionAsync(
+        string engineRoot,
+        Action<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(engineRoot);
+
+        UnrealLinuxNativeToolchainDescriptor descriptor = await UnrealLinuxNativeToolchainDescriptor.ReadAsync(
+            engineRoot,
+            cancellationToken).ConfigureAwait(false);
+        ToolchainPaths paths = GetPaths(engineRoot, descriptor.Version);
+
+        // Migrate an alpha.6-alpha.8 in-tree installation into the persistent UECI store before
+        // creating the projection. This makes warm working sets upgrade without a new download.
+        if (!IsUsable(paths.Store, descriptor.Version) && IsUsable(paths.Projection, descriptor.Version))
+        {
+            progress?.Invoke($"Migrating existing Epic Linux toolchain {descriptor.Version} into the UECI persistent toolchain store...");
+            Directory.CreateDirectory(Path.GetDirectoryName(paths.Store)!);
+            CopyDirectory(paths.Projection, paths.Store);
         }
 
-        return protectedPaths;
+        if (!IsUsable(paths.Store, descriptor.Version))
+        {
+            return false;
+        }
+
+        bool changed = EnsureProjection(paths.Store, paths.Projection, descriptor.Version);
+        if (changed)
+        {
+            progress?.Invoke(
+                $"Restored Epic Linux toolchain projection after sparse update ({Path.GetRelativePath(Path.GetFullPath(engineRoot), paths.Projection).Replace(Path.DirectorySeparatorChar, '/')}).");
+        }
+        return changed;
     }
 
     public async Task<UnrealLinuxNativeToolchainResult> EnsureAsync(
@@ -219,14 +289,26 @@ public sealed class UnrealLinuxNativeToolchainInstaller
         UnrealLinuxNativeToolchainDescriptor descriptor = await UnrealLinuxNativeToolchainDescriptor.ReadAsync(
             engineRoot,
             cancellationToken).ConfigureAwait(false);
+        ToolchainPaths paths = GetPaths(engineRoot, descriptor.Version);
 
-        string sdkRoot = Path.Combine(
-            Path.GetFullPath(engineRoot),
-            "Engine", "Extras", "ThirdPartyNotUE", "SDKs", "HostLinux", "Linux_x64");
-        string target = Path.Combine(sdkRoot, descriptor.Version);
-        if (IsUsable(target, descriptor.Version))
+        // Adopt toolchains installed by earlier UECI alphas. The stable copy is intentionally
+        // outside Engine/ so `git sparse-checkout set` and `git reset --hard` can never remove it.
+        if (!IsUsable(paths.Store, descriptor.Version) && IsUsable(paths.Projection, descriptor.Version))
         {
-            return new UnrealLinuxNativeToolchainResult(descriptor.Version, target, false, false, 0);
+            progress?.Invoke($"Migrating existing Epic Linux toolchain {descriptor.Version} into the UECI persistent toolchain store...");
+            Directory.CreateDirectory(Path.GetDirectoryName(paths.Store)!);
+            CopyDirectory(paths.Projection, paths.Store);
+        }
+
+        if (IsUsable(paths.Store, descriptor.Version))
+        {
+            bool projectionChanged = EnsureProjection(paths.Store, paths.Projection, descriptor.Version);
+            return new UnrealLinuxNativeToolchainResult(
+                descriptor.Version,
+                paths.Projection,
+                projectionChanged,
+                false,
+                0);
         }
 
         string cacheRoot = Path.Combine(Path.GetFullPath(cacheDirectory), "toolchains");
@@ -280,14 +362,11 @@ public sealed class UnrealLinuxNativeToolchainInstaller
             }
         }
 
-        progress?.Invoke($"Extracting Epic Linux native toolchain {descriptor.Version}...");
+        progress?.Invoke($"Extracting Epic Linux native toolchain {descriptor.Version} into persistent UECI storage...");
 
-        // Keep extraction staging on the Engine filesystem, not beside the archive cache.
-        // UECI commonly keeps its cache under $HOME while the ephemeral Engine lives under
-        // /tmp or a dedicated CI volume. Moving a directory from the cache filesystem into
-        // the Engine would fail with EXDEV ("Invalid cross-device link") on Linux.
-        Directory.CreateDirectory(sdkRoot);
-        string extraction = Path.Combine(sdkRoot, $".ueci-extract-{Guid.NewGuid():N}");
+        string storeParent = Path.GetDirectoryName(paths.Store)!;
+        Directory.CreateDirectory(storeParent);
+        string extraction = Path.Combine(storeParent, $".ueci-extract-{Guid.NewGuid():N}");
         Directory.CreateDirectory(extraction);
         try
         {
@@ -300,16 +379,13 @@ public sealed class UnrealLinuxNativeToolchainInstaller
                 cancellationToken: cancellationToken).ConfigureAwait(false);
 
             string extracted = LocateExtractedToolchain(extraction, descriptor.Version);
-            if (Directory.Exists(target))
-            {
-                Directory.Delete(target, recursive: true);
-            }
-            InstallDirectory(extracted, target);
+            DeleteDirectoryOrLink(paths.Store);
+            InstallDirectory(extracted, paths.Store);
         }
         catch (InvalidDataException)
         {
-            // Only malformed gzip/tar content should invalidate the cached archive. An
-            // installation filesystem failure must leave the archive reusable on retry.
+            // Only malformed gzip/tar content should invalidate the cached archive. Filesystem
+            // projection failures must leave both archive and persistent store reusable on retry.
             TryDelete(archive);
             throw;
         }
@@ -318,11 +394,13 @@ public sealed class UnrealLinuxNativeToolchainInstaller
             TryDeleteDirectory(extraction);
         }
 
-        if (!IsUsable(target, descriptor.Version))
+        if (!IsUsable(paths.Store, descriptor.Version))
         {
             throw new InvalidDataException(
                 $"Epic Linux toolchain '{descriptor.Version}' was extracted but does not contain the expected x86_64 compiler layout.");
         }
+
+        EnsureProjection(paths.Store, paths.Projection, descriptor.Version);
 
         if (!cacheArchive)
         {
@@ -331,12 +409,81 @@ public sealed class UnrealLinuxNativeToolchainInstaller
 
         return new UnrealLinuxNativeToolchainResult(
             descriptor.Version,
-            target,
+            paths.Projection,
             true,
             cacheHit,
             downloaded);
     }
 
+    private static ToolchainPaths GetPaths(string engineRoot, string version)
+    {
+        string root = Path.GetFullPath(engineRoot);
+        string projection = Path.Combine(
+            root,
+            "Engine", "Extras", "ThirdPartyNotUE", "SDKs", "HostLinux", "Linux_x64", version);
+        string store = Path.Combine(root, ".ueci", "toolchains", "linux-x64", version);
+        return new ToolchainPaths(store, projection);
+    }
+
+    private static bool EnsureProjection(string store, string projection, string version)
+    {
+        if (IsUsable(projection, version))
+        {
+            return false;
+        }
+
+        DeleteDirectoryOrLink(projection);
+        Directory.CreateDirectory(Path.GetDirectoryName(projection)!);
+
+        try
+        {
+            Directory.CreateSymbolicLink(projection, store);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            // Linux CI normally supports directory symlinks. Keep a portable fallback for unusual
+            // filesystems and Windows-hosted tests; the authoritative store still survives sparse
+            // checkout and the projection can be recreated from it after every expansion.
+            CopyDirectory(store, projection);
+        }
+
+        if (!IsUsable(projection, version))
+        {
+            throw new IOException(
+                $"UECI created the Linux toolchain projection '{projection}', but the compiler is not reachable through it.");
+        }
+        return true;
+    }
+
+    private static void DeleteDirectoryOrLink(string path)
+    {
+        string? parent = Path.GetDirectoryName(path);
+        if (parent is null || !Directory.Exists(parent))
+        {
+            return;
+        }
+
+        FileSystemInfo? entry = new DirectoryInfo(parent)
+            .EnumerateFileSystemInfos(Path.GetFileName(path))
+            .FirstOrDefault();
+        if (entry is null)
+        {
+            return;
+        }
+
+        if (entry.LinkTarget is not null)
+        {
+            entry.Delete();
+        }
+        else if (entry is DirectoryInfo directory)
+        {
+            directory.Delete(recursive: true);
+        }
+        else
+        {
+            entry.Delete();
+        }
+    }
 
     private static void InstallDirectory(string source, string destination)
     {
@@ -347,10 +494,8 @@ public sealed class UnrealLinuxNativeToolchainInstaller
         }
         catch (IOException)
         {
-            // A same-filesystem staging directory should make this rare, but mount points,
-            // bind mounts and unusual CI layouts can still surface EXDEV. Fall back to a
-            // recursive copy that preserves Unix executable bits, then remove the staging
-            // source only after the copy completed successfully.
+            // Persistent staging lives under .ueci/toolchains on the Engine filesystem, but keep a
+            // cross-device fallback for bind mounts and unusual CI filesystems.
         }
 
         CopyDirectory(source, destination);
@@ -389,8 +534,6 @@ public sealed class UnrealLinuxNativeToolchainInstaller
             }
         }
 
-        // Apply directory permissions after its children were created so a read-only source
-        // directory does not prevent the copy itself.
         CopyUnixMode(source, destination);
     }
 
@@ -408,8 +551,7 @@ public sealed class UnrealLinuxNativeToolchainInstaller
         }
         catch (UnauthorizedAccessException)
         {
-            // Some mounted filesystems do not expose Unix modes. The copied content is still
-            // usable on those filesystems, so do not turn a fallback into a hard failure.
+            // Some mounted filesystems do not expose Unix modes.
         }
         catch (PlatformNotSupportedException)
         {
@@ -444,10 +586,6 @@ public sealed class UnrealLinuxNativeToolchainInstaller
             return false;
         }
 
-        // The version is already anchored by the destination directory name selected from
-        // Linux_SDK.json. Do not require an extra marker file that Epic does not document as
-        // part of the public native-toolchain contract; the actual compiler layout is the
-        // useful readiness check.
         string compilerRoot = Path.Combine(directory, "x86_64-unknown-linux-gnu", "bin");
         return File.Exists(Path.Combine(compilerRoot, "clang++"))
             || File.Exists(Path.Combine(compilerRoot, "clang++.exe"));
@@ -487,4 +625,6 @@ public sealed class UnrealLinuxNativeToolchainInstaller
             // Best-effort extraction cleanup.
         }
     }
+
+    private sealed record ToolchainPaths(string Store, string Projection);
 }
