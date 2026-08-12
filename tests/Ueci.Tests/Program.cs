@@ -4,6 +4,7 @@ using System.IO.Compression;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Ueci.Epic;
 using Ueci.GitDeps;
 using Ueci.Plugin;

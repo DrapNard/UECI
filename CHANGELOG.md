@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.0-alpha.16] - 2026-08-13
+
+### Fixed
+
+- Restores the missing `System.Text.Json` namespace import in the alpha.15 build-product collector regression test so `JsonDocument` and `JsonElement` compile under `Ueci.Tests`.
+
+### Changed
+
+- CLI version advanced to `0.5.0-alpha.16`.
+
 ## [0.5.0-alpha.15] - 2026-08-13
 
 ### Fixed
