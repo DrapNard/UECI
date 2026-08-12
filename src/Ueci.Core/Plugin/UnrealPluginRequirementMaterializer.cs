@@ -77,26 +77,36 @@ public sealed class UnrealPluginRequirementMaterializer
             {
                 case UnrealBuildRequirementKind.Module:
                 {
-                    string[] rules = _tracked.FindModuleRules(requirement.Value, maxResults: 1).ToArray();
-                    if (rules.Length == 0)
+                    // An explicit UBT "missing module" diagnostic outranks our speculative
+                    // Build.cs prefetch. A module directory may already be inside the sparse
+                    // working set because it was hinted by another Build.cs, while UBT's cached
+                    // EngineRules assembly still does not contain the rule. Always force-refresh
+                    // the selected rule file from the pinned Epic commit; this also gives the
+                    // caller a concrete mutation instead of stalling on an already-sparse path.
+                    string? rule = _tracked.FindModuleRules(requirement.Value, maxResults: 1).FirstOrDefault();
+                    if (rule is null)
                     {
                         break;
                     }
 
-                    foreach (string rule in rules)
+                    string? directory = Path.GetDirectoryName(rule.Replace('/', Path.DirectorySeparatorChar));
+                    if (directory is null)
                     {
-                        string? directory = Path.GetDirectoryName(rule.Replace('/', Path.DirectorySeparatorChar));
-                        if (directory is null)
-                        {
-                            continue;
-                        }
-                        string normalizedDirectory = Normalize(directory);
-                        if (!_sparseDirectories.Contains(normalizedDirectory))
-                        {
-                            sparseToAdd.Add(normalizedDirectory);
-                        }
+                        break;
+                    }
+
+                    string normalizedDirectory = Normalize(directory);
+                    if (!_sparseDirectories.Contains(normalizedDirectory))
+                    {
+                        sparseToAdd.Add(normalizedDirectory);
                         details.Add($"module {requirement.Value} -> git subtree {normalizedDirectory}");
                     }
+                    else
+                    {
+                        details.Add($"module {requirement.Value} already sparse -> force-refresh {rule}");
+                    }
+
+                    gitFiles.Add(rule);
                     matched++;
                     break;
                 }
@@ -216,6 +226,11 @@ public sealed class UnrealPluginRequirementMaterializer
                 destination,
                 _tokenEnvironmentVariable,
                 cancellationToken).ConfigureAwait(false);
+        }
+
+        if (gitFiles.Any(path => path.EndsWith(".Build.cs", StringComparison.Ordinal)))
+        {
+            InvalidateEngineRulesAssembly(progress);
         }
 
         long downloadedBytes = 0;
@@ -373,6 +388,31 @@ public sealed class UnrealPluginRequirementMaterializer
             }
         }
         return hinted;
+    }
+
+    private void InvalidateEngineRulesAssembly(Action<string>? progress)
+    {
+        string buildRules = Path.Combine(_engineRoot, "Engine", "Intermediate", "Build", "BuildRules");
+        if (!Directory.Exists(buildRules))
+        {
+            return;
+        }
+
+        progress?.Invoke("Invalidating cached Engine BuildRules after an explicit module-rule refresh...");
+        try
+        {
+            Directory.Delete(buildRules, recursive: true);
+        }
+        catch (IOException)
+        {
+            // A concurrent/previous UBT process can briefly keep generated rule artifacts open.
+            // Best effort is sufficient: the refreshed Build.cs timestamp still gives UBT a
+            // second chance to detect the rule on the next process invocation.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Same best-effort behavior for read-only leftovers on unusual filesystems.
+        }
     }
 
     private bool ResolveEnginePath(

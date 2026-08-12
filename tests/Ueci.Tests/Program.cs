@@ -40,6 +40,7 @@ internal static class Program
         ("plugin diagnostic parser derives lazy requirements", PluginDiagnosticsParseAsync),
         ("module dependency hints parse standard Build.cs lists", ModuleDependencyHintsParseAsync),
         ("tracked Epic index locates module rules and suffixes", EpicTrackedIndexFindsAsync),
+        ("explicit module requirement force-refreshes an already-sparse Build.cs", ExplicitModuleRefreshAsync),
         ("plugin UBT invocation targets only requested modules", PluginBuildInvocationAsync),
         ("plugin packager keeps binaries and drops Intermediate", PluginPackagerAsync),
         ("Linux SDK descriptor resolves Epic native toolchain", LinuxToolchainDescriptorAsync),
@@ -850,6 +851,79 @@ internal static class Program
             "Engine/Plugins/Runtime/Foo/Source/Foo/Foo.Build.cs",
             index.FindModuleRules("Foo")[0]);
         return Task.CompletedTask;
+    }
+
+    private static async Task ExplicitModuleRefreshAsync()
+    {
+        string root = CreateTempDirectory();
+        const string tokenVariable = "UECI_TEST_MODULE_REFRESH_TOKEN";
+        string? previousToken = Environment.GetEnvironmentVariable(tokenVariable);
+        try
+        {
+            string source = Path.Combine(root, "source");
+            string bare = Path.Combine(root, "remote.git");
+            string clientRoot = Path.Combine(root, "client");
+            Directory.CreateDirectory(source);
+
+            await RunGitAsync(source, ["init", "--quiet", "--initial-branch=main"]);
+            await RunGitAsync(source, ["config", "user.name", "UECI Tests"]);
+            await RunGitAsync(source, ["config", "user.email", "ueci@example.invalid"]);
+            WriteFixtureFile(source, "Engine/Source/Runtime/CorePreciseFP/CorePreciseFP.Build.cs", "// authoritative rule\n");
+            WriteFixtureFile(source, "Engine/Build/Build.version", "{}\n");
+            await RunGitAsync(source, ["add", "."]);
+            await RunGitAsync(source, ["commit", "--quiet", "-m", "fixture"]);
+            await RunGitAsync(root, ["clone", "--quiet", "--bare", source, bare]);
+            await RunGitAsync(bare, ["config", "uploadpack.allowFilter", "true"]);
+
+            Environment.SetEnvironmentVariable(tokenVariable, "test-token");
+            var epic = new EpicGitClient();
+            await epic.InitializePartialRepositoryAsync(clientRoot, new Uri(bare).AbsoluteUri, "main", tokenVariable);
+            string moduleDirectory = "Engine/Source/Runtime/CorePreciseFP";
+            await epic.MaterializeSparseDirectoriesAsync(clientRoot, [moduleDirectory], tokenVariable);
+
+            string rulePath = Path.Combine(clientRoot, "Engine", "Source", "Runtime", "CorePreciseFP", "CorePreciseFP.Build.cs");
+            await File.WriteAllTextAsync(rulePath, "// stale speculative copy\n");
+            string rulesCache = Path.Combine(clientRoot, "Engine", "Intermediate", "Build", "BuildRules");
+            Directory.CreateDirectory(rulesCache);
+            await File.WriteAllTextAsync(Path.Combine(rulesCache, "UE5Rules.dll"), "stale");
+
+            GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(Fixture);
+            IReadOnlyList<string> trackedPaths = await epic.ListTrackedFilesAsync(clientRoot, tokenVariable);
+            var tracked = new EpicTrackedFileIndex(trackedPaths);
+            string cache = Path.Combine(root, "cache");
+            var fetchOptions = new GitDependenciesFetchOptions(cache, CacheCompressedPacks: false, MaxConcurrentPacks: 1);
+            var overlay = new UnrealGitDependenciesOverlay(
+                manifest,
+                fetchOptions,
+                clientRoot,
+                packSourceFactory: () => new MemoryPackSource(
+                    new Uri("https://cdn.example.test/unused"),
+                    Array.Empty<byte>()));
+            var materializer = new UnrealPluginRequirementMaterializer(
+                epic,
+                manifest,
+                tracked,
+                fetchOptions,
+                clientRoot,
+                tokenVariable,
+                [moduleDirectory],
+                "linux-x64",
+                overlay);
+
+            UnrealPluginRequirementMaterializationResult result = await materializer.MaterializeAsync(
+                [new UnrealBuildRequirement(UnrealBuildRequirementKind.Module, "CorePreciseFP", "fixture")],
+                "Linux");
+
+            Assert.Equal(0, result.AddedSparseDirectories);
+            Assert.Equal(1, result.GitFiles);
+            Assert.True((await File.ReadAllTextAsync(rulePath)).Contains("authoritative rule", StringComparison.Ordinal));
+            Assert.False(Directory.Exists(rulesCache));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(tokenVariable, previousToken);
+            DeleteDirectory(root);
+        }
     }
 
     private static Task PluginBuildInvocationAsync()
