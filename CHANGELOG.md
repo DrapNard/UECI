@@ -2,6 +2,23 @@
 
 All notable changes to UECI will be documented here.
 
+## [0.4.0-alpha.2] - 2026-08-12
+
+### Fixed
+
+- Repairs GitDependencies overlay files that can be displaced when the plugin discovery loop expands the sparse Epic Git worktree.
+- Fixes the real Linux plugin smoke failure where `Engine/Binaries/ThirdParty/DotNet/.../dotnet` existed during UBT bootstrap but disappeared before the first plugin UBT invocation.
+- Tracks the bootstrap GitDependencies working set and restores only missing paths from the content-addressed blob cache after sparse updates, avoiding a network re-download on a warm cache.
+- Newly discovered GitDependencies paths join the same overlay tracker so later sparse-discovery passes cannot silently invalidate already-satisfied requirements.
+
+### Tests
+
+- Adds an offline CAS repair test that materializes a synthetic GitDependencies overlay, deletes a materialized file, and verifies the repair performs zero additional downloads.
+
+### Changed
+
+- CLI version advanced to `0.4.0-alpha.2`.
+
 ## [0.4.0-alpha.1] - 2026-08-12
 
 ### Added

@@ -35,6 +35,8 @@ real UnrealBuildTool
 
 The first native source seed is intentionally small: `Core`, `TraceLog`, `Projects`, and `Launch`, plus the existing UBT/shared managed seed and the tiny host-platform SDK config needed for discovery. If UBT reports a missing module, UECI finds that module's tracked `.Build.cs` in the pinned Epic commit and expands the sparse checkout to that module directory. Missing Engine paths are resolved against Git first/alongside `Commit.gitdeps.xml`; missing dependency payloads are materialized through the verified blob cache. On native Linux x86_64, a platform-SDK diagnostic is handled separately from GitDependencies: UECI reads `Engine/Config/Linux/Linux_SDK.json`, uses its `MainVersion`, downloads Epic's `native-linux-<MainVersion>.tar.gz`, and extracts the toolchain into `Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/`. The large archive is only fetched after UBT proves it is needed.
 
+Because the Epic Git worktree and GitDependencies payloads overlap in one physical Engine directory during the materialized backend phase, each sparse Git expansion is followed by an overlay integrity check. UECI tracks every GitDependencies file it has materialized; if sparse checkout displaced one, only the missing paths are copied back from the CAS (or fetched from the CDN on a genuine cache miss) before the next UBT pass.
+
 ## Host project
 
 The source plugin is copied into `.ueci/plugin-work/<PluginName>/Plugins/<PluginName>`. Stale generated platform `Binaries`, `Intermediate`, `Saved`, `.git`, and `.ueci` state is intentionally not copied. `Binaries/ThirdParty` is preserved because many plugins legitimately ship vendor runtime payloads there.
