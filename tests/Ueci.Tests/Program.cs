@@ -292,6 +292,13 @@ internal static class Program
             VirtualEngineMetadata? gitBeforeOpen = await fileSystem.GetMetadataAsync(
                 "Engine/Source/Runtime/Core/Public/GitOnly.h");
             Assert.Equal(0L, gitBeforeOpen!.Size);
+
+            // A real POSIX stat must not lie about st_size. Because Git tree objects do not encode blob
+            // length, an exact stat becomes the first targeted content demand and hydrates only this blob.
+            VirtualEngineMetadata? gitStat = await fileSystem.GetStatMetadataAsync(
+                "Engine/Source/Runtime/Core/Public/GitOnly.h");
+            Assert.Equal((long)"git-only\n".Length, gitStat!.Size);
+
             string gitBacking = await fileSystem.ResolveReadBackingPathAsync(
                 "Engine/Source/Runtime/Core/Public/GitOnly.h");
             Assert.Equal("git-only\n", await File.ReadAllTextAsync(gitBacking));

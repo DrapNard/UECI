@@ -75,6 +75,43 @@ public sealed class VirtualEngineFileSystem
         return Task.FromResult<VirtualEngineMetadata?>(metadata);
     }
 
+    /// <summary>
+    /// Returns metadata suitable for a real POSIX stat(2). Git tree objects do not carry blob sizes,
+    /// so an uncached Git file has Size=0 in the metadata-only namespace. A targeted stat for such a
+    /// file is therefore the first content demand: hydrate only that blob, then report its exact size.
+    /// Directory enumeration remains metadata-only and never calls this method for every child.
+    /// </summary>
+    public async Task<VirtualEngineMetadata?> GetStatMetadataAsync(
+        string path,
+        CancellationToken cancellationToken = default)
+    {
+        string normalized = VirtualEnginePath.Normalize(path);
+        VirtualEngineMetadata? metadata = await GetMetadataAsync(normalized, cancellationToken).ConfigureAwait(false);
+        if (metadata is null
+            || metadata.Source != VirtualEngineSourceKind.Git
+            || metadata.Kind == VirtualEngineNodeKind.Directory)
+        {
+            return metadata;
+        }
+
+        if (!_index.TryGet(normalized, out VirtualEngineLowerEntry? lower) || lower!.GitEntry is null)
+        {
+            return metadata;
+        }
+        if (lower.GitEntry.Size >= 0)
+        {
+            return metadata;
+        }
+        if (_gitBlobs.TryGetCachedSize(lower.GitEntry, out long cachedSize))
+        {
+            return metadata with { Size = cachedSize };
+        }
+
+        _progress?.Invoke($"[vfs/stat] hydrating exact Git size: {normalized}");
+        string backing = await ResolveReadBackingPathAsync(normalized, cancellationToken).ConfigureAwait(false);
+        return metadata with { Size = new FileInfo(backing).Length };
+    }
+
     public Task<IReadOnlyList<VirtualEngineDirectoryEntry>> ListAsync(
         string path,
         CancellationToken cancellationToken = default)

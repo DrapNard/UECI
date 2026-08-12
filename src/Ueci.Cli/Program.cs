@@ -10,7 +10,7 @@ namespace Ueci.Cli;
 
 internal static class Program
 {
-    private const string CliVersion = "0.5.0-alpha.2";
+    private const string CliVersion = "0.5.0-alpha.3";
 
     public static async Task<int> Main(string[] args)
     {
@@ -724,9 +724,10 @@ internal static class Program
               --verbose                  Log individual FUSE requests after the always-on startup/index progress.
 
             The mount exposes the complete Engine namespace from Git metadata + Commit.gitdeps.xml without
-            checking out source files. stat/readdir are metadata-only. The first open of a missing immutable
-            file blocks that filesystem request while UECI fetches the backing blob into CAS. Writes use a
-            persistent copy-on-write upper layer outside the FUSE mount. Press Ctrl+C to unmount.
+            checking out source files. readdir is metadata-only. Git tree objects do not contain blob sizes,
+            so the first targeted stat/open of an uncached Git file may block while that one blob enters CAS;
+            subsequent metadata and reads are local. Writes use a persistent copy-on-write upper layer outside
+            the FUSE mount. Press Ctrl+C to unmount.
 
             Build dependency: pkg-config + libfuse3 headers/library + a C compiler. The tiny native helper is
             embedded in Ueci.Core and compiled once into the UECI cache.

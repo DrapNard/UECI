@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0-alpha.3] - 2026-08-12
+
+### Fixed
+
+- FUSE now returns an exact POSIX `st_size` for lazily indexed Git files. Git tree objects do not contain blob sizes, so a targeted `stat(2)` hydrates only that single blob into CAS instead of reporting a fake zero length that makes the kernel return EOF before `read()`.
+- `readdir` remains metadata-only: listing the virtual Engine still does not hydrate source contents.
+- The VFS smoke test now verifies non-zero `stat` size, cold content read, and warm CAS read separately.
+
 ## [0.5.0-alpha.2] - 2026-08-12
 
 ### Fixed

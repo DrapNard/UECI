@@ -179,7 +179,7 @@ UECI injects the Git authorization header through per-process environment config
 
 The v0.5 mounted backend exposes the whole pinned Unreal namespace without checking out Engine source contents. Directory metadata comes from Git tree metadata + `Commit.gitdeps.xml`; the first `open()` of an immutable file blocks only that filesystem request while UECI fills the CAS. Writes go to a persistent copy-on-write upper layer outside the mount.
 
-`v0.5.0-alpha.2` keeps mount startup observable: Git-tree indexing streams counters/rate/memory, GitDependencies parsing reports object counts, namespace construction reports merge progress, and `--verbose` additionally logs individual FUSE requests. Git source blob sizes are intentionally deferred until first open so the metadata-only `blob:none` index never forces a mass blob download.
+`v0.5.0-alpha.3` keeps mount startup observable: Git-tree indexing streams counters/rate/memory, GitDependencies parsing reports object counts, namespace construction reports merge progress, and `--verbose` additionally logs individual FUSE requests. Git source blob sizes are intentionally absent from the metadata-only `blob:none` index: directory enumeration stays metadata-only, while the first targeted `stat(2)`/open of an uncached Git file hydrates only that blob so FUSE can return an exact POSIX `st_size`. This avoids both mass blob hydration and the false zero-length EOF that an unknown size would otherwise create in the kernel.
 
 ```bash
 export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
@@ -298,7 +298,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.5.0-alpha.2
+- uses: your-org/ueci@v0.5.0-alpha.3
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release

@@ -137,3 +137,7 @@ The GitHub token remains process-only and is not stored in the virtual tree, Git
 ## Next integration step
 
 `ueci mount` is deliberately shipped before switching `build-plugin` to mounted mode. The existing v0.4 materialized build path remains the correctness fallback. Once the standalone mount smoke is validated on a real Linux host, the plugin builder can use the mounted root directly and remove the UBT diagnostic/sparse-checkout retry loop for Linux mounted builds.
+
+## POSIX size semantics
+
+Git tree metadata contains path/mode/object-id but not blob length. UECI therefore keeps `readdir` metadata-only, but a targeted `stat(2)` on an uncached Git file is treated as content demand: the single blob is materialized into CAS and its exact backing length is returned as `st_size`. Returning a fake zero length is incorrect because the kernel may treat the file as EOF without issuing a FUSE `read`.

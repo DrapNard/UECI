@@ -133,7 +133,7 @@ internal sealed class FuseProtocolServer : IAsyncDisposable
             {
                 RequireFields(fields, 2);
                 string path = FuseProtocol.Decode(fields[1]);
-                VirtualEngineMetadata? metadata = await _fileSystem.GetMetadataAsync(path, cancellationToken)
+                VirtualEngineMetadata? metadata = await _fileSystem.GetStatMetadataAsync(path, cancellationToken)
                     .ConfigureAwait(false);
                 if (metadata is null)
                 {

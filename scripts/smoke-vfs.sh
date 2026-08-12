@@ -82,13 +82,29 @@ echo "[smoke] FUSE mount READY after $((SECONDS - started_at))s: $MOUNT" >&2
 echo "[smoke] metadata-only directory listing"
 ls "$MOUNT/Engine/Source/Runtime/Core/Public" >/dev/null
 
+echo "[smoke] targeted Git stat hydrates exact POSIX size"
+git_file="$MOUNT/Engine/Source/Runtime/Core/Public/CoreMinimal.h"
+git_size="$(stat -c %s "$git_file")"
+if (( git_size <= 0 )); then
+  echo "[smoke] CoreMinimal.h reported an invalid size through FUSE: ${git_size}." >&2
+  exit 1
+fi
+echo "[smoke] CoreMinimal.h stat size: ${git_size} bytes"
+
 echo "[smoke] lazy Git content read"
-read_bytes="$(head -c 64 "$MOUNT/Engine/Source/Runtime/Core/Public/CoreMinimal.h" | wc -c)"
+read_bytes="$(head -c 64 "$git_file" | wc -c)"
 if (( read_bytes <= 0 )); then
   echo "[smoke] CoreMinimal.h returned no bytes through FUSE." >&2
   exit 1
 fi
 echo "[smoke] lazy read returned ${read_bytes} bytes"
+
+echo "[smoke] warm Git content read"
+warm_bytes="$(head -c 64 "$git_file" | wc -c)"
+if (( warm_bytes != read_bytes )); then
+  echo "[smoke] warm Git read returned ${warm_bytes} bytes; expected ${read_bytes}." >&2
+  exit 1
+fi
 
 echo "[smoke] copy-on-write output"
 mkdir -p "$MOUNT/Engine/Saved/UECI"
