@@ -2,7 +2,7 @@
 
 **UECI is an experimental, minimal Unreal Engine substrate for CI/CD.** Its goal is to build Unreal Engine code plugins without installing a full Unreal Engine tree on every runner.
 
-> Status: **v0.3 alpha / technical prototype.** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, and a minimal UnrealBuildTool bootstrap now exist. Full plugin compilation and mounted VFS backends are still roadmap items.
+> Status: **v0.4 alpha / technical prototype.** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, and an experimental lazy code-plugin build loop now exist. Mounted VFS backends and broad cross-platform plugin validation are still roadmap items.
 
 ## Why
 
@@ -27,7 +27,7 @@ A normal Unreal source setup materializes a very large source/dependency tree be
 
 The long-term design supports both **materialized mode** (portable, no special privileges) and **mounted mode** (FUSE on Linux, WinFsp on Windows, an appropriate macOS backend) behind the same engine-view contract.
 
-## What v0.3 already does
+## What v0.4 already does
 
 - Streams huge `Commit.gitdeps.xml` files without loading the whole XML document.
 - Builds deterministic `path → blob → pack` indexes.
@@ -49,6 +49,13 @@ The long-term design supports both **materialized mode** (portable, no special p
 - Resolves and materializes Epic's bundled .NET **SDK** for the current host directly from `Commit.gitdeps.xml`.
 - Materializes the UBT + shared C# source seed, compiles `UnrealBuildTool.csproj`, validates the generated runtime config, then probes UBT with the same Epic-bundled `dotnet`.
 - Provides `ubt run` to forward arbitrary arguments to the bootstrapped UBT.
+- Parses `.uplugin` module descriptors without interpreting `.Build.cs` semantics.
+- Creates an ephemeral project with Game/Editor targets and copies the plugin without stale build outputs.
+- Invokes the real UBT with `-Module=<PluginModule>` so plugin rules remain authoritative.
+- Converts missing-module/path/SDK diagnostics into bounded lazy Epic Git/GitDependencies materialization passes.
+- On native Linux x86_64, resolves `Linux_SDK.json` and lazily downloads/extracts Epic's matching native clang/sysroot toolchain only when UBT reports that the Linux SDK is missing.
+- Packages the built plugin with `Binaries` plus a machine-readable `ueci-build.json` report.
+- Ships a minimal Runtime plugin fixture and an opt-in real plugin smoke test that runs on a normal workstation.
 - Provides a future-proof VFS contract without making FUSE/WinFsp mandatory.
 - Has dependency-free local tests: no GitHub runner and no Epic token are required.
 
@@ -190,6 +197,32 @@ UECI itself still targets .NET 8 for easy development. UBT is compiled with the 
 
 For the Epic Git source seed, Git 2.49+ is strongly recommended. UECI creates a cone-mode sparse checkout for the UBT source seed and uses `git backfill --sparse` when available to batch missing blobs from the `--filter=blob:none` repository before populating the worktree. Older Git versions still fall back to lazy checkout, but that path can be dramatically slower on Unreal's source tree.
 
+## Build a plugin (experimental)
+
+The v0.4 path creates a temporary project under the lazy engine root, enables the source plugin, then asks the real UBT to build only the plugin modules. When UBT exposes a concrete missing Engine requirement, UECI materializes it from the pinned Epic Git commit or `Commit.gitdeps.xml` and retries.
+
+```bash
+export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
+
+dotnet run --project src/Ueci.Cli -- \
+  build-plugin ./MyPlugin/MyPlugin.uplugin \
+  --engine-dir /tmp/ueci-engine \
+  --out /tmp/ueci-package \
+  --ref release \
+  --no-pack-cache
+```
+
+The normal unit suite remains offline/token-free, including a synthetic `.tar.gz` Linux-toolchain test. On a native Linux x86_64 smoke build, UECI only downloads Epic's clang/sysroot toolchain if UBT reports that the Linux SDK is missing. With `--no-pack-cache`, the downloaded toolchain archive is removed after successful extraction.
+
+To exercise the real Epic path on a normal machine with the bundled fixture:
+
+```bash
+export UECI_EPIC_GITHUB_TOKEN='...'
+./scripts/smoke-plugin.sh
+```
+
+See [`docs/plugin-build.md`](docs/plugin-build.md) for the discovery loop, packaging behavior, and current alpha limitations.
+
 ## Project config
 
 The initial config can be generated with:
@@ -224,13 +257,15 @@ The credential field stores only the **environment variable name**, never a secr
 
 ## GitHub Action (prototype)
 
-The root `action.yml` bootstraps, **compiles**, and probes UnrealBuildTool using the blobless Epic source plus a selective GitDependencies SDK/build-support overlay. It still intentionally does not pretend that plugin building is complete yet.
+The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.3.0-alpha.5
+- uses: your-org/ueci@v0.4.0-alpha.1
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release
+    plugin-path: MyPlugin/MyPlugin.uplugin
+    package-dir: .ueci/package
 ```
 
 For pull requests from untrusted forks, do not expose an Epic token to checked-out untrusted code. Keep credentialed Unreal builds on trusted events/branches.
@@ -247,14 +282,14 @@ For pull requests from untrusted forks, do not expose an Epic token to checked-o
    - compressed pack + verified blob caches
    - SHA-1 validation and executable-bit restoration
    - grouped multi-blob extraction and materialized subtrees
-3. **v0.3 — Unreal-aware resolver** 🚧
+3. **v0.3 — Unreal-aware resolver** ✅ alpha
    - UBT + Epic bundled .NET bootstrap ✅
-   - evaluate real `.Build.cs` / target rules
-   - retry/lazy discovery when a requirement is missed
-4. **v0.4 — plugin build**
-   - synthetic project/target as needed
-   - package code plugins
-   - Linux/Windows/macOS matrix
+   - real UBT remains the rules authority ✅
+4. **v0.4 — plugin build** 🚧
+   - synthetic project + Game/Editor targets ✅
+   - bounded diagnostic-driven materialization/retry loop ✅ experimental
+   - package plugin + build report ✅
+   - validate minimal Linux fixture, then Windows/macOS
 5. **v0.5 — mounted engine view**
    - Linux FUSE backend
    - WinFsp backend

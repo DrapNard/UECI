@@ -27,19 +27,20 @@
 - [x] Bootstrap minimum Epic-bundled .NET + UBT inputs
 - [ ] Bootstrap UAT/UHT inputs required by plugin builds
 - [x] Obtain `Commit.gitdeps.xml` from the selected Git commit automatically
-- [ ] Ask UBT for real target/module rules instead of parsing `Build.cs` as YAML-like text
-- [ ] Requirement discovery/retry loop
+- [x] Ask UBT for real target/module rules instead of parsing `Build.cs` as YAML-like text
+- [x] Requirement discovery/retry loop (experimental v0.4 path)
 - [x] Host runtime/SDK filtering for bundled .NET
 - [x] Source-build UnrealBuildTool with Epic bundled SDK
-- [ ] Target platform filtering for plugin builds
+- [x] Host-to-UBT target platform mapping for plugin builds
 
 ## Milestone 0.4 — plugin packaging
 
-- [ ] Discover `.uplugin`
-- [ ] Synthetic `.uproject`/targets when needed
-- [ ] Compile code plugin
-- [ ] Package deterministic artifact
-- [ ] Linux x64
+- [x] Discover/parse `.uplugin` module descriptors
+- [x] Synthetic `.uproject` + Game/Editor targets
+- [x] UBT module-targeted compile loop (experimental; real smoke validation pending)
+- [x] Package plugin + build report
+- [x] Lazy native Linux x86_64 clang/sysroot toolchain acquisition (real compile validation pending)
+- [ ] Linux x64 real minimal-fixture smoke validation
 - [ ] Windows x64
 - [ ] macOS arm64
 

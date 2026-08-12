@@ -2,6 +2,33 @@
 
 All notable changes to UECI will be documented here.
 
+## [0.4.0-alpha.1] - 2026-08-12
+
+### Added
+
+- Experimental `ueci build-plugin <Plugin.uplugin>` end-to-end command.
+- `.uplugin` module descriptor reader with Runtime/Editor/Program classification.
+- Ephemeral `UECIHost` project with Game and Editor targets; stale generated platform `Binaries`, `Intermediate`, and `Saved` inputs are excluded while plugin-owned `Binaries/ThirdParty` payloads are preserved.
+- UBT invocation restricted with `-Module=<name>` for the plugin modules while keeping `.Build.cs` execution inside real UnrealBuildTool.
+- Full pinned Epic Git tree index for locating missing module rule files and source suffixes without checking out the tree.
+- Diagnostic parser for missing modules, Engine paths/includes/files, and platform SDK failures.
+- Lazy native Linux x86_64 toolchain installer: reads `Engine/Config/Linux/Linux_SDK.json`, downloads the matching Epic `native-linux-<MainVersion>.tar.gz` only after UBT reports a missing Linux SDK, safely extracts it under the Engine SDK layout, and reuses/removes the archive according to cache policy.
+- Bounded lazy retry loop that expands sparse Epic source subtrees or materializes GitDependencies payloads only when UBT exposes a concrete requirement.
+- Plugin packaging that preserves produced `Binaries`, removes `Intermediate`/`Saved`, and emits `ueci-build.json`.
+- Minimal `UECIMinimal` Runtime plugin fixture plus `scripts/smoke-plugin.sh` for an opt-in real Epic build on an ordinary workstation.
+- Offline local tests for descriptor parsing, host generation, diagnostic extraction, tracked-path indexing, UBT argument generation, packaging, Linux SDK version resolution, and synthetic native-toolchain extraction/cache behavior.
+
+### Changed
+
+- Composite GitHub Action can optionally run `build-plugin` when `plugin-path` is provided; UBT-only bootstrap remains available when it is omitted.
+- CLI version advanced to `0.4.0-alpha.1`.
+
+### Known experimental limits
+
+- The first real validation target is the minimal Runtime fixture on Linux; new UBT diagnostic shapes may intentionally stop discovery instead of materializing broad Engine subtrees.
+- Program-only plugin modules are rejected for now.
+- UAT `BuildPlugin` is not used yet; packaging is the narrower UBT-driven path.
+
 ## [0.3.0-alpha.5] - 2026-08-12
 
 ### Fixed

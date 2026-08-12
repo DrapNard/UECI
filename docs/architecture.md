@@ -15,13 +15,13 @@
                               │
                        logical EngineView
                               │
-              ┌───────────────┴───────────────┐
-              │                               │
-        Git source layer              GitDependencies layer
-              │                               │
-      GitHub partial clone             Epic dependency CDN
-              │                               │
-              └───────────────┬───────────────┘
+          ┌───────────────────┼───────────────────┐
+          │                   │                   │
+    Git source layer    GitDependencies layer   host SDK provider
+          │                   │                   │
+  GitHub partial clone   Epic dependency CDN   native platform SDK
+          │                   │                   │
+          └───────────────────┼───────────────────┘
                               │
                       writable overlay
                               │
@@ -120,3 +120,27 @@ Epic blobless Git
 ```
 
 The source repository is the authority for UBT code. GitDependencies supplies Epic's managed build support and host SDK. A precompiled UBT binary is **not** assumed to exist in Git.
+
+
+## v0.4 lazy plugin build
+
+```text
+plugin descriptor
+      │
+      ▼
+ephemeral project + target rules
+      │
+      ▼
+real UBT, restricted to plugin modules
+      │
+      ├── missing module ──► tracked `.Build.cs` ──► sparse Git subtree
+      ├── missing source  ──► pinned Epic Git blob/subtree
+      ├── missing payload ─► Commit.gitdeps.xml ──► verified blob cache
+      ├── missing Linux SDK ─► Linux_SDK.json ──► Epic native toolchain CDN
+      └── success
+             │
+             ▼
+        plugin package + report
+```
+
+Discovery is monotonic and bounded. The Linux native clang/sysroot archive is treated as an external SDK provider because Epic normally installs it through `Setup.sh` rather than `Commit.gitdeps.xml`; UECI defers that large download until UBT emits a platform-SDK failure.  UECI never treats a failed build as permission to materialize all of `Engine/Source`; it retries only when a diagnostic can be mapped to a concrete module/path/SDK requirement.
