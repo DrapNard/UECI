@@ -15,7 +15,7 @@ public sealed record UnrealPluginBuildOptions(
     string Platform,
     string Configuration,
     string OutputDirectory,
-    int MaxDiscoveryPasses = 16,
+    int MaxDiscoveryPasses = 32,
     Action<string>? Progress = null);
 
 public sealed record UnrealPluginBuildPhaseResult(
@@ -91,7 +91,6 @@ public sealed class UnrealPluginBuilder
         "Engine/Source/Runtime/Core",
         "Engine/Source/Runtime/TraceLog",
         "Engine/Source/Runtime/Projects",
-        "Engine/Source/Runtime/Launch",
         "Engine/Config/Linux",
     ];
 
@@ -185,7 +184,12 @@ public sealed class UnrealPluginBuilder
             bootstrap.EngineRoot,
             bootstrapOverlayFiles);
 
-        string[] sparseSeed = UbtSparseSeed.Concat(InitialNativeSeed).Distinct(StringComparer.Ordinal).ToArray();
+        IEnumerable<string> nativeSeed = InitialNativeSeed;
+        if (plugin.Modules.Any(module => module.IsEditorOnly))
+        {
+            nativeSeed = nativeSeed.Append("Engine/Source/Runtime/Launch");
+        }
+        string[] sparseSeed = UbtSparseSeed.Concat(nativeSeed).Distinct(StringComparer.Ordinal).ToArray();
         if (options.Platform.Equals("Linux", StringComparison.OrdinalIgnoreCase)
             && options.RuntimeIdentifier.Equals("linux-x64", StringComparison.OrdinalIgnoreCase))
         {
@@ -193,7 +197,10 @@ public sealed class UnrealPluginBuilder
                 bootstrap.EngineRoot,
                 options.Progress);
         }
-        options.Progress?.Invoke("Materializing the minimal native UBT target seed (Core/TraceLog/Projects/Launch)...");
+        string seedLabel = plugin.Modules.Any(module => module.IsEditorOnly)
+            ? "Core/TraceLog/Projects/Launch"
+            : "Core/TraceLog/Projects";
+        options.Progress?.Invoke($"Materializing the minimal native UBT target seed ({seedLabel})...");
         await _epicClient.MaterializeSparseDirectoriesAsync(
             bootstrap.EngineRoot,
             sparseSeed,
@@ -296,6 +303,15 @@ public sealed class UnrealPluginBuilder
 
                 options.Progress?.Invoke(
                     $"UBT exposed {fresh.Length:N0} new engine requirement{(fresh.Length == 1 ? string.Empty : "s")}; materializing lazily...");
+                foreach (UnrealBuildRequirement requirement in fresh.Take(12))
+                {
+                    string value = requirement.Value.Length == 0 ? "<host platform>" : requirement.Value;
+                    options.Progress?.Invoke($"  -> {requirement.Kind}: {value}");
+                }
+                if (fresh.Length > 12)
+                {
+                    options.Progress?.Invoke($"  -> ... and {fresh.Length - 12:N0} more");
+                }
                 UnrealPluginRequirementMaterializationResult materialized = await requirementMaterializer.MaterializeAsync(
                     fresh,
                     options.Platform,

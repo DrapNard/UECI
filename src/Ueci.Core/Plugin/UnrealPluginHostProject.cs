@@ -92,9 +92,31 @@ public static class UnrealPluginHostProject
             {
                 public {{GameTargetName}}Target(TargetInfo Target) : base(Target)
                 {
-                    Type = TargetType.Game;
+                    // UECI's runtime host is intentionally a standalone Program target. A Game
+                    // target implicitly enables Engine/developer-tool surfaces (Launch,
+                    // TargetPlatform, shader/texture formats, etc.) which are unrelated to a
+                    // Core-only plugin and massively inflate the lazy working set.
+                    Type = TargetType.Program;
+                    LinkType = TargetLinkType.Monolithic;
+                    LaunchModuleName = "{{GameTargetName}}";
                     DefaultBuildSettings = BuildSettingsVersion.Latest;
                     IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
+
+                    bCompileAgainstEngine = false;
+                    bCompileAgainstCoreUObject = false;
+                    bCompileAgainstApplicationCore = false;
+                    bBuildDeveloperTools = false;
+                    bBuildTargetDeveloperTools = false;
+                    bForceBuildTargetPlatforms = false;
+                    bForceBuildShaderFormats = false;
+                    bNeedsExtraShaderFormatsOverride = false;
+                    bCompileWithPluginSupport = true;
+                    bIncludePluginsForTargetPlatforms = true;
+                    bAllowEnginePluginsEnabledByDefault = false;
+                    bUsesSlate = false;
+                    bCompileICU = false;
+                    bEnableTrace = false;
+
                     ExtraModuleNames.Add("{{GameTargetName}}");
                 }
             }

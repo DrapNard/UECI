@@ -35,6 +35,10 @@ public static class UnrealBuildDiagnosticParser
         "(?:Could not find file|FileNotFoundException[^\\r\\n]*?)[\\s:'\\\"]+(?<value>[^'\\\"\\r\\n]+)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex UnresolvedLibrary = new(
+        @"Library\s+['""](?<value>[^'""\r\n]+)['""]\s+was\s+not\s+resolvable\s+to\s+a\s+file",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static readonly Regex PlatformSdk = new(
         "(?:unable to find|not a valid|has no valid|SDK.*(?:missing|invalid)|SDK for .* not found).{0,80}(?:SDK|platform)|(?:SDK|platform).{0,80}(?:unable to find|not a valid|missing|invalid|not found)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -67,30 +71,11 @@ public static class UnrealBuildDiagnosticParser
             }
         }
 
-        foreach (Regex regex in new[] { QuotedMissingInclude, GccMissingInclude, MissingFile })
+        foreach (Regex regex in new[] { QuotedMissingInclude, GccMissingInclude, MissingFile, UnresolvedLibrary })
         {
             foreach (Match match in regex.Matches(diagnostics))
             {
-                string value = CleanPath(match.Groups["value"].Value);
-                if (value.Length == 0)
-                {
-                    continue;
-                }
-
-                string normalized = value.Replace('\\', '/');
-                int engine = normalized.IndexOf("/Engine/", StringComparison.Ordinal);
-                if (engine >= 0)
-                {
-                    Add(results, keys, UnrealBuildRequirementKind.EnginePath, normalized[(engine + 1)..], match.Value);
-                }
-                else if (normalized.StartsWith("Engine/", StringComparison.Ordinal))
-                {
-                    Add(results, keys, UnrealBuildRequirementKind.EnginePath, normalized, match.Value);
-                }
-                else if (!Path.IsPathRooted(value) && !LooksLikeWindowsRootedPath(normalized))
-                {
-                    Add(results, keys, UnrealBuildRequirementKind.PathSuffix, normalized, match.Value);
-                }
+                AddPathRequirement(results, keys, match.Groups["value"].Value, match.Value);
             }
         }
 
@@ -105,6 +90,34 @@ public static class UnrealBuildDiagnosticParser
         }
 
         return results;
+    }
+
+    private static void AddPathRequirement(
+        ICollection<UnrealBuildRequirement> results,
+        ISet<string> keys,
+        string rawValue,
+        string evidence)
+    {
+        string value = CleanPath(rawValue);
+        if (value.Length == 0)
+        {
+            return;
+        }
+
+        string normalized = value.Replace('\\', '/');
+        int engine = normalized.IndexOf("/Engine/", StringComparison.Ordinal);
+        if (engine >= 0)
+        {
+            Add(results, keys, UnrealBuildRequirementKind.EnginePath, normalized[(engine + 1)..], evidence);
+        }
+        else if (normalized.StartsWith("Engine/", StringComparison.Ordinal))
+        {
+            Add(results, keys, UnrealBuildRequirementKind.EnginePath, normalized, evidence);
+        }
+        else if (!Path.IsPathRooted(value) && !LooksLikeWindowsRootedPath(normalized))
+        {
+            Add(results, keys, UnrealBuildRequirementKind.PathSuffix, normalized, evidence);
+        }
     }
 
     private static bool LooksLikeWindowsRootedPath(string path)

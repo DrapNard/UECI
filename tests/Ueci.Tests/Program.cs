@@ -38,6 +38,7 @@ internal static class Program
         ("plugin descriptor classifies runtime and editor modules", PluginDescriptorParsesAsync),
         ("plugin host project is ephemeral and strips stale outputs", PluginHostProjectPreparesAsync),
         ("plugin diagnostic parser derives lazy requirements", PluginDiagnosticsParseAsync),
+        ("module dependency hints parse standard Build.cs lists", ModuleDependencyHintsParseAsync),
         ("tracked Epic index locates module rules and suffixes", EpicTrackedIndexFindsAsync),
         ("plugin UBT invocation targets only requested modules", PluginBuildInvocationAsync),
         ("plugin packager keeps binaries and drops Intermediate", PluginPackagerAsync),
@@ -744,7 +745,16 @@ internal static class Program
             string projectJson = await File.ReadAllTextAsync(host.ProjectPath);
             Assert.True(projectJson.Contains("\"Modules\"", StringComparison.Ordinal));
             Assert.True(projectJson.Contains("\"UECIHost\"", StringComparison.Ordinal));
-            Assert.True(File.Exists(Path.Combine(host.Root, "Source", "UECIHost.Target.cs")));
+            string runtimeTarget = Path.Combine(host.Root, "Source", "UECIHost.Target.cs");
+            Assert.True(File.Exists(runtimeTarget));
+            string runtimeTargetText = await File.ReadAllTextAsync(runtimeTarget);
+            Assert.True(runtimeTargetText.Contains("Type = TargetType.Program", StringComparison.Ordinal));
+            Assert.True(runtimeTargetText.Contains("LaunchModuleName = \"UECIHost\"", StringComparison.Ordinal));
+            Assert.True(runtimeTargetText.Contains("bCompileAgainstEngine = false", StringComparison.Ordinal));
+            Assert.True(runtimeTargetText.Contains("bBuildDeveloperTools = false", StringComparison.Ordinal));
+            Assert.True(runtimeTargetText.Contains("bCompileWithPluginSupport = true", StringComparison.Ordinal));
+            Assert.True(runtimeTargetText.Contains("bNeedsExtraShaderFormatsOverride = false", StringComparison.Ordinal));
+            Assert.True(runtimeTargetText.Contains("bCompileICU = false", StringComparison.Ordinal));
             string buildConfig = Path.Combine(host.Root, "Saved", "UnrealBuildTool", "BuildConfiguration.xml");
             Assert.True(File.Exists(buildConfig));
             string buildConfigXml = await File.ReadAllTextAsync(buildConfig);
@@ -775,6 +785,8 @@ internal static class Program
               Found AutoSdk Version, Required=v26_clang-20.1.8-rockylinux8.
             Linux is not a valid platform to build. Check that the SDK is installed properly.
             UBA is not available - please ensure the UBA binaries exist for your host platform
+            Library '/tmp/UE/Engine/Source/ThirdParty/BLAKE3/1.3.1/lib/Unix/x86_64-unknown-linux-gnu/Release/libBLAKE3.a' was not resolvable to a file when used in Module 'BLAKE3'
+            Library 'ThirdParty/jemalloc/lib/Unix/x86_64-unknown-linux-gnu/libjemalloc_pic.a' was not resolvable to a file when used in Module 'jemalloc'
             """;
         IReadOnlyList<UnrealBuildRequirement> requirements = UnrealBuildDiagnosticParser.Parse(diagnostics);
         Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.Module && r.Value == "Core"));
@@ -783,6 +795,36 @@ internal static class Program
             && r.Value.Contains("Engine/Source/ThirdParty/Foo/libFoo.a", StringComparison.Ordinal)));
         Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.PlatformSdk));
         Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.BuildExecutor && r.Value == "UBA"));
+        Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.EnginePath
+            && r.Value.EndsWith("Engine/Source/ThirdParty/BLAKE3/1.3.1/lib/Unix/x86_64-unknown-linux-gnu/Release/libBLAKE3.a", StringComparison.Ordinal)));
+        Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.PathSuffix
+            && r.Value == "ThirdParty/jemalloc/lib/Unix/x86_64-unknown-linux-gnu/libjemalloc_pic.a"));
+        return Task.CompletedTask;
+    }
+
+    private static Task ModuleDependencyHintsParseAsync()
+    {
+        string buildRules = """
+            using UnrealBuildTool;
+            public class Fixture : ModuleRules
+            {
+                public Fixture(ReadOnlyTargetRules Target) : base(Target)
+                {
+                    PublicDependencyModuleNames.AddRange(new string[] { "Core", "Projects" });
+                    PrivateDependencyModuleNames.Add("Sockets");
+                    PublicIncludePathModuleNames.AddRange(new[] { "TargetPlatform" });
+                    DynamicallyLoadedModuleNames.Add("TextureFormat");
+                    PublicDefinitions.Add("NOT_A_MODULE=1");
+                }
+            }
+            """;
+        IReadOnlyList<string> modules = UnrealModuleDependencyHints.Extract(buildRules);
+        Assert.True(modules.Contains("Core", StringComparer.Ordinal));
+        Assert.True(modules.Contains("Projects", StringComparer.Ordinal));
+        Assert.True(modules.Contains("Sockets", StringComparer.Ordinal));
+        Assert.True(modules.Contains("TargetPlatform", StringComparer.Ordinal));
+        Assert.True(modules.Contains("TextureFormat", StringComparer.Ordinal));
+        Assert.False(modules.Contains("NOT_A_MODULE", StringComparer.Ordinal));
         return Task.CompletedTask;
     }
 
@@ -800,6 +842,7 @@ internal static class Program
         Assert.Equal("Engine/Source/Runtime/Core/Core.Build.cs", rules[0]);
         Assert.Equal("Engine/Source/Runtime/Core/Public/HAL/Platform.h", index.FindBySuffix("HAL/Platform.h")[0]);
         Assert.True(index.HasPrefix("Engine/Source/Runtime/Core"));
+        Assert.Equal(2, index.CountPrefix("Engine/Source/Runtime/Core"));
         Assert.Equal(
             "Engine/Platforms/Linux/Source/Runtime/LinuxRuntime/LinuxRuntime.Build.cs",
             index.FindModuleRules("LinuxRuntime")[0]);
@@ -1089,6 +1132,19 @@ internal static class Program
             hostUba.Prefixes);
         Assert.True(uba.FileCount >= 20);
         Assert.True(uba.DownloadCompressedBytes > 0);
+
+        string[] observedCoreLibraries =
+        [
+            "Engine/Source/ThirdParty/BLAKE3/1.3.1/lib/Unix/x86_64-unknown-linux-gnu/Release/libBLAKE3.a",
+            "Engine/Source/Runtime/OodleDataCompression/Sdks/2.9.16/lib/Linux/liboo2corelinux64.a",
+            "Engine/Source/ThirdParty/zlib/1.3/lib/Unix/x86_64-unknown-linux-gnu/Release/libz.a",
+            "Engine/Source/ThirdParty/jemalloc/lib/Unix/x86_64-unknown-linux-gnu/libjemalloc_pic.a",
+            "Engine/Source/ThirdParty/ICU/icu4c-64_1/lib/Unix/x86_64-unknown-linux-gnu/libicu_fPIC.a",
+        ];
+        foreach (string library in observedCoreLibraries)
+        {
+            Assert.True(manifest.Files.ContainsKey(library));
+        }
     }
 
     private sealed class FakeToolchainArchiveSource(byte[] payload) : IUnrealToolchainArchiveSource

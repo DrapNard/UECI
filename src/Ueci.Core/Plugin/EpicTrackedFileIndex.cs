@@ -43,6 +43,12 @@ public sealed class EpicTrackedFileIndex
         return _paths.Any(path => path.StartsWith(normalized, StringComparison.Ordinal));
     }
 
+    public int CountPrefix(string prefix)
+    {
+        string normalized = Normalize(prefix).TrimEnd('/') + '/';
+        return _paths.Count(path => path.StartsWith(normalized, StringComparison.Ordinal));
+    }
+
     private static int ScorePath(string path)
     {
         if (path.StartsWith("Engine/Source/Runtime/", StringComparison.Ordinal)) return 0;

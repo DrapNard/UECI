@@ -15,6 +15,10 @@ public sealed record UnrealPluginRequirementMaterializationResult(
 
 public sealed class UnrealPluginRequirementMaterializer
 {
+    private const int ModuleHintDepth = 2;
+    private const int MaxHintedModuleDirectoriesPerRound = 48;
+    private const int MaxHintedModuleTrackedFiles = 1500;
+
     private readonly EpicGitClient _epicClient;
     private readonly GitDependenciesManifest _manifest;
     private readonly EpicTrackedFileIndex _tracked;
@@ -73,7 +77,7 @@ public sealed class UnrealPluginRequirementMaterializer
             {
                 case UnrealBuildRequirementKind.Module:
                 {
-                    string[] rules = _tracked.FindModuleRules(requirement.Value, maxResults: 4).ToArray();
+                    string[] rules = _tracked.FindModuleRules(requirement.Value, maxResults: 1).ToArray();
                     if (rules.Length == 0)
                     {
                         break;
@@ -158,19 +162,35 @@ public sealed class UnrealPluginRequirementMaterializer
             }
         }
 
+        int addedSparseDirectories = 0;
         if (sparseToAdd.Count != 0)
         {
-            foreach (string directory in sparseToAdd)
+            HashSet<string> frontier = new(sparseToAdd, StringComparer.Ordinal);
+            addedSparseDirectories += await ExpandSparseAsync(
+                frontier,
+                progress,
+                cancellationToken).ConfigureAwait(false);
+
+            // Build.cs is executable C# and UBT remains the source of truth. These two bounded
+            // rounds are only conservative prefetch hints for common Add/AddRange dependency
+            // lists, reducing the one-missing-module-per-UBT-pass behavior observed in alpha.9.
+            for (int depth = 1; depth <= ModuleHintDepth; depth++)
             {
-                _sparseDirectories.Add(directory);
+                HashSet<string> hinted = DiscoverHintedModuleDirectories(frontier, details);
+                if (hinted.Count == 0)
+                {
+                    break;
+                }
+
+                progress?.Invoke(
+                    $"Prefetching {hinted.Count:N0} small module director{(hinted.Count == 1 ? "y" : "ies")} " +
+                    $"hinted by Build.cs (depth {depth}/{ModuleHintDepth})...");
+                addedSparseDirectories += await ExpandSparseAsync(
+                    hinted,
+                    progress,
+                    cancellationToken).ConfigureAwait(false);
+                frontier = hinted;
             }
-            progress?.Invoke($"Expanding Epic sparse source seed by {sparseToAdd.Count:N0} module director{(sparseToAdd.Count == 1 ? "y" : "ies")}...");
-            await _epicClient.MaterializeSparseDirectoriesAsync(
-                _engineRoot,
-                _sparseDirectories,
-                _tokenEnvironmentVariable,
-                cancellationToken,
-                message => progress?.Invoke(message)).ConfigureAwait(false);
 
             // Git sparse updates are allowed to delete the small Engine-side projection. The
             // authoritative Linux toolchain is stored under .ueci/toolchains, so restore its
@@ -252,12 +272,107 @@ public sealed class UnrealPluginRequirementMaterializer
 
         return new UnrealPluginRequirementMaterializationResult(
             matched,
-            sparseToAdd.Count,
+            addedSparseDirectories,
             gitFiles.Count,
             materializedGitDeps,
             platformSdkChanges,
             downloadedBytes,
             details);
+    }
+
+    private async Task<int> ExpandSparseAsync(
+        IReadOnlyCollection<string> directories,
+        Action<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        int added = 0;
+        foreach (string directory in directories)
+        {
+            if (_sparseDirectories.Add(directory))
+            {
+                added++;
+            }
+        }
+        if (added == 0)
+        {
+            return 0;
+        }
+
+        progress?.Invoke(
+            $"Expanding Epic sparse source seed by {added:N0} module director{(added == 1 ? "y" : "ies")}...");
+        await _epicClient.MaterializeSparseDirectoriesAsync(
+            _engineRoot,
+            _sparseDirectories,
+            _tokenEnvironmentVariable,
+            cancellationToken,
+            message => progress?.Invoke(message)).ConfigureAwait(false);
+        return added;
+    }
+
+    private HashSet<string> DiscoverHintedModuleDirectories(
+        IEnumerable<string> frontier,
+        ICollection<string> details)
+    {
+        var hinted = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string relativeDirectory in frontier.OrderBy(value => value, StringComparer.Ordinal))
+        {
+            string fullDirectory = GitDependencyPath.CombineUnderRoot(_engineRoot, relativeDirectory);
+            if (!Directory.Exists(fullDirectory))
+            {
+                continue;
+            }
+
+            foreach (string rulesFile in Directory.EnumerateFiles(
+                fullDirectory,
+                "*.Build.cs",
+                SearchOption.TopDirectoryOnly))
+            {
+                string source;
+                try
+                {
+                    source = File.ReadAllText(rulesFile);
+                }
+                catch (IOException)
+                {
+                    continue;
+                }
+
+                foreach (string module in UnrealModuleDependencyHints.Extract(source))
+                {
+                    string? rule = _tracked.FindModuleRules(module, maxResults: 1).FirstOrDefault();
+                    if (rule is null)
+                    {
+                        continue;
+                    }
+                    string? directory = Path.GetDirectoryName(rule.Replace('/', Path.DirectorySeparatorChar));
+                    if (directory is null)
+                    {
+                        continue;
+                    }
+                    string normalized = Normalize(directory);
+                    if (_sparseDirectories.Contains(normalized) || hinted.Contains(normalized))
+                    {
+                        continue;
+                    }
+
+                    int trackedFiles = _tracked.CountPrefix(normalized);
+                    if (trackedFiles > MaxHintedModuleTrackedFiles)
+                    {
+                        details.Add(
+                            $"module hint {module} skipped ({trackedFiles:N0} tracked files; wait for explicit UBT requirement)");
+                        continue;
+                    }
+
+                    hinted.Add(normalized);
+                    details.Add($"module hint {module} -> git subtree {normalized}");
+                    if (hinted.Count >= MaxHintedModuleDirectoriesPerRound)
+                    {
+                        return hinted;
+                    }
+                }
+            }
+        }
+        return hinted;
     }
 
     private bool ResolveEnginePath(
