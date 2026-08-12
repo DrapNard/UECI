@@ -132,6 +132,12 @@ public static class UnrealPluginHostProject
                     Type = TargetType.Game;
                     LinkType = TargetLinkType.Modular;
                     LaunchModuleName = "{{GameTargetName}}";
+
+                    // This synthetic Game target intentionally changes compile/plugin settings from
+                    // UnrealGame. It must therefore own a distinct build environment; otherwise UBT
+                    // rejects the target because those settings would affect shared Engine products.
+                    BuildEnvironment = TargetBuildEnvironment.Unique;
+
                     DefaultBuildSettings = BuildSettingsVersion.Latest;
                     IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
 

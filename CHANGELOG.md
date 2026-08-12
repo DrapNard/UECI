@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.0-alpha.14] - 2026-08-13
+
+### Fixed
+
+- Gives the synthetic modular Runtime/Game target a `TargetBuildEnvironment.Unique` environment. UE 5.8 rejects the lean UECI Game target when it shares UnrealGame build products while changing compile/plugin settings; a unique environment keeps those intentionally minimal settings isolated instead of overriding UnrealGame's shared environment.
+
+### Changed
+
+- CLI version advanced to `0.5.0-alpha.14`.
+
 ## [0.5.0-alpha.13] - 2026-08-13
 
 ### Fixed

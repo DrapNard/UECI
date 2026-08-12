@@ -1068,6 +1068,7 @@ internal static class Program
             Assert.True(runtimeTargetText.Contains("Type = TargetType.Game", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("LinkType = TargetLinkType.Modular", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("LaunchModuleName = \"UECIHost\"", StringComparison.Ordinal));
+            Assert.True(runtimeTargetText.Contains("BuildEnvironment = TargetBuildEnvironment.Unique", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("bCompileAgainstEngine = false", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("bBuildDeveloperTools = false", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("bCompileWithPluginSupport = true", StringComparison.Ordinal));

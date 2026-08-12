@@ -193,6 +193,8 @@ The v0.5 mounted backend exposes the whole pinned Unreal namespace without check
 
 `v0.5.0-alpha.13` uses a lean modular **Game** host for Runtime modules and keeps the modular Editor host for Editor modules. UE Runtime modules explicitly exclude Program targets, so alpha.12 could request `-Module=<plugin-module>` against an incompatible host type. Module-targeted Game/Editor builds preserve the plugin's declared host semantics while still emitting packageable native libraries and retaining the minimal Engine profile. Alpha.13 also surfaces actionable UBT errors with context even when parallel actions continue after the first failure.
 
+`v0.5.0-alpha.14` gives that synthetic Runtime/Game target a **unique UBT build environment**. Its deliberately lean compile/plugin settings differ from UnrealGame, so sharing UnrealGame build products is rejected by UBT; isolating the target keeps the minimal settings legal without forcing an unsafe shared-environment override.
+
 ```bash
 export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
 mkdir -p /tmp/ueci-engine-view
@@ -311,7 +313,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.5.0-alpha.13
+- uses: your-org/ueci@v0.5.0-alpha.14
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release
