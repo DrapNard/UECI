@@ -87,12 +87,30 @@ public sealed class UnrealBuildToolBootstrapper
 
         options.Progress?.Invoke("Materializing UnrealBuildTool + shared managed source from Epic Git...");
 
+        // Preserve already-installed external SDKs before touching the sparse specification.
+        // Git sparse-checkout may remove ignored/untracked files outside the active cone; native
+        // Epic toolchains live under an ignored Engine/Extras subtree and must therefore be part
+        // of the sparse spec even though they are not Git-tracked files.
+        IReadOnlyList<string> existingExternalSparsePaths =
+            UnrealLinuxNativeToolchainInstaller.FindInstalledSparseProtectionPaths(root);
+        if (existingExternalSparsePaths.Count != 0)
+        {
+            options.Progress?.Invoke(
+                $"Protecting {existingExternalSparsePaths.Count:N0} existing external SDK path" +
+                $"{(existingExternalSparsePaths.Count == 1 ? string.Empty : "s")} from sparse checkout updates...");
+        }
+
+        string[] sparseSeed = GitSeedDirectories
+            .Concat(existingExternalSparsePaths)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
         // A source checkout does not contain a precompiled UnrealBuildTool.dll. Materialize the
         // C# project and its shared project references first; Git's blobless promisor remote only
         // downloads the source blobs touched by these pathspecs.
         await _epicClient.MaterializeSparseDirectoriesAsync(
             root,
-            GitSeedDirectories,
+            sparseSeed,
             options.TokenEnvironmentVariable,
             cancellationToken,
             options.Progress).ConfigureAwait(false);

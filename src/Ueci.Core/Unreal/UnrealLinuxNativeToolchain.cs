@@ -177,6 +177,35 @@ public sealed class UnrealLinuxNativeToolchainInstaller
         _source = source ?? new HttpUnrealToolchainArchiveSource();
     }
 
+    public static IReadOnlyList<string> FindInstalledSparseProtectionPaths(string engineRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(engineRoot);
+
+        string root = Path.GetFullPath(engineRoot);
+        string sdkRoot = Path.Combine(
+            root,
+            "Engine", "Extras", "ThirdPartyNotUE", "SDKs", "HostLinux", "Linux_x64");
+        if (!Directory.Exists(sdkRoot))
+        {
+            return Array.Empty<string>();
+        }
+
+        var protectedPaths = new List<string>();
+        foreach (string candidate in Directory.EnumerateDirectories(sdkRoot))
+        {
+            string version = Path.GetFileName(candidate);
+            if (string.IsNullOrWhiteSpace(version) || !IsUsable(candidate, version))
+            {
+                continue;
+            }
+
+            protectedPaths.Add(Path.GetRelativePath(root, candidate)
+                .Replace(Path.DirectorySeparatorChar, '/'));
+        }
+
+        return protectedPaths;
+    }
+
     public async Task<UnrealLinuxNativeToolchainResult> EnsureAsync(
         string engineRoot,
         string cacheDirectory,

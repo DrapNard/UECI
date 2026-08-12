@@ -43,6 +43,7 @@ internal static class Program
         ("plugin packager keeps binaries and drops Intermediate", PluginPackagerAsync),
         ("Linux SDK descriptor resolves Epic native toolchain", LinuxToolchainDescriptorAsync),
         ("Linux native toolchain installer is offline-testable and cached", LinuxToolchainInstallerAsync),
+        ("Epic sparse expansion preserves protected external Linux toolchain", LinuxToolchainSparseProtectionAsync),
     ];
 
     public static async Task<int> Main(string[] args)
@@ -943,6 +944,89 @@ internal static class Program
         }
         finally
         {
+            DeleteDirectory(root);
+            DeleteDirectory(cacheRoot);
+        }
+    }
+
+    private static async Task LinuxToolchainSparseProtectionAsync()
+    {
+        const string version = "v26_clang-20.1.8-rockylinux8";
+        const string tokenVariable = "UECI_TEST_EPIC_TOKEN";
+        string root = CreateTempDirectory();
+        string cacheRoot = CreateTempDirectory();
+        string? previousToken = Environment.GetEnvironmentVariable(tokenVariable);
+
+        try
+        {
+            string source = Path.Combine(root, "source");
+            string bare = Path.Combine(root, "remote.git");
+            string clientRoot = Path.Combine(root, "client");
+            Directory.CreateDirectory(source);
+
+            await RunGitAsync(source, ["init", "--quiet", "--initial-branch=main"]);
+            await RunGitAsync(source, ["config", "user.name", "UECI Tests"]);
+            await RunGitAsync(source, ["config", "user.email", "ueci@example.invalid"]);
+
+            WriteFixtureFile(source, "Engine/Config/Linux/Linux_SDK.json", $"{{ \"MainVersion\": \"{version}\" }}\n");
+            WriteFixtureFile(source, "Engine/Source/Runtime/Core/Core.Build.cs", "// core\n");
+            WriteFixtureFile(source, "Engine/Source/Runtime/Extra/Extra.Build.cs", "// extra\n");
+            WriteFixtureFile(source, ".gitignore", "Engine/Extras/ThirdPartyNotUE/SDKs/\n");
+
+            await RunGitAsync(source, ["add", "."]);
+            await RunGitAsync(source, ["commit", "--quiet", "-m", "fixture"]);
+            await RunGitAsync(root, ["clone", "--quiet", "--bare", source, bare]);
+            await RunGitAsync(bare, ["config", "uploadpack.allowFilter", "true"]);
+
+            Environment.SetEnvironmentVariable(tokenVariable, "test-token");
+            var client = new EpicGitClient();
+            await client.InitializePartialRepositoryAsync(
+                clientRoot,
+                new Uri(bare).AbsoluteUri,
+                "main",
+                tokenVariable);
+
+            await client.MaterializeSparseDirectoriesAsync(
+                clientRoot,
+                ["Engine/Config/Linux", "Engine/Source/Runtime/Core"],
+                tokenVariable);
+
+            byte[] archive = CreateSyntheticToolchainArchive(root, version);
+            var installer = new UnrealLinuxNativeToolchainInstaller(new FakeToolchainArchiveSource(archive));
+            UnrealLinuxNativeToolchainResult installed = await installer.EnsureAsync(
+                clientRoot,
+                Path.Combine(cacheRoot, "cache"),
+                cacheArchive: true);
+
+            string protectedRelativePath = Path.GetRelativePath(clientRoot, installed.ToolchainDirectory)
+                .Replace(Path.DirectorySeparatorChar, '/');
+            string clang = Path.Combine(
+                installed.ToolchainDirectory,
+                "x86_64-unknown-linux-gnu",
+                "bin",
+                "clang++");
+            Assert.True(File.Exists(clang));
+            IReadOnlyList<string> installedProtections =
+                UnrealLinuxNativeToolchainInstaller.FindInstalledSparseProtectionPaths(clientRoot);
+            Assert.True(installedProtections.Contains(protectedRelativePath, StringComparer.Ordinal));
+
+            await client.MaterializeSparseDirectoriesAsync(
+                clientRoot,
+                [
+                    "Engine/Config/Linux",
+                    "Engine/Source/Runtime/Core",
+                    "Engine/Source/Runtime/Extra",
+                    protectedRelativePath,
+                ],
+                tokenVariable);
+
+            Assert.True(File.Exists(clang));
+            Assert.True(File.Exists(Path.Combine(
+                clientRoot, "Engine", "Source", "Runtime", "Extra", "Extra.Build.cs")));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(tokenVariable, previousToken);
             DeleteDirectory(root);
             DeleteDirectory(cacheRoot);
         }

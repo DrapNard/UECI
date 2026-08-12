@@ -224,6 +224,24 @@ public sealed class UnrealPluginRequirementMaterializer
                 progress: progress,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
             downloadedBytes += toolchain.DownloadedBytes;
+
+            // `git sparse-checkout set` may remove ignored/untracked files that live outside
+            // the active sparse cone. Epic's native Linux SDK is installed by Setup.sh/UECI
+            // under Engine/Extras/ThirdPartyNotUE/SDKs and is intentionally not a tracked Git
+            // subtree. Keep the exact installed toolchain directory in the sparse specification
+            // so later lazy module expansions cannot silently delete the compiler we just installed.
+            string protectedToolchainDirectory = Normalize(Path.GetRelativePath(
+                _engineRoot,
+                toolchain.ToolchainDirectory));
+            if (protectedToolchainDirectory.Length != 0
+                && _sparseDirectories.Add(protectedToolchainDirectory))
+            {
+                details.Add(
+                    $"protected external sparse path {protectedToolchainDirectory} for Epic Linux toolchain {toolchain.Version}");
+                progress?.Invoke(
+                    $"Protecting Epic Linux toolchain from future sparse updates ({protectedToolchainDirectory}).");
+            }
+
             if (toolchain.Installed)
             {
                 platformSdkChanges++;
