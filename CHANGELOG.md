@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.0-alpha.5] - 2026-08-12
+
+### Fixed
+
+- Mounted Epic builds no longer hydrate Git blobs merely because UBT/MSBuild calls `stat(2)`. UECI now enriches the metadata-only local Git tree with exact blob lengths from GitHub's Git Trees API, which returns blob `sha` + `size` without blob contents.
+- GitHub's recursive tree response can truncate above its documented limits; UECI detects `truncated`, recursively splits only those oversized subtrees, and merges exact sizes by blob SHA.
+- The exact-size index is cached by Epic commit under VFS state, so subsequent mounts do not repeat GitHub metadata requests.
+- The previous targeted-stat hydration remains only as a correctness fallback for non-GitHub repositories or incomplete metadata.
+
+### Changed
+
+- VFS startup now runs three metadata jobs in parallel: local `git ls-tree` path/object indexing, GitHub blob-size metadata, and `Commit.gitdeps.xml` parsing.
+- CLI version advanced to `0.5.0-alpha.5`.
+
 ## [0.5.0-alpha.4] - 2026-08-12
 
 ### Added

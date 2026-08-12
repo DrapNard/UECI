@@ -140,9 +140,9 @@ The standalone mount smoke is now validated on a real Linux host, and `build-plu
 
 ## POSIX size semantics
 
-Git tree metadata contains path/mode/object-id but not blob length. UECI therefore keeps `readdir` metadata-only, but a targeted `stat(2)` on an uncached Git file is treated as content demand: the single blob is materialized into CAS and its exact backing length is returned as `st_size`. Returning a fake zero length is incorrect because the kernel may treat the file as EOF without issuing a FUSE `read`.
+Git tree objects contain path/mode/object-id but not blob length. On the Epic/GitHub backend, UECI enriches that local tree with exact `size` values from GitHub's Git Trees API, which exposes blob metadata without transferring file contents. Recursive responses that report `truncated` are split into smaller child-tree requests; the final SHA→size map is cached by commit. As a result, both `readdir(2)` and `stat(2)` stay metadata-only while still returning a truthful `st_size`; the first `open/read` remains the content-hydration boundary. Non-GitHub repositories keep a targeted hydration fallback when an exact size cannot be obtained.
 
-## Mounted plugin compilation (alpha.4)
+## Mounted plugin compilation (alpha.5)
 
 `ueci build-plugin --backend fuse` now consumes the mount as an actual Unreal Engine root:
 
