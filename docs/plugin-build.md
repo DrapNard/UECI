@@ -91,3 +91,6 @@ By default it builds `fixtures/MinimalPlugin/UECIMinimal.uplugin`, a single Runt
 - Runtime and editor phases are implemented, but the first real validation target is the minimal Runtime fixture on Linux. Native Linux toolchain installation is implemented lazily; the end-to-end plugin compile still needs real-Epic smoke validation.
 - UAT `BuildPlugin` is not used yet because it pulls a much broader automation surface. Once the minimal UBT path is proven, UECI can add an optional UAT-compatible packaging mode.
 - Cross-compiling to a platform different from the host is not the v0.4 goal; Windows and macOS are expected to use their native hosted/self-hosted environments.
+## Executor diagnostics
+
+Some UE 5.8 source builds pre-create Unreal Build Accelerator before platform/toolchain validation even when CI-oriented XML configuration asks for local executors. UECI does not make the plugin build depend on that configuration behavior: if UBT reports `UBA is not available`, discovery adds the host-specific UnrealBuildAccelerator GitDependencies subtree and retries. The full UBT log at `Engine/Programs/UnrealBuildTool/Log.txt` is merged with stdout/stderr before requirement parsing, because that log can contain the Linux SDK requirement that the short console error omits.

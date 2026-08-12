@@ -257,12 +257,15 @@ credentials:
 
 The credential field stores only the **environment variable name**, never a secret.
 
+
+> **Executor discovery:** UE 5.8 can pre-create UBA before platform validation. UECI treats a missing UBA runtime as a lazy GitDependencies requirement and merges the full UBT log into discovery, so the same failed pass can also reveal the native platform SDK requirement.
+
 ## GitHub Action (prototype)
 
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.4.0-alpha.4
+- uses: your-org/ueci@v0.4.0-alpha.5
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release

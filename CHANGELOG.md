@@ -2,6 +2,19 @@
 
 All notable changes to UECI will be documented here.
 
+## [0.4.0-alpha.5] - 2026-08-12
+
+### Fixed
+
+- Treats `UBA is not available` as a lazy build-executor requirement instead of stalling the plugin discovery loop. UECI materializes only the host-specific `Engine/Binaries/*/UnrealBuildAccelerator` GitDependencies subtree when UE 5.8 insists on pre-creating UBA.
+- Plugin discovery now appends `Engine/Programs/UnrealBuildTool/Log.txt` to the captured diagnostics. UBT often keeps actionable platform/SDK details in this full log while stderr only contains the terminal executor failure, so one failed pass can now expose UBA and the Linux SDK together.
+- CLI version advanced to `0.4.0-alpha.5`.
+
+### Testing
+
+- The offline diagnostic fixture covers the real UE 5.8 UBA failure text.
+- The optional real-manifest smoke verifies that the Linux UBA GitDependencies prefix is present and plannable.
+
 ## [0.4.0-alpha.4] - 2026-08-12
 
 ### Fixed
