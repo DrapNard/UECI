@@ -55,7 +55,7 @@ public sealed class UnrealBuildToolCompiler
         ExternalProcessResult process = await ExternalProcess.RunAsync(
             dotnet,
             root,
-            ["build", project, "--nologo", "--verbosity:minimal"],
+            ["build", project, "--nologo", "--verbosity:minimal", "--no-incremental"],
             environment,
             cancellationToken: cancellationToken).ConfigureAwait(false);
 

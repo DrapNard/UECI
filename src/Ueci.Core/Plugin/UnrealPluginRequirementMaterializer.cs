@@ -338,18 +338,8 @@ public sealed class UnrealPluginRequirementMaterializer
             return null;
         }
 
-        string[] candidates = _runtimeIdentifier.StartsWith("linux-", StringComparison.OrdinalIgnoreCase)
-            ? ["Engine/Binaries/Linux/UnrealBuildAccelerator/"]
-            : _runtimeIdentifier.StartsWith("mac-", StringComparison.OrdinalIgnoreCase)
-                ? ["Engine/Binaries/Mac/UnrealBuildAccelerator/"]
-                : _runtimeIdentifier.Equals("win-x64", StringComparison.OrdinalIgnoreCase)
-                    ? ["Engine/Binaries/Win64/UnrealBuildAccelerator/x64/"]
-                    : _runtimeIdentifier.Equals("win-arm64", StringComparison.OrdinalIgnoreCase)
-                        ? ["Engine/Binaries/Win64/UnrealBuildAccelerator/arm64/"]
-                        : Array.Empty<string>();
-
-        return candidates.FirstOrDefault(prefix => _manifest.Files.Keys.Any(
-            path => path.StartsWith(prefix, StringComparison.Ordinal)));
+        EpicBundledUbaPlan? plan = EpicBundledUbaResolver.TryResolve(_manifest, _runtimeIdentifier);
+        return plan?.NativePrefix;
     }
 
     private string? ResolvePlatformSdkPrefix(string platform)

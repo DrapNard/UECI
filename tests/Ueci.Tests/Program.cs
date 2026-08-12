@@ -32,6 +32,7 @@ internal static class Program
         ("runtimeconfig parser reads shared framework", RuntimeConfigParsesAsync),
         ("Epic bundled dotnet resolver selects host runtime", BundledDotNetResolverAsync),
         ("Epic bundled dotnet SDK resolver selects latest SDK", BundledDotNetSdkResolverAsync),
+        ("Epic bundled UBA resolver selects managed + native host payload", BundledUbaResolverAsync),
         ("UBT locator requires compiled bootstrap files", UnrealBuildToolLocatorAsync),
         ("UBT locator discovers project bin output", UnrealBuildToolLocatorFindsProjectBinAsync),
         ("plugin descriptor classifies runtime and editor modules", PluginDescriptorParsesAsync),
@@ -610,6 +611,33 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static Task BundledUbaResolverAsync()
+    {
+        const string libraryProps = EpicBundledUbaResolver.LibraryPropsPath;
+        const string linuxPrefix = "Engine/Binaries/Linux/UnrealBuildAccelerator/";
+        const string hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        var files = new Dictionary<string, GitDependencyFile>(StringComparer.Ordinal)
+        {
+            [libraryProps] = new(libraryProps, hash, false),
+            [linuxPrefix + "UbaAgent"] = new(linuxPrefix + "UbaAgent", hash, true),
+            [linuxPrefix + "libUbaHost.so"] = new(linuxPrefix + "libUbaHost.so", hash, false),
+        };
+        var manifest = new GitDependenciesManifest(
+            "https://cdn.example.test/dependencies",
+            files,
+            new Dictionary<string, GitDependencyBlob>(StringComparer.OrdinalIgnoreCase),
+            new Dictionary<string, GitDependencyPack>(StringComparer.OrdinalIgnoreCase));
+
+        EpicBundledUbaPlan plan = EpicBundledUbaResolver.TryResolve(manifest, "linux-x64")
+            ?? throw new Exception("UBA plan missing");
+        Assert.Equal(linuxPrefix, plan.NativePrefix);
+        Assert.True(plan.ExactPaths.Contains(libraryProps, StringComparer.Ordinal));
+        Assert.True(plan.Prefixes.Contains(linuxPrefix, StringComparer.Ordinal));
+        Assert.True(EpicBundledUbaResolver.TryResolve(manifest, "unknown-rid") is null);
+        return Task.CompletedTask;
+    }
+
     private static async Task UnrealBuildToolLocatorAsync()
     {
         string root = CreateTempDirectory();
@@ -956,10 +984,16 @@ internal static class Program
         Assert.True(sdk.SdkVersion.Major >= 8);
         Assert.True(manifest.Files.Keys.Any(path => path.StartsWith(sdk.SdkPrefix, StringComparison.Ordinal)));
 
+        EpicBundledUbaPlan hostUba = EpicBundledUbaResolver.TryResolve(manifest, "linux-x64")
+            ?? throw new Exception("real manifest does not expose the Linux host UBA bootstrap payload");
+        Assert.Equal("Engine/Binaries/Linux/UnrealBuildAccelerator/", hostUba.NativePrefix);
+        Assert.True(manifest.Files.ContainsKey(EpicBundledUbaResolver.LibraryPropsPath));
+
         GitDependenciesPlan uba = GitDependenciesPlanner.CreatePlan(
             manifest,
-            prefixes: ["Engine/Binaries/Linux/UnrealBuildAccelerator/"]);
-        Assert.True(uba.FileCount > 0);
+            hostUba.ExactPaths,
+            hostUba.Prefixes);
+        Assert.True(uba.FileCount >= 20);
         Assert.True(uba.DownloadCompressedBytes > 0);
     }
 

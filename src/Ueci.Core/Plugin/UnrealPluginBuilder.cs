@@ -287,6 +287,24 @@ public sealed class UnrealPluginBuilder
 
                 materializedDescriptions.AddRange(materialized.Details);
                 downloaded += materialized.DownloadedBytes;
+
+                // EpicGames.UBA is compiled into the managed UBT graph. If a legacy/incomplete
+                // bootstrap discovers the native UBA payload only after UBT was built, rebuild
+                // UBT before retrying so its managed wrapper can observe the host libraries.
+                if (fresh.Any(requirement =>
+                        requirement.Kind == UnrealBuildRequirementKind.BuildExecutor
+                        && requirement.Value.Equals("UBA", StringComparison.OrdinalIgnoreCase))
+                    && materialized.GitDependencyFiles != 0)
+                {
+                    options.Progress?.Invoke(
+                        "Recompiling UnrealBuildTool after materializing the host UBA payload...");
+                    var compiler = new UnrealBuildToolCompiler();
+                    await compiler.CompileAsync(
+                        bootstrap.EngineRoot,
+                        dotNetRoot,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
                 if (materialized.AddedSparseDirectories == 0
                     && materialized.GitFiles == 0
                     && materialized.GitDependencyFiles == 0

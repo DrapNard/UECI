@@ -118,11 +118,27 @@ public sealed class UnrealBuildToolBootstrapper
         EpicBundledDotNetSdkPlan sdkPlan = EpicBundledDotNetSdkResolver.Resolve(
             manifest,
             options.RuntimeIdentifier);
+        EpicBundledUbaPlan? ubaPlan = EpicBundledUbaResolver.TryResolve(
+            manifest,
+            options.RuntimeIdentifier);
 
         options.Progress?.Invoke($"Resolved Epic bundled .NET SDK {sdkPlan.SdkVersion} for {options.RuntimeIdentifier}.");
+        if (ubaPlan is not null)
+        {
+            options.Progress?.Invoke(
+                $"Preparing host UBA runtime before compiling UBT ({ubaPlan.NativePrefix.TrimEnd('/')}).");
+        }
 
-        string[] prefixes = [.. BuildSupportPrefixes, .. sdkPlan.Prefixes];
-        string[] exactPaths = [.. BuildSupportExactPaths, .. sdkPlan.ExactPaths];
+        string[] prefixes = BuildSupportPrefixes
+            .Concat(sdkPlan.Prefixes)
+            .Concat(ubaPlan?.Prefixes ?? Array.Empty<string>())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        string[] exactPaths = BuildSupportExactPaths
+            .Concat(sdkPlan.ExactPaths)
+            .Concat(ubaPlan?.ExactPaths ?? Array.Empty<string>())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
         GitDependenciesPlan dependencyPlan = GitDependenciesPlanner.CreatePlan(
             manifest,
             exactPaths,
