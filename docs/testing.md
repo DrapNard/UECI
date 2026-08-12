@@ -16,7 +16,7 @@ Windows:
 ./scripts/test.ps1
 ```
 
-The test executable intentionally avoids xUnit/NUnit/MSTest packages so the test harness itself has no third-party NuGet dependency. The suite constructs gzip `UEPACK00` packs in memory and verifies multi-blob extraction, SHA-1 failure behavior, cache reuse, pack-cache deletion, executable bits, output path safety, runtimeconfig parsing, bundled runtime/SDK resolution, and compiled UBT layout detection, plugin descriptor/host generation, lazy diagnostic parsing, module-path indexing, UBT invocation shaping, plugin packaging, Linux SDK descriptor parsing, and synthetic native-toolchain tar.gz extraction/cache behavior without any network access.
+The test executable intentionally avoids xUnit/NUnit/MSTest packages so the test harness itself has no third-party NuGet dependency. The suite constructs gzip `UEPACK00` packs in memory and verifies multi-blob extraction, SHA-1 failure behavior, cache reuse, pack-cache deletion, executable bits, output path safety, runtimeconfig parsing, bundled runtime/SDK resolution, and compiled UBT layout detection, plugin descriptor/host generation, lazy diagnostic parsing, module-path indexing, UBT invocation shaping, plugin packaging, Linux SDK descriptor parsing, and synthetic native-toolchain tar.gz extraction/cache behavior plus persistent-store projection recovery across sparse updates without any network access.
 
 ## Real-manifest smoke test
 

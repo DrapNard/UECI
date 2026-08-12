@@ -197,7 +197,7 @@ UECI itself still targets .NET 8 for easy development. UBT is compiled with the 
 
 For the Epic Git source seed, Git 2.49+ is strongly recommended. UECI creates a cone-mode sparse checkout for the UBT source seed and uses `git backfill --sparse` when available to batch missing blobs from the `--filter=blob:none` repository before populating the worktree. Older Git versions still fall back to lazy checkout, but that path can be dramatically slower on Unreal's source tree.
 
-Sparse worktree updates, GitDependencies overlays, and externally installed SDKs are treated as separate layers. If a sparse checkout update displaces a file previously overlaid by GitDependencies (for example Epic's bundled `dotnet` host), UECI restores only the missing overlay paths from its content-addressed blob cache. External SDK directories such as `Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/<version>` are added to the active sparse specification so Git does not remove their ignored/untracked compiler files during later lazy source expansion.
+Sparse worktree updates, GitDependencies overlays, and externally installed SDKs are treated as separate layers. If a sparse checkout update displaces a file previously overlaid by GitDependencies (for example Epic's bundled `dotnet` host), UECI restores only the missing overlay paths from its content-addressed blob cache. Native Linux toolchains use a persistent store under `.ueci/toolchains/linux-x64/<version>` and a lightweight projection at `Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/<version>`. Sparse updates may remove the projection, but never the authoritative payload; UECI recreates it before the next UBT pass.
 
 ## Build a plugin (experimental)
 
@@ -214,7 +214,7 @@ dotnet run --project src/Ueci.Cli -- \
   --no-pack-cache
 ```
 
-The normal unit suite remains offline/token-free, including a synthetic `.tar.gz` Linux-toolchain test. On a native Linux x86_64 smoke build, UECI only downloads Epic's clang/sysroot toolchain if UBT reports that the Linux SDK is missing. With `--no-pack-cache`, the downloaded toolchain archive is removed after successful extraction.
+The normal unit suite remains offline/token-free, including a synthetic `.tar.gz` Linux-toolchain test. On a native Linux x86_64 smoke build, UECI only downloads Epic's clang/sysroot toolchain if UBT reports that the Linux SDK is missing. The extracted toolchain remains in the Engine-local `.ueci/toolchains` store for reuse even when `--no-pack-cache` discards the downloaded archive.
 
 To exercise the real Epic path on a normal machine with the bundled fixture:
 
@@ -265,7 +265,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.4.0-alpha.8
+- uses: your-org/ueci@v0.4.0-alpha.9
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release

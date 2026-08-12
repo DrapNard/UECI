@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0-alpha.9] - 2026-08-12
+
+### Fixed
+
+- Move the authoritative native Linux toolchain payload out of the Git-managed `Engine/` subtree into `.ueci/toolchains/linux-x64/<version>`, preventing later sparse-checkout expansions from deleting clang/sysroot contents.
+- Project the persistent toolchain store into Epic's expected `Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/<version>` location and recreate that projection immediately after sparse source expansion.
+- Migrate usable in-tree toolchains from alpha.6-alpha.8 into the persistent store when possible, avoiding an unnecessary re-download on warm working sets.
+- Restore an existing persistent toolchain projection after the initial native sparse seed before the first plugin UBT pass.
+
+### Testing
+
+- Replace the sparse-cone protection regression with an offline test that expands a partial Git worktree, removes the Engine-side SDK projection, and restores it from `.ueci/toolchains` without a second archive download.
+- CLI version advanced to `0.4.0-alpha.9`.
+
 ## [0.4.0-alpha.8] - 2026-08-12
 
 ### Fixed
