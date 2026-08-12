@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0-alpha.8] - 2026-08-12
+
+### Fixed
+
+- Preserve Epic native Linux toolchains across later sparse-checkout expansions by adding the installed external SDK directory to the active sparse specification.
+- Add an offline local-Git regression test reproducing Git removing ignored/untracked SDK files outside the sparse cone.
+
+### Changed
+
+- CLI version advanced to `0.4.0-alpha.8`.
+
 All notable changes to UECI will be documented here.
 
 ## [0.4.0-alpha.7] - 2026-08-12

@@ -197,7 +197,7 @@ UECI itself still targets .NET 8 for easy development. UBT is compiled with the 
 
 For the Epic Git source seed, Git 2.49+ is strongly recommended. UECI creates a cone-mode sparse checkout for the UBT source seed and uses `git backfill --sparse` when available to batch missing blobs from the `--filter=blob:none` repository before populating the worktree. Older Git versions still fall back to lazy checkout, but that path can be dramatically slower on Unreal's source tree.
 
-Sparse worktree updates and GitDependencies are treated as two independent layers. If a sparse checkout update displaces a file previously overlaid by GitDependencies (for example Epic's bundled `dotnet` host), UECI detects the missing overlay path and restores only the displaced files from its content-addressed blob cache before invoking UBT again. This prevents source-discovery passes from destroying their own build runtime.
+Sparse worktree updates, GitDependencies overlays, and externally installed SDKs are treated as separate layers. If a sparse checkout update displaces a file previously overlaid by GitDependencies (for example Epic's bundled `dotnet` host), UECI restores only the missing overlay paths from its content-addressed blob cache. External SDK directories such as `Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/<version>` are added to the active sparse specification so Git does not remove their ignored/untracked compiler files during later lazy source expansion.
 
 ## Build a plugin (experimental)
 
@@ -265,7 +265,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.4.0-alpha.7
+- uses: your-org/ueci@v0.4.0-alpha.8
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release

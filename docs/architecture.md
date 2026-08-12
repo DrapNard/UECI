@@ -143,4 +143,4 @@ real UBT, restricted to plugin modules
         plugin package + report
 ```
 
-Discovery is monotonic and bounded. The Linux native clang/sysroot archive is treated as an external SDK provider because Epic normally installs it through `Setup.sh` rather than `Commit.gitdeps.xml`; UECI defers that large download until UBT emits a platform-SDK failure.  UECI never treats a failed build as permission to materialize all of `Engine/Source`; it retries only when a diagnostic can be mapped to a concrete module/path/SDK requirement.
+Discovery is monotonic and bounded. The Linux native clang/sysroot archive is treated as an external SDK provider because Epic normally installs it through `Setup.sh` rather than `Commit.gitdeps.xml`; UECI defers that large download until UBT emits a platform-SDK failure. Once installed, the exact SDK version directory becomes a protected sparse root because `git sparse-checkout set` can otherwise remove ignored/untracked files outside the active cone. UECI never treats a failed build as permission to materialize all of `Engine/Source`; it retries only when a diagnostic can be mapped to a concrete module/path/SDK requirement.
