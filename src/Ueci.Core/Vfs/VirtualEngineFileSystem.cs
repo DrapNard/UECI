@@ -7,7 +7,7 @@ namespace Ueci.Vfs;
 /// Copy-on-write virtual Unreal Engine tree. The immutable lower view is the union
 /// GitDependencies > Epic Git. Writable/generated files live only in UpperRoot.
 /// </summary>
-public sealed class VirtualEngineFileSystem
+public sealed class VirtualEngineFileSystem : IDisposable
 {
     private readonly VirtualEngineIndex _index;
     private readonly EpicGitBlobStore _gitBlobs;
@@ -141,21 +141,29 @@ public sealed class VirtualEngineFileSystem
             throw new DirectoryNotFoundException(normalized);
         }
 
+        IReadOnlyList<VirtualEngineDirectoryEntry> lowerChildren = lowerDirectory
+            ? _index.GetChildren(normalized)
+            : Array.Empty<VirtualEngineDirectoryEntry>();
+
+        // UBT repeatedly opens the same immutable source directories while constructing rules and
+        // module graphs. Avoid rebuilding/sorting a dictionary on every LIST when there is no upper
+        // overlay or whiteout to merge. The index stores these arrays pre-sorted and immutable.
+        if (lowerDirectory && !upperDirectory && !_whiteouts.HasAny)
+        {
+            return Task.FromResult(lowerChildren);
+        }
+
         var merged = new SortedDictionary<string, VirtualEngineDirectoryEntry>(StringComparer.Ordinal);
         if (lowerDirectory)
         {
-            foreach (VirtualEngineLowerEntry child in _index.GetChildren(normalized))
+            foreach (VirtualEngineDirectoryEntry child in lowerChildren)
             {
-                string childPath = child.Metadata.Path;
+                string childPath = normalized.Length == 0 ? child.Name : $"{normalized}/{child.Name}";
                 if (_whiteouts.IsHidden(childPath))
                 {
                     continue;
                 }
-                merged[VirtualEnginePath.Name(childPath)] = new VirtualEngineDirectoryEntry(
-                    VirtualEnginePath.Name(childPath),
-                    child.Metadata.Kind,
-                    child.Metadata.Size,
-                    child.Metadata.UnixMode);
+                merged[child.Name] = child;
             }
         }
 
@@ -508,6 +516,8 @@ public sealed class VirtualEngineFileSystem
             return fallback;
         }
     }
+
+    public void Dispose() => _gitBlobs.Dispose();
 
     private static void ApplyMode(string path, int unixMode)
     {

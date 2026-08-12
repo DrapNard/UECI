@@ -13,6 +13,14 @@ internal sealed class FuseProtocolServer : IAsyncDisposable
     private Socket? _listener;
     private readonly List<Task> _connections = [];
     private readonly object _connectionGate = new();
+    private long _requestCount;
+    private long _statCount;
+    private long _listCount;
+    private long _resolveCount;
+    private long _mutationCount;
+    private long _connectionCount;
+    private long _listEntryCount;
+    private readonly long _startedAtMilliseconds = Environment.TickCount64;
 
     public FuseProtocolServer(
         VirtualEngineFileSystem fileSystem,
@@ -60,6 +68,7 @@ internal sealed class FuseProtocolServer : IAsyncDisposable
                 {
                     break;
                 }
+                Interlocked.Increment(ref _connectionCount);
                 Task task = HandleConnectionAsync(client, cancellationToken);
                 lock (_connectionGate)
                 {
@@ -81,30 +90,50 @@ internal sealed class FuseProtocolServer : IAsyncDisposable
 
     private async Task HandleConnectionAsync(Socket socket, CancellationToken cancellationToken)
     {
+        // The native FUSE helper keeps one Unix socket per worker thread. Keeping the connection
+        // alive matters a lot for Unreal: UBT can issue hundreds of thousands of metadata calls,
+        // and reconnecting/accepting/allocating a Task for every single getattr dominated the
+        // mounted backend long before the actual C# dictionary lookup did.
         using (socket)
         {
             await using var stream = new NetworkStream(socket, ownsSocket: false);
-            using var reader = new StreamReader(stream, Encoding.UTF8, false, 4096, leaveOpen: true);
-            await using var writer = new StreamWriter(stream, new UTF8Encoding(false), 4096, leaveOpen: true)
+            using var reader = new StreamReader(stream, Encoding.UTF8, false, 16 * 1024, leaveOpen: true);
+            await using var writer = new StreamWriter(stream, new UTF8Encoding(false), 64 * 1024, leaveOpen: true)
             {
-                AutoFlush = true,
+                AutoFlush = false,
                 NewLine = "\n",
             };
 
-            string? request = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-            if (request is null)
+            while (!cancellationToken.IsCancellationRequested)
             {
-                return;
-            }
+                string? request;
+                try
+                {
+                    request = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
 
-            try
-            {
-                await DispatchAsync(request, writer, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                int errno = MapErrno(ex);
-                await writer.WriteLineAsync($"ERR\t{errno}\t{FuseProtocol.Encode(ex.Message)}").ConfigureAwait(false);
+                if (request is null)
+                {
+                    return;
+                }
+
+                try
+                {
+                    await DispatchAsync(request, writer, cancellationToken).ConfigureAwait(false);
+                    // LIST can contain thousands of entries. Flush once per protocol response instead
+                    // of once per line; the StreamWriter may naturally drain full buffers on the way.
+                    await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    int errno = MapErrno(ex);
+                    await writer.WriteLineAsync($"ERR\t{errno}\t{FuseProtocol.Encode(ex.Message)}").ConfigureAwait(false);
+                    await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+                }
             }
         }
     }
@@ -119,7 +148,7 @@ internal sealed class FuseProtocolServer : IAsyncDisposable
 
         if (_verbose)
         {
-            _progress?.Invoke(DescribeRequest(fields));
+            ReportVerboseRequest(fields);
         }
 
         switch (fields[0])
@@ -151,6 +180,7 @@ internal sealed class FuseProtocolServer : IAsyncDisposable
                 string path = FuseProtocol.Decode(fields[1]);
                 IReadOnlyList<VirtualEngineDirectoryEntry> entries = await _fileSystem.ListAsync(path, cancellationToken)
                     .ConfigureAwait(false);
+                Interlocked.Add(ref _listEntryCount, entries.Count);
                 await writer.WriteLineAsync("OK").ConfigureAwait(false);
                 foreach (VirtualEngineDirectoryEntry entry in entries)
                 {
@@ -232,6 +262,56 @@ internal sealed class FuseProtocolServer : IAsyncDisposable
             }
             default:
                 throw new InvalidDataException($"Unknown FUSE protocol command '{fields[0]}'.");
+        }
+    }
+
+
+    private void ReportVerboseRequest(string[] fields)
+    {
+        string verb = fields[0];
+        long total = Interlocked.Increment(ref _requestCount);
+        switch (verb)
+        {
+            case "STAT":
+                Interlocked.Increment(ref _statCount);
+                break;
+            case "LIST":
+                Interlocked.Increment(ref _listCount);
+                break;
+            case "RESOLVE":
+                Interlocked.Increment(ref _resolveCount);
+                // Cold content is already logged by the Git/GitDependencies CAS providers. Warm read
+                // opens can number in the tens of thousands, so aggregate them; keep write/copy-up
+                // boundaries explicit because they change the virtual filesystem state.
+                if (fields.Length > 1 && fields[1] == "W")
+                {
+                    _progress?.Invoke(DescribeRequest(fields));
+                    return;
+                }
+                break;
+            case "MKDIR":
+            case "UNLINK":
+            case "RMDIR":
+            case "RENAME":
+            case "SYMLINK":
+            case "CHMOD":
+                Interlocked.Increment(ref _mutationCount);
+                _progress?.Invoke(DescribeRequest(fields));
+                return;
+        }
+
+        // Printing every getattr is itself surprisingly expensive and can serialize UBT on the
+        // terminal. Keep --vfs-verbose observable, but summarize metadata traffic in batches.
+        if (total <= 20 || total % 2_500 == 0)
+        {
+            double elapsedSeconds = Math.Max(0.001, (Environment.TickCount64 - _startedAtMilliseconds) / 1000d);
+            _progress?.Invoke(
+                $"[vfs/fuse] {total:N0} requests @ {total / elapsedSeconds:N0}/s: " +
+                $"STAT {Interlocked.Read(ref _statCount):N0}, " +
+                $"LIST {Interlocked.Read(ref _listCount):N0} ({Interlocked.Read(ref _listEntryCount):N0} entries), " +
+                $"RESOLVE {Interlocked.Read(ref _resolveCount):N0}, " +
+                $"mutations {Interlocked.Read(ref _mutationCount):N0}, " +
+                $"connections {Interlocked.Read(ref _connectionCount):N0}." );
         }
     }
 

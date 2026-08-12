@@ -11,11 +11,11 @@ public sealed record VirtualEngineLowerEntry(
 public sealed class VirtualEngineIndex
 {
     private readonly Dictionary<string, VirtualEngineLowerEntry> _entries;
-    private readonly Dictionary<string, SortedDictionary<string, VirtualEngineLowerEntry>> _children;
+    private readonly Dictionary<string, VirtualEngineDirectoryEntry[]> _children;
 
     private VirtualEngineIndex(
         Dictionary<string, VirtualEngineLowerEntry> entries,
-        Dictionary<string, SortedDictionary<string, VirtualEngineLowerEntry>> children)
+        Dictionary<string, VirtualEngineDirectoryEntry[]> children)
     {
         _entries = entries;
         _children = children;
@@ -26,11 +26,11 @@ public sealed class VirtualEngineIndex
     public bool TryGet(string path, out VirtualEngineLowerEntry? entry)
         => _entries.TryGetValue(VirtualEnginePath.Normalize(path), out entry);
 
-    public IReadOnlyList<VirtualEngineLowerEntry> GetChildren(string path)
+    public IReadOnlyList<VirtualEngineDirectoryEntry> GetChildren(string path)
     {
         string normalized = VirtualEnginePath.Normalize(path);
-        return _children.TryGetValue(normalized, out SortedDictionary<string, VirtualEngineLowerEntry>? children)
-            ? children.Values.ToArray()
+        return _children.TryGetValue(normalized, out VirtualEngineDirectoryEntry[]? children)
+            ? children
             : [];
     }
 
@@ -55,7 +55,7 @@ public sealed class VirtualEngineIndex
                 new VirtualEngineMetadata(
                     gitEntry.Path,
                     kind,
-                    Math.Max(0, gitEntry.Size),
+                    gitEntry.Size,
                     gitEntry.UnixMode == 0 ? 0x1a4 : gitEntry.UnixMode,
                     VirtualEngineSourceKind.Git),
                 gitEntry,
@@ -111,10 +111,22 @@ public sealed class VirtualEngineIndex
             list[VirtualEnginePath.Name(path)] = entry;
         }
 
+        var frozenChildren = new Dictionary<string, VirtualEngineDirectoryEntry[]>(children.Count, StringComparer.Ordinal);
+        foreach ((string parent, SortedDictionary<string, VirtualEngineLowerEntry> list) in children)
+        {
+            frozenChildren[parent] = list
+                .Select(pair => new VirtualEngineDirectoryEntry(
+                    pair.Key,
+                    pair.Value.Metadata.Kind,
+                    pair.Value.Metadata.Size,
+                    pair.Value.Metadata.UnixMode))
+                .ToArray();
+        }
+
         progress?.Invoke(
             $"[vfs/namespace] Complete: {entries.Count:N0} paths, {children.Count:N0} populated directories; " +
             $"managed memory ~{GC.GetTotalMemory(false) / (1024d * 1024d):N1} MiB; elapsed {stopwatch.Elapsed:hh\\:mm\\:ss}.");
-        return new VirtualEngineIndex(entries, children);
+        return new VirtualEngineIndex(entries, frozenChildren);
     }
 
     private static void AddParents(Dictionary<string, VirtualEngineLowerEntry> entries, string path)

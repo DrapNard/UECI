@@ -313,6 +313,7 @@ internal static class Program
             await RunGitAsync(sourceRoot, ["config", "user.name", "UECI Tests"]);
             await RunGitAsync(sourceRoot, ["config", "user.email", "ueci@example.invalid"]);
             WriteFixtureFile(sourceRoot, "Engine/Source/Runtime/Core/Public/GitOnly.h", "git-only\n");
+            WriteFixtureFile(sourceRoot, "Engine/Source/Runtime/Core/Public/GitSecond.h", "git-second\n");
             WriteFixtureFile(sourceRoot, "Engine/Source/Runtime/Core/Public/Core.h", "git-version-is-overlaid\n");
             await RunGitAsync(sourceRoot, ["add", "."]);
             await RunGitAsync(sourceRoot, ["commit", "--quiet", "-m", "fixture"]);
@@ -331,9 +332,12 @@ internal static class Program
             Assert.True(rawGitIndex.TryGetValue(
                 "Engine/Source/Runtime/Core/Public/GitOnly.h", out EpicGitTreeEntry? rawGitOnly));
             Assert.Equal(-1L, rawGitOnly!.Size);
+            Assert.True(rawGitIndex.TryGetValue(
+                "Engine/Source/Runtime/Core/Public/GitSecond.h", out EpicGitTreeEntry? rawGitSecond));
             EpicGitTreeIndex gitIndex = rawGitIndex.WithBlobSizes(new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
             {
                 [rawGitOnly.ObjectId] = "git-only\n".Length,
+                [rawGitSecond!.ObjectId] = "git-second\n".Length,
             });
             SyntheticPack fixture = CreateSyntheticPack();
             VirtualEngineIndex index = VirtualEngineIndex.Build(gitIndex, fixture.Manifest);
@@ -345,7 +349,7 @@ internal static class Program
             Assert.Equal((long)"git-only\n".Length, gitOnly.Metadata.Size);
 
             var packSource = new MemoryPackSource(fixture.PackUri, fixture.CompressedBytes);
-            var fileSystem = new VirtualEngineFileSystem(
+            using var fileSystem = new VirtualEngineFileSystem(
                 index,
                 new EpicGitBlobStore(metadataRoot, cacheRoot, tokenVariable),
                 new GitDependenciesMaterializer(packSource),
@@ -376,6 +380,12 @@ internal static class Program
             string gitBacking = await fileSystem.ResolveReadBackingPathAsync(
                 "Engine/Source/Runtime/Core/Public/GitOnly.h");
             Assert.Equal("git-only\n", await File.ReadAllTextAsync(gitBacking));
+
+            // Exercise a second request through the same persistent git cat-file --batch process.
+            string secondGitBacking = await fileSystem.ResolveReadBackingPathAsync(
+                "Engine/Source/Runtime/Core/Public/GitSecond.h");
+            Assert.Equal("git-second\n", await File.ReadAllTextAsync(secondGitBacking));
+
             VirtualEngineMetadata? gitAfterOpen = await fileSystem.GetMetadataAsync(
                 "Engine/Source/Runtime/Core/Public/GitOnly.h");
             Assert.Equal(new FileInfo(gitBacking).Length, gitAfterOpen!.Size);

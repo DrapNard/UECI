@@ -79,6 +79,86 @@ public sealed class EpicGitClient
     }
 
 
+    public async Task<bool> TryBackfillCurrentSnapshotPathsAsync(
+        string repositoryDirectory,
+        IEnumerable<string> enginePaths,
+        string? tokenEnvironmentVariable = null,
+        int minimumBatchSize = 256,
+        Action<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(enginePaths);
+        string token = GitHubReadOnlyCredential.GetRequiredToken(tokenEnvironmentVariable);
+        IReadOnlyDictionary<string, string> environment = GitHubReadOnlyCredential.CreateGitEnvironment(token);
+        string root = Path.GetFullPath(repositoryDirectory);
+        string commit = await GetPinnedCommitAsync(root, cancellationToken).ConfigureAwait(false);
+        string[] normalizedPaths = enginePaths
+            .Select(NormalizeGitPathspec)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (normalizedPaths.Length == 0)
+        {
+            return true;
+        }
+
+        GitProcessResult shallow = await GitProcess.RunAsync(
+            root, ["rev-parse", "--is-shallow-repository"], environment, cancellationToken).ConfigureAwait(false);
+        GitProcessResult count = await GitProcess.RunAsync(
+            root, ["rev-list", "--count", commit], environment, cancellationToken).ConfigureAwait(false);
+        if (shallow.ExitCode != 0
+            || !string.Equals(shallow.StandardOutput.Trim(), "true", StringComparison.OrdinalIgnoreCase)
+            || count.ExitCode != 0
+            || count.StandardOutput.Trim() != "1")
+        {
+            progress?.Invoke(
+                "Skipping mounted Git backfill because the metadata repository is not a single-commit shallow snapshot; " +
+                "continuing with the persistent lazy Git batch reader.");
+            return false;
+        }
+
+        GitProcessResult versionResult = await GitProcess.RunAsync(
+            root, ["--version"], environment, cancellationToken).ConfigureAwait(false);
+        if (!TryParseGitVersion(versionResult.StandardOutput, out Version? gitVersion)
+            || gitVersion < new Version(2, 54))
+        {
+            progress?.Invoke(
+                $"Path-limited git backfill requires Git 2.54+; " +
+                $"{(gitVersion is null ? "installed version could not be parsed" : $"found {gitVersion}")}. " +
+                "Continuing with the persistent lazy Git batch reader.");
+            return false;
+        }
+
+        var arguments = new List<string>(5 + normalizedPaths.Length)
+        {
+            "backfill",
+            $"--min-batch-size={Math.Max(1, minimumBatchSize)}",
+            commit,
+            "--",
+        };
+        arguments.AddRange(normalizedPaths);
+        progress?.Invoke(
+            $"Batch-prefetching {normalizedPaths.Length:N0} known UBT source path(s) from the one-commit Epic snapshot...");
+        GitProcessResult result = await GitProcess.RunAsync(root, arguments, environment, cancellationToken)
+            .ConfigureAwait(false);
+        if (result.ExitCode == 0)
+        {
+            progress?.Invoke("git backfill completed; UBT bootstrap source blobs are local Git objects.");
+            return true;
+        }
+        if (IsBackfillUnavailable(result))
+        {
+            progress?.Invoke("git backfill is unavailable; continuing with lazy Git blob fetches.");
+            return false;
+        }
+
+        string diagnostics = CombineDiagnostics(result);
+        progress?.Invoke(
+            "Targeted git backfill failed; continuing lazily instead." +
+            (diagnostics.Length == 0 ? string.Empty : $" {diagnostics.Replace(Environment.NewLine, " ")}"));
+        return false;
+    }
+
+
     public async Task MaterializePathsAsync(
         string repositoryDirectory,
         IEnumerable<string> enginePaths,
@@ -224,6 +304,25 @@ public sealed class EpicGitClient
         return result.StandardOutput
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Length;
+    }
+
+
+    private static bool TryParseGitVersion(string output, out Version? version)
+    {
+        version = null;
+        string text = output.Trim();
+        const string prefix = "git version ";
+        if (!text.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        string raw = text[prefix.Length..].Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
+        int dash = raw.IndexOf('-');
+        if (dash >= 0)
+        {
+            raw = raw[..dash];
+        }
+        return Version.TryParse(raw, out version);
     }
 
     private static bool IsBackfillUnavailable(GitProcessResult result)

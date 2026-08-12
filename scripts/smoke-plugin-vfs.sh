@@ -6,7 +6,7 @@ ENGINE_DIR="${UECI_ENGINE_DIR:-/tmp/ueci-plugin-vfs-work}"
 OUTPUT_DIR="${UECI_PLUGIN_OUTPUT:-/tmp/ueci-plugin-vfs-package}"
 PLUGIN="${UECI_PLUGIN:-$ROOT/fixtures/MinimalPlugin/UECIMinimal.uplugin}"
 REF="${UECI_EPIC_REF:-release}"
-VERBOSE="${UECI_VFS_VERBOSE:-0}"
+VERBOSE="${UECI_VFS_VERBOSE:-1}"
 
 if [[ -z "${UECI_EPIC_GITHUB_TOKEN:-}" ]]; then
   echo "UECI_EPIC_GITHUB_TOKEN is required for the mounted plugin smoke test." >&2
@@ -31,7 +31,9 @@ fi
 echo "[smoke] building minimal plugin through the mounted Engine backend" >&2
 echo "[smoke] workspace=$ENGINE_DIR output=$OUTPUT_DIR plugin=$PLUGIN ref=$REF" >&2
 
+started=$SECONDS
 dotnet run --project src/Ueci.Cli/Ueci.Cli.csproj -c Release --no-build -- "${args[@]}"
+echo "[smoke] mounted plugin build command elapsed $((SECONDS - started))s" >&2
 
 descriptor="$OUTPUT_DIR/UECIMinimal/UECIMinimal.uplugin"
 if [[ ! -f "$descriptor" ]]; then

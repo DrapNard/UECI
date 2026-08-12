@@ -37,7 +37,11 @@ public sealed class VirtualEngineMountContext : IDisposable
     public string ManifestPath { get; }
     public GitDependenciesManifest Manifest { get; }
 
-    public void Dispose() => _disposableSource?.Dispose();
+    public void Dispose()
+    {
+        FileSystem.Dispose();
+        _disposableSource?.Dispose();
+    }
 }
 
 public static class VirtualEngineMountFactory

@@ -90,37 +90,60 @@ public sealed class GitHubGitTreeSizeIndex
 
             var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             int nextProgress = 25_000;
+            const int maxConcurrentTreeRequests = 8;
             while (pending.Count != 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                string tree = pending.Dequeue();
-                if (!visited.Add(tree))
+                var wave = new List<string>();
+                while (pending.Count != 0)
                 {
-                    continue;
-                }
-
-                GitTreeResponse recursive = await FetchTreeAsync(
-                    client, owner!, name!, tree, recursive: true, token, state, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (!recursive.Truncated)
-                {
-                    AddBlobSizes(recursive.Tree, sizes);
-                }
-                else
-                {
-                    progress?.Invoke(
-                        $"[vfs/git-size] GitHub truncated subtree {tree[..12]}…; splitting it into child trees.");
-                    GitTreeResponse shallow = await FetchTreeAsync(
-                        client, owner!, name!, tree, recursive: false, token, state, cancellationToken)
-                        .ConfigureAwait(false);
-                    AddBlobSizes(shallow.Tree, sizes);
-                    foreach (GitTreeItem entry in shallow.Tree)
+                    string tree = pending.Dequeue();
+                    if (visited.Add(tree))
                     {
-                        if (string.Equals(entry.Type, "tree", StringComparison.Ordinal) && IsObjectId(entry.Sha))
+                        wave.Add(tree);
+                    }
+                }
+
+                using var throttle = new SemaphoreSlim(maxConcurrentTreeRequests);
+                TreeFetchOutcome[] outcomes = await Task.WhenAll(wave.Select(async tree =>
+                {
+                    await throttle.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        GitTreeResponse recursive = await FetchTreeAsync(
+                            client, owner!, name!, tree, recursive: true, token, state, cancellationToken)
+                            .ConfigureAwait(false);
+                        if (!recursive.Truncated)
                         {
-                            pending.Enqueue(entry.Sha!);
+                            return new TreeFetchOutcome(tree, recursive.Tree, Array.Empty<string>(), false);
                         }
+
+                        GitTreeResponse shallow = await FetchTreeAsync(
+                            client, owner!, name!, tree, recursive: false, token, state, cancellationToken)
+                            .ConfigureAwait(false);
+                        string[] childTrees = shallow.Tree
+                            .Where(entry => string.Equals(entry.Type, "tree", StringComparison.Ordinal) && IsObjectId(entry.Sha))
+                            .Select(entry => entry.Sha!)
+                            .ToArray();
+                        return new TreeFetchOutcome(tree, shallow.Tree, childTrees, true);
+                    }
+                    finally
+                    {
+                        throttle.Release();
+                    }
+                })).ConfigureAwait(false);
+
+                foreach (TreeFetchOutcome outcome in outcomes)
+                {
+                    if (outcome.WasTruncated)
+                    {
+                        progress?.Invoke(
+                            $"[vfs/git-size] GitHub truncated subtree {outcome.TreeObjectId[..12]}…; splitting it into child trees.");
+                    }
+                    AddBlobSizes(outcome.Entries, sizes);
+                    foreach (string child in outcome.ChildTrees)
+                    {
+                        pending.Enqueue(child);
                     }
                 }
 
@@ -264,8 +287,8 @@ public sealed class GitHubGitTreeSizeIndex
             request,
             HttpCompletionOption.ResponseHeadersRead,
             cancellationToken).ConfigureAwait(false);
-        state.RequestCount++;
-        state.ResponseBytes += response.Content.Headers.ContentLength ?? 0;
+        Interlocked.Increment(ref state.RequestCount);
+        Interlocked.Add(ref state.ResponseBytes, response.Content.Headers.ContentLength ?? 0);
         if (!response.IsSuccessStatusCode)
         {
             string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -330,6 +353,12 @@ public sealed class GitHubGitTreeSizeIndex
 
     private static bool IsObjectId(string? value)
         => value is { Length: 40 } && value.All(Uri.IsHexDigit);
+
+    private sealed record TreeFetchOutcome(
+        string TreeObjectId,
+        IReadOnlyList<GitTreeItem> Entries,
+        IReadOnlyList<string> ChildTrees,
+        bool WasTruncated);
 
     private sealed class FetchState
     {

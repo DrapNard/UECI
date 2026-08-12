@@ -1,3 +1,4 @@
+using Ueci.Epic;
 using Ueci.GitDeps;
 using Ueci.Unreal;
 using Ueci.Vfs;
@@ -67,6 +68,22 @@ internal sealed class UnrealMountedPluginBuilder
         EpicBundledDotNetSdkPlan sdkPlan = EpicBundledDotNetSdkResolver.Resolve(
             context.Manifest,
             options.RuntimeIdentifier);
+
+        // UBT managed sources are a known bootstrap working set. Fetch them in batches only when
+        // the metadata repo is provably the single-commit shallow snapshot UECI created; otherwise
+        // stay lazy so a reused/deep repository can never make this optimization backfill history.
+        var epicGit = new EpicGitClient();
+        await epicGit.TryBackfillCurrentSnapshotPathsAsync(
+            metadataRoot,
+            [
+                "Engine/Build",
+                "Engine/Source/Programs/UnrealBuildTool",
+                "Engine/Source/Programs/Shared",
+            ],
+            options.TokenEnvironmentVariable,
+            minimumBatchSize: 256,
+            progress: options.Progress,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
 
         var fuse = new LinuxFuseMount();
         await using LinuxFuseMountSession mount = await fuse.StartAsync(

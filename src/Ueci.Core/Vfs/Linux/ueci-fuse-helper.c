@@ -57,8 +57,31 @@ static char *hex_decode(const char *input)
     return out;
 }
 
-static FILE *connect_server(void)
+struct server_connection {
+    int fd;
+    FILE *reader;
+    FILE *writer;
+};
+
+static __thread struct server_connection g_server = { .fd = -1, .reader = NULL, .writer = NULL };
+
+static void disconnect_server(void)
 {
+    if (g_server.reader) {
+        fclose(g_server.reader);
+        g_server.reader = NULL;
+    }
+    if (g_server.writer) {
+        fclose(g_server.writer);
+        g_server.writer = NULL;
+    }
+    g_server.fd = -1;
+}
+
+static struct server_connection *connect_server(void)
+{
+    if (g_server.reader && g_server.writer) return &g_server;
+
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return NULL;
     struct sockaddr_un addr;
@@ -67,9 +90,22 @@ static FILE *connect_server(void)
     if (strlen(g_socket_path) >= sizeof(addr.sun_path)) { close(fd); errno = ENAMETOOLONG; return NULL; }
     strcpy(addr.sun_path, g_socket_path);
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) { close(fd); return NULL; }
-    FILE *file = fdopen(fd, "r+");
-    if (!file) close(fd);
-    return file;
+
+    int writer_fd = dup(fd);
+    if (writer_fd < 0) { close(fd); return NULL; }
+    FILE *reader = fdopen(fd, "r");
+    if (!reader) { close(fd); close(writer_fd); return NULL; }
+    FILE *writer = fdopen(writer_fd, "w");
+    if (!writer) { fclose(reader); close(writer_fd); return NULL; }
+
+    // Separate stdio streams avoid undefined read/write direction changes on an update stream.
+    // Each FUSE worker thread owns one connection, so requests remain ordered without a mutex.
+    setvbuf(reader, NULL, _IOFBF, 16 * 1024);
+    setvbuf(writer, NULL, _IOFBF, 16 * 1024);
+    g_server.fd = fd;
+    g_server.reader = reader;
+    g_server.writer = writer;
+    return &g_server;
 }
 
 static void trim_newline(char *line)
@@ -87,20 +123,28 @@ static int parse_error(const char *line)
     return -(int)value;
 }
 
-static int request_single(const char *request, char **response)
+static int request_single_once(const char *request, char **response)
 {
-    FILE *server = connect_server();
+    struct server_connection *server = connect_server();
     if (!server) return -errno;
-    if (fprintf(server, "%s\n", request) < 0 || fflush(server) != 0) { int e = errno; fclose(server); return -e; }
+    if (fprintf(server->writer, "%s\n", request) < 0 || fflush(server->writer) != 0) return -EPIPE;
     char *line = NULL;
     size_t cap = 0;
-    ssize_t got = getline(&line, &cap, server);
-    fclose(server);
-    if (got < 0) { free(line); return -EIO; }
+    ssize_t got = getline(&line, &cap, server->reader);
+    if (got < 0) { free(line); return -EPIPE; }
     trim_newline(line);
     if (strncmp(line, "ERR\t", 4) == 0) { int result = parse_error(line); free(line); return result; }
     *response = line;
     return 0;
+}
+
+static int request_single(const char *request, char **response)
+{
+    int result = request_single_once(request, response);
+    if (result != -EPIPE && result != -ECONNRESET) return result;
+    // A daemon restart or closed worker connection should not permanently poison this thread.
+    disconnect_server();
+    return request_single_once(request, response);
 }
 
 static int resolve_path(const char *path, int writable, int create, char **physical)
@@ -127,8 +171,14 @@ static int resolve_path(const char *path, int writable, int create, char **physi
 static void *ueci_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 {
     (void)conn;
-    cfg->kernel_cache = 0;
-    cfg->auto_cache = 1;
+    // The immutable lower Engine only changes by switching to a different mount/commit, while
+    // writable changes go through this FUSE instance. Let the kernel retain metadata/data instead
+    // of asking the userspace bridge the same questions on every UBT rules scan.
+    cfg->kernel_cache = 1;
+    cfg->auto_cache = 0;
+    cfg->attr_timeout = 60.0;
+    cfg->entry_timeout = 60.0;
+    cfg->negative_timeout = 1.0;
     cfg->use_ino = 0;
     return NULL;
 }
@@ -168,10 +218,20 @@ static int ueci_getattr(const char *path, struct stat *st, struct fuse_file_info
     return 0;
 }
 
+static int ueci_opendir(const char *path, struct fuse_file_info *fi)
+{
+    (void)path;
+    // All namespace mutations are performed through this mount, so the kernel can safely reuse
+    // directory entries between repeated UBT scans and update its own dcache on create/unlink.
+    fi->cache_readdir = 1;
+    fi->keep_cache = 1;
+    return 0;
+}
+
 static int ueci_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset,
                         struct fuse_file_info *fi, enum fuse_readdir_flags flags)
 {
-    (void)offset; (void)fi; (void)flags;
+    (void)offset; (void)fi;
     char *hex = hex_encode(path);
     if (!hex) return -ENOMEM;
     size_t needed = strlen(hex) + 8;
@@ -180,43 +240,75 @@ static int ueci_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off
     snprintf(request, needed, "LIST\t%s", hex);
     free(hex);
 
-    FILE *server = connect_server();
+    struct server_connection *server = connect_server();
     if (!server) { free(request); return -errno; }
-    if (fprintf(server, "%s\n", request) < 0 || fflush(server) != 0) { int e = errno; free(request); fclose(server); return -e; }
+    if (fprintf(server->writer, "%s\n", request) < 0 || fflush(server->writer) != 0) {
+        int e = errno ? errno : EPIPE;
+        free(request);
+        disconnect_server();
+        return -e;
+    }
     free(request);
 
     char *line = NULL;
     size_t cap = 0;
-    if (getline(&line, &cap, server) < 0) { free(line); fclose(server); return -EIO; }
+    if (getline(&line, &cap, server->reader) < 0) {
+        free(line);
+        disconnect_server();
+        return -EPIPE;
+    }
     trim_newline(line);
-    if (strncmp(line, "ERR\t", 4) == 0) { int result = parse_error(line); free(line); fclose(server); return result; }
-    if (strcmp(line, "OK") != 0) { free(line); fclose(server); return -EIO; }
+    if (strncmp(line, "ERR\t", 4) == 0) { int result = parse_error(line); free(line); return result; }
+    if (strcmp(line, "OK") != 0) { free(line); return -EIO; }
 
     filler(buf, ".", NULL, 0, FUSE_FILL_DIR_DEFAULTS);
     filler(buf, "..", NULL, 0, FUSE_FILL_DIR_DEFAULTS);
-    while (getline(&line, &cap, server) >= 0) {
+    while (getline(&line, &cap, server->reader) >= 0) {
         trim_newline(line);
         if (strcmp(line, "END") == 0) break;
-        if (strncmp(line, "E\t", 2) != 0) { free(line); fclose(server); return -EIO; }
+        if (strncmp(line, "E\t", 2) != 0) { free(line); disconnect_server(); return -EIO; }
         char *save = NULL;
         char *tag = strtok_r(line, "\t", &save);
         char *kind = strtok_r(NULL, "\t", &save);
         char *size_text = strtok_r(NULL, "\t", &save);
         char *mode_text = strtok_r(NULL, "\t", &save);
         char *name_hex = strtok_r(NULL, "\t", &save);
-        (void)tag; (void)size_text; (void)mode_text;
-        if (!kind || !name_hex) { free(line); fclose(server); return -EIO; }
+        (void)tag;
+        if (!kind || !size_text || !mode_text || !name_hex) { free(line); return -EIO; }
         char *name = hex_decode(name_hex);
-        if (!name) { free(line); fclose(server); return -EIO; }
+        if (!name) { free(line); return -EIO; }
+
+        char *size_end = NULL, *mode_end = NULL;
+        long long child_size = strtoll(size_text, &size_end, 10);
+        unsigned long child_mode = strtoul(mode_text, &mode_end, 10);
+        if (!size_end || *size_end != '\0' || !mode_end || *mode_end != '\0' || child_size < -1) {
+            free(name); free(line); return -EIO;
+        }
+
         struct stat child;
         memset(&child, 0, sizeof(child));
-        child.st_mode = kind[0] == 'D' ? S_IFDIR : (kind[0] == 'L' ? S_IFLNK : S_IFREG);
-        int full = filler(buf, name, &child, 0, FUSE_FILL_DIR_DEFAULTS);
+        child.st_uid = getuid();
+        child.st_gid = getgid();
+        child.st_mode = (mode_t)(child_mode & 07777);
+        child.st_nlink = kind[0] == 'D' ? 2 : 1;
+        if (kind[0] == 'D') child.st_mode |= S_IFDIR;
+        else if (kind[0] == 'L') child.st_mode |= S_IFLNK;
+        else child.st_mode |= S_IFREG;
+        child.st_size = child_size >= 0 ? (off_t)child_size : 0;
+        child.st_blksize = 4096;
+        child.st_blocks = child_size >= 0 ? (child_size + 511) / 512 : 0;
+
+        // Providing complete attributes allows READDIRPLUS to prefill the kernel inode cache and
+        // avoids the getattr storm Unreal otherwise generates immediately after each directory scan.
+        // A non-GitHub lower may still have an unknown (-1) size; don't poison the inode cache with
+        // a fake zero in that fallback case, so a later getattr can hydrate the exact size.
+        enum fuse_fill_dir_flags fill_flags = child_size >= 0 ? FUSE_FILL_DIR_PLUS : FUSE_FILL_DIR_DEFAULTS;
+        int full = filler(buf, name, &child, 0, fill_flags);
         free(name);
         if (full) break;
     }
     free(line);
-    fclose(server);
+    (void)flags;
     return 0;
 }
 
@@ -486,6 +578,7 @@ static const struct fuse_operations ueci_ops = {
     .flush = ueci_flush,
     .release = ueci_release,
     .fsync = ueci_fsync,
+    .opendir = ueci_opendir,
     .readdir = ueci_readdir,
     .access = ueci_access,
     .create = ueci_create,

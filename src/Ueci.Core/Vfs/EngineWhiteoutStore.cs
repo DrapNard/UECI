@@ -38,6 +38,17 @@ internal sealed class EngineWhiteoutStore
         }
     }
 
+    public bool HasAny
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _paths.Count != 0;
+            }
+        }
+    }
+
     public IReadOnlyCollection<string> Snapshot()
     {
         lock (_sync)
