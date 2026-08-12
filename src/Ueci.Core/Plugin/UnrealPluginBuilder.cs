@@ -144,6 +144,8 @@ public sealed class UnrealPluginBuilder
             bootstrap.EngineRoot,
             plugin,
             cancellationToken).ConfigureAwait(false);
+        options.Progress?.Invoke(
+            "Using hermetic local UBT executor configuration (UBA/XGE/FASTBuild/SN-DBS disabled).");
 
         if (!plugin.HasCode)
         {

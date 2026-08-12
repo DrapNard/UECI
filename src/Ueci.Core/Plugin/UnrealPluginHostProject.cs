@@ -40,6 +40,7 @@ public static class UnrealPluginHostProject
         string projectPath = Path.Combine(workspace, "UECIHost.uproject");
         await WriteProjectAsync(projectPath, plugin.Name, cancellationToken).ConfigureAwait(false);
         await WriteHostSourceAsync(workspace, cancellationToken).ConfigureAwait(false);
+        await WriteBuildConfigurationAsync(workspace, cancellationToken).ConfigureAwait(false);
 
         return new UnrealPluginHostLayout(
             workspace,
@@ -135,6 +136,30 @@ public static class UnrealPluginHostProject
         await File.WriteAllTextAsync(
             Path.Combine(module, GameTargetName + ".cpp"),
             "#include \"Modules/ModuleManager.h\"\nIMPLEMENT_MODULE(FDefaultModuleImpl, UECIHost)\n",
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task WriteBuildConfigurationAsync(
+        string workspace,
+        CancellationToken cancellationToken)
+    {
+        string directory = Path.Combine(workspace, "Saved", "UnrealBuildTool");
+        Directory.CreateDirectory(directory);
+        string path = Path.Combine(directory, "BuildConfiguration.xml");
+        await File.WriteAllTextAsync(
+            path,
+            """
+            <?xml version="1.0" encoding="utf-8" ?>
+            <Configuration xmlns="https://www.unrealengine.com/BuildConfiguration">
+              <BuildConfiguration>
+                <bAllowUBAExecutor>false</bAllowUBAExecutor>
+                <bAllowUBALocalExecutor>false</bAllowUBALocalExecutor>
+                <bAllowXGE>false</bAllowXGE>
+                <bAllowFASTBuild>false</bAllowFASTBuild>
+                <bAllowSNDBS>false</bAllowSNDBS>
+              </BuildConfiguration>
+            </Configuration>
+            """ + Environment.NewLine,
             cancellationToken).ConfigureAwait(false);
     }
 

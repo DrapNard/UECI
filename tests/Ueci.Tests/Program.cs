@@ -716,6 +716,11 @@ internal static class Program
             Assert.True(projectJson.Contains("\"Modules\"", StringComparison.Ordinal));
             Assert.True(projectJson.Contains("\"UECIHost\"", StringComparison.Ordinal));
             Assert.True(File.Exists(Path.Combine(host.Root, "Source", "UECIHost.Target.cs")));
+            string buildConfig = Path.Combine(host.Root, "Saved", "UnrealBuildTool", "BuildConfiguration.xml");
+            Assert.True(File.Exists(buildConfig));
+            string buildConfigXml = await File.ReadAllTextAsync(buildConfig);
+            Assert.True(buildConfigXml.Contains("<bAllowUBAExecutor>false</bAllowUBAExecutor>", StringComparison.Ordinal));
+            Assert.True(buildConfigXml.Contains("<bAllowUBALocalExecutor>false</bAllowUBALocalExecutor>", StringComparison.Ordinal));
             Assert.True(File.Exists(Path.Combine(host.PluginRoot, "Source", "Fixture", "Fixture.Build.cs")));
             Assert.False(File.Exists(Path.Combine(host.PluginRoot, "Binaries", "Linux", "stale.so")));
             Assert.True(File.Exists(Path.Combine(host.PluginRoot, "Binaries", "ThirdParty", "vendor.so")));
