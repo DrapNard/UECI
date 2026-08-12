@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0-alpha.12] - 2026-08-13
+
+### Fixed
+
+- Switches the synthetic runtime `UECIHost` from `TargetLinkType.Monolithic` to `TargetLinkType.Modular`. The successful alpha.11 smoke proved that the monolithic target compiled and linked `UECIMinimal`, but folded it into the host executable, leaving the packaged plugin without the native module binary Unreal expects under `Binaries/<Platform>`.
+- Re-enables module-targeted UBT invocations for the mounted backend now that the synthetic targets are modular. Runtime and Editor phases pass their exact plugin module list through `-Module=<Name>`, so UBT emits standalone plugin shared libraries instead of spending the final link on an irrelevant validation executable.
+- Makes the synthetic Editor target explicitly modular as well, keeping module-output behavior deterministic for future Editor-only plugin validation.
+
+### Performance
+
+- Keeps the learned 5,612-Git-file / 81-GitDependencies profile unchanged. The alpha.11 real smoke skipped the global Engine index, completed the mounted UBT build in 119 seconds, downloaded 0 additional bytes, and reached packaging before the smoke correctly detected the missing native plugin binary.
+
+### Changed
+
+- CLI version advanced to `0.5.0-alpha.12`.
+
 ## [0.5.0-alpha.11] - 2026-08-13
 
 ### Fixed

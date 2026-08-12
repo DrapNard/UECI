@@ -258,15 +258,16 @@ internal sealed class UnrealMountedPluginBuilder
                 options.Progress?.Invoke(
                     $"Building {phase.Target} with plugin modules [{string.Join(", ", phase.Modules)}] through the virtual Engine...");
 
-                // Do not use -Module here. UECIHost is a monolithic Program target; asking UBT to
-                // gather a standalone module output causes BuildMode.GatherOutputItems() to fail
-                // even after it successfully generated the target action graph (alpha.6 regression).
+                // The synthetic targets are modular. Ask UBT for the plugin module outputs
+                // explicitly so the mounted backend produces packageable native libraries instead
+                // of linking the plugin only into the UECIHost executable. Alpha.6 failed here
+                // because the old host was monolithic; -Module is valid once LinkType is Modular.
                 IReadOnlyList<string> arguments = UnrealPluginBuildInvocation.CreateArguments(
                     host,
                     phase.Target,
                     options.Platform,
                     options.Configuration,
-                    Array.Empty<string>(),
+                    phase.Modules,
                     options.RuntimeIdentifier);
                 ExternalProcessResult result = await runner.RunAsync(
                     compile.Paths,

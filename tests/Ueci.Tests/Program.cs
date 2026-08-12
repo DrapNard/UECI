@@ -1065,6 +1065,7 @@ internal static class Program
             Assert.True(File.Exists(runtimeTarget));
             string runtimeTargetText = await File.ReadAllTextAsync(runtimeTarget);
             Assert.True(runtimeTargetText.Contains("Type = TargetType.Program", StringComparison.Ordinal));
+            Assert.True(runtimeTargetText.Contains("LinkType = TargetLinkType.Modular", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("LaunchModuleName = \"UECIHost\"", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("bCompileAgainstEngine = false", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("bBuildDeveloperTools = false", StringComparison.Ordinal));
@@ -1078,6 +1079,7 @@ internal static class Program
             Assert.True(runtimeTargetText.Contains("ExtraModuleNames.Add(\"Fixture\")", StringComparison.Ordinal));
             Assert.False(runtimeTargetText.Contains("ExtraModuleNames.Add(\"FixtureEditor\")", StringComparison.Ordinal));
             string editorTargetText = await File.ReadAllTextAsync(Path.Combine(host.Root, "Source", "UECIHostEditor.Target.cs"));
+            Assert.True(editorTargetText.Contains("LinkType = TargetLinkType.Modular", StringComparison.Ordinal));
             Assert.True(editorTargetText.Contains("ExtraModuleNames.Add(\"Fixture\")", StringComparison.Ordinal));
             Assert.True(editorTargetText.Contains("ExtraModuleNames.Add(\"FixtureEditor\")", StringComparison.Ordinal));
             string hostSourceText = await File.ReadAllTextAsync(Path.Combine(host.Root, "Source", "UECIHost", "UECIHost.cpp"));

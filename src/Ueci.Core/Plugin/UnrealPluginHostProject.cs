@@ -125,8 +125,13 @@ public static class UnrealPluginHostProject
                     // target implicitly enables Engine/developer-tool surfaces (Launch,
                     // TargetPlatform, shader/texture formats, etc.) which are unrelated to a
                     // Core-only plugin and massively inflate the lazy working set.
+                    //
+                    // Keep the target modular: the launch module remains the tiny UECIHost
+                    // executable while requested plugin modules are emitted as native shared
+                    // libraries under Plugins/<Name>/Binaries/<Platform>. This is what lets UECI
+                    // package a real plugin binary instead of merely folding it into the host.
                     Type = TargetType.Program;
-                    LinkType = TargetLinkType.Monolithic;
+                    LinkType = TargetLinkType.Modular;
                     LaunchModuleName = "{{GameTargetName}}";
                     DefaultBuildSettings = BuildSettingsVersion.Latest;
                     IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
@@ -172,6 +177,7 @@ public static class UnrealPluginHostProject
                 public {{EditorTargetName}}Target(TargetInfo Target) : base(Target)
                 {
                     Type = TargetType.Editor;
+                    LinkType = TargetLinkType.Modular;
                     DefaultBuildSettings = BuildSettingsVersion.Latest;
                     IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
             {{editorExtraModules}}
@@ -207,7 +213,7 @@ public static class UnrealPluginHostProject
             #endif
 
             #if UECI_SYNTHETIC_PROGRAM
-            // A monolithic Core-only Program normally gets these from the Engine Launch module.
+            // A standalone Core-only Program normally gets these from the Engine Launch module.
             // UECI deliberately does not pull Launch into the runtime validation target, so the
             // synthetic launch module owns the three process-level symbols needed by the linker.
             TCHAR GInternalProjectName[64] = TEXT("UECIHost");

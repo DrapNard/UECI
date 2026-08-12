@@ -191,6 +191,8 @@ The v0.5 mounted backend exposes the whole pinned Unreal namespace without check
 
 `v0.5.0-alpha.11` fixes the exact UE 5.8 property spelling to `bDisableDumpSyms` (alpha.10 accidentally used `bDisableDumpSYMs`) and also passes `-NoDumpSyms` on synthetic plugin UBT invocations. This makes suppression independent of XML scope precedence and prevents the minimal mounted Engine from ever requiring the standalone `dump_syms` helper.
 
+`v0.5.0-alpha.12` turns the lean runtime Program host into a modular target and restores `-Module=<plugin-module>` for mounted builds. Alpha.11 proved the full target could compile and link through FUSE, but a monolithic Program folds plugin code into `UECIHost` and therefore leaves no packageable plugin `.so`. Modular module-targeted builds emit the plugin's native library under its own `Binaries/<Platform>` directory while retaining the same minimal Engine profile.
+
 ```bash
 export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
 mkdir -p /tmp/ueci-engine-view
@@ -309,7 +311,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.5.0-alpha.11
+- uses: your-org/ueci@v0.5.0-alpha.12
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release
