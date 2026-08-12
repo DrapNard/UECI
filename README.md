@@ -262,7 +262,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.4.0-alpha.2
+- uses: your-org/ueci@v0.4.0-alpha.3
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release
@@ -288,6 +288,7 @@ For pull requests from untrusted forks, do not expose an Epic token to checked-o
    - UBT + Epic bundled .NET bootstrap ✅
    - real UBT remains the rules authority ✅
 4. **v0.4 — plugin build** 🚧
+   - Hermetic UBT executor configuration (local executor; UBA/XGE/FASTBuild/SN-DBS disabled for minimal builds) ✅
    - synthetic project + Game/Editor targets ✅
    - bounded diagnostic-driven materialization/retry loop ✅ experimental
    - package plugin + build report ✅
