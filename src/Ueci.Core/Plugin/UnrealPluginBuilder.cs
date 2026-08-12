@@ -447,12 +447,10 @@ public sealed class UnrealPluginBuilder
         string diagnostics,
         string logPath)
     {
-        string tail = string.Join(
-            Environment.NewLine,
-            diagnostics.Split('\n').TakeLast(50));
+        string excerpt = UnrealBuildDiagnostics.CreateFailureExcerpt(diagnostics, fallbackTailLines: 50);
         return new InvalidOperationException(
             $"UECI could not derive a new lazy engine requirement from UBT while building target '{phase.Target}' " +
-            $"on discovery pass {pass}. Full log: {logPath}" + Environment.NewLine + tail);
+            $"on discovery pass {pass}. Full log: {logPath}" + Environment.NewLine + excerpt);
     }
 
     private static string RequirementKey(UnrealBuildRequirement requirement)

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0-alpha.13] - 2026-08-13
+
+### Fixed
+
+- Builds Runtime plugin modules through a lean modular `TargetType.Game` host instead of `TargetType.Program`. Unreal Engine's `Runtime` module host type explicitly excludes Program targets; `RuntimeAndProgram` is the separate descriptor type that opts into Programs. This keeps validation faithful to ordinary Runtime plugins while retaining `-Module=<name>` modular outputs.
+- Replaces mounted-build tail-only failure reporting with actionable diagnostic excerpts. Parallel UBT/UBA execution can report the failed action early and then continue independent compile actions, which previously pushed the real error out of the last 80 lines printed by UECI.
+- Applies the same contextual failure excerpt to the non-mounted iterative builder.
+
+### Changed
+
+- CLI version advanced to `0.5.0-alpha.13`.
+
 ## [0.5.0-alpha.12] - 2026-08-13
 
 ### Fixed

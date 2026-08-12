@@ -49,6 +49,7 @@ internal static class Program
         ("tracked Epic index locates module rules and suffixes", EpicTrackedIndexFindsAsync),
         ("explicit module requirement force-refreshes an already-sparse Build.cs", ExplicitModuleRefreshAsync),
         ("plugin UBT invocation targets only requested modules", PluginBuildInvocationAsync),
+        ("plugin failure excerpt preserves early actionable diagnostics", PluginFailureExcerptAsync),
         ("plugin packager keeps binaries and drops Intermediate", PluginPackagerAsync),
         ("Linux SDK descriptor resolves Epic native toolchain", LinuxToolchainDescriptorAsync),
         ("Linux native toolchain installer is offline-testable and cached", LinuxToolchainInstallerAsync),
@@ -1064,7 +1065,7 @@ internal static class Program
             string runtimeTarget = Path.Combine(host.Root, "Source", "UECIHost.Target.cs");
             Assert.True(File.Exists(runtimeTarget));
             string runtimeTargetText = await File.ReadAllTextAsync(runtimeTarget);
-            Assert.True(runtimeTargetText.Contains("Type = TargetType.Program", StringComparison.Ordinal));
+            Assert.True(runtimeTargetText.Contains("Type = TargetType.Game", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("LinkType = TargetLinkType.Modular", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("LaunchModuleName = \"UECIHost\"", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("bCompileAgainstEngine = false", StringComparison.Ordinal));
@@ -1315,6 +1316,24 @@ internal static class Program
         Assert.True(arguments.Contains("-Architecture=arm64", StringComparer.Ordinal));
         Assert.True(arguments.Contains("-Project=/tmp/host/UECIHost.uproject", StringComparer.Ordinal));
         Assert.True(arguments.Contains("-NoDumpSyms", StringComparer.Ordinal));
+        return Task.CompletedTask;
+    }
+
+    private static Task PluginFailureExcerptAsync()
+    {
+        var lines = new List<string>();
+        lines.Add("[1/32] Compile UECIMinimal.cpp [NoUba]");
+        lines.Add("clang++: error: synthetic actionable failure");
+        lines.Add("  detail: plugin module is not valid for this target");
+        for (int index = 0; index < 140; index++)
+        {
+            lines.Add($"[{index + 2}/32] unrelated trailing action {index}");
+        }
+
+        string excerpt = UnrealBuildDiagnostics.CreateFailureExcerpt(string.Join('\n', lines));
+        Assert.True(excerpt.Contains("synthetic actionable failure", StringComparison.Ordinal));
+        Assert.True(excerpt.Contains("plugin module is not valid", StringComparison.Ordinal));
+        Assert.True(excerpt.Length < string.Join('\n', lines).Length);
         return Task.CompletedTask;
     }
 

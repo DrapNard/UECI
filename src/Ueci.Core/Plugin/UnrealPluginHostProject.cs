@@ -121,16 +121,15 @@ public static class UnrealPluginHostProject
             {
                 public {{GameTargetName}}Target(TargetInfo Target) : base(Target)
                 {
-                    // UECI's runtime host is intentionally a standalone Program target. A Game
-                    // target implicitly enables Engine/developer-tool surfaces (Launch,
-                    // TargetPlatform, shader/texture formats, etc.) which are unrelated to a
-                    // Core-only plugin and massively inflate the lazy working set.
+                    // Runtime plugin modules are not valid on TargetType.Program (UE's Runtime host
+                    // type explicitly excludes programs). Use a lean Game target so the plugin is
+                    // compiled in the same host class it declares in its .uplugin, while retaining
+                    // the modular/module-targeted build that keeps UECI's working set small.
                     //
-                    // Keep the target modular: the launch module remains the tiny UECIHost
-                    // executable while requested plugin modules are emitted as native shared
-                    // libraries under Plugins/<Name>/Binaries/<Platform>. This is what lets UECI
-                    // package a real plugin binary instead of merely folding it into the host.
-                    Type = TargetType.Program;
+                    // The launch module remains the tiny UECIHost harness; -Module=<plugin> means
+                    // normal mounted builds only emit the requested plugin libraries and their
+                    // dependencies instead of building the host executable.
+                    Type = TargetType.Game;
                     LinkType = TargetLinkType.Modular;
                     LaunchModuleName = "{{GameTargetName}}";
                     DefaultBuildSettings = BuildSettingsVersion.Latest;
@@ -157,9 +156,8 @@ public static class UnrealPluginHostProject
                     // minimal mounted Engine intentionally does not carry that standalone tool.
                     bAllowRuntimeSymbolFiles = false;
 
-                    // The synthetic Program launch module supplies a tiny non-running Linux
-                    // entrypoint. It exists only so UBT can complete the final link while still
-                    // compiling/linking every requested plugin module into the validation target.
+                    // Keep a tiny non-running launch entrypoint available if UBT ever needs to link the
+                    // synthetic host itself. Module-targeted plugin builds normally do not build it.
                     GlobalDefinitions.Add("UECI_SYNTHETIC_PROGRAM=1");
             {{runtimeExtraModules}}
                 }

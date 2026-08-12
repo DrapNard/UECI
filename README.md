@@ -50,7 +50,7 @@ The long-term design supports both **materialized mode** (portable, no special p
 - Materializes the UBT + shared C# source seed, compiles `UnrealBuildTool.csproj`, validates the generated runtime config, then probes UBT with the same Epic-bundled `dotnet`.
 - Provides `ubt run` to forward arbitrary arguments to the bootstrapped UBT.
 - Parses `.uplugin` module descriptors and keeps UBT as the authority for executable `.Build.cs` rules; a bounded parser only uses standard module dependency lists as optional prefetch hints.
-- Creates an ephemeral project with a lean standalone Program target for Runtime modules and an Editor target when required, then copies the plugin without stale build outputs.
+- Creates an ephemeral project with a lean modular Game target for Runtime modules and an Editor target when required, then copies the plugin without stale build outputs.
 - Invokes the real UBT with `-Module=<PluginModule>` so plugin rules remain authoritative.
 - Converts missing-module/path/SDK diagnostics into bounded lazy Epic Git/GitDependencies materialization passes, including unresolved third-party library paths emitted by UBT.
 - Batches up to two levels of small `.Build.cs` dependency hints between UBT passes while refusing large hinted subtrees until UBT explicitly requires them.
@@ -191,7 +191,7 @@ The v0.5 mounted backend exposes the whole pinned Unreal namespace without check
 
 `v0.5.0-alpha.11` fixes the exact UE 5.8 property spelling to `bDisableDumpSyms` (alpha.10 accidentally used `bDisableDumpSYMs`) and also passes `-NoDumpSyms` on synthetic plugin UBT invocations. This makes suppression independent of XML scope precedence and prevents the minimal mounted Engine from ever requiring the standalone `dump_syms` helper.
 
-`v0.5.0-alpha.12` turns the lean runtime Program host into a modular target and restores `-Module=<plugin-module>` for mounted builds. Alpha.11 proved the full target could compile and link through FUSE, but a monolithic Program folds plugin code into `UECIHost` and therefore leaves no packageable plugin `.so`. Modular module-targeted builds emit the plugin's native library under its own `Binaries/<Platform>` directory while retaining the same minimal Engine profile.
+`v0.5.0-alpha.13` uses a lean modular **Game** host for Runtime modules and keeps the modular Editor host for Editor modules. UE Runtime modules explicitly exclude Program targets, so alpha.12 could request `-Module=<plugin-module>` against an incompatible host type. Module-targeted Game/Editor builds preserve the plugin's declared host semantics while still emitting packageable native libraries and retaining the minimal Engine profile. Alpha.13 also surfaces actionable UBT errors with context even when parallel actions continue after the first failure.
 
 ```bash
 export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
@@ -311,7 +311,7 @@ The credential field stores only the **environment variable name**, never a secr
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
 
 ```yaml
-- uses: your-org/ueci@v0.5.0-alpha.12
+- uses: your-org/ueci@v0.5.0-alpha.13
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release

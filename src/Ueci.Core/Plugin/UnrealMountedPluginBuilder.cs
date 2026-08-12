@@ -280,10 +280,10 @@ internal sealed class UnrealMountedPluginBuilder
                 await File.WriteAllTextAsync(logPath, diagnostics, cancellationToken).ConfigureAwait(false);
                 if (!result.Succeeded)
                 {
-                    string tail = string.Join(Environment.NewLine, diagnostics.Split('\n').TakeLast(80));
+                    string excerpt = UnrealBuildDiagnostics.CreateFailureExcerpt(diagnostics);
                     throw new InvalidOperationException(
                         $"Mounted UBT build failed for target '{phase.Target}'. Full log: {logPath}" +
-                        Environment.NewLine + tail);
+                        Environment.NewLine + excerpt);
                 }
 
                 options.Progress?.Invoke($"{phase.Target} plugin modules built successfully through FUSE.");
@@ -386,7 +386,7 @@ internal sealed class UnrealMountedPluginBuilder
         string text = exception.ToString();
 
         // A complete Engine namespace cannot repair a genuine compile/link error. In alpha.7 the
-        // linker failure for the synthetic Program target was followed by harmless UBA probe text
+        // linker failure for the synthetic host target was followed by harmless UBA probe text
         // containing "No such file or directory", which made the broad heuristic perform a second
         // full-Engine build for no benefit. Keep linker/compiler failures authoritative unless they
         // also contain one of the explicit missing-Engine diagnostics below.
