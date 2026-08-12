@@ -8,6 +8,7 @@ public enum UnrealBuildRequirementKind
     EnginePath,
     PathSuffix,
     PlatformSdk,
+    BuildExecutor,
 }
 
 public sealed record UnrealBuildRequirement(UnrealBuildRequirementKind Kind, string Value, string Evidence);
@@ -36,6 +37,10 @@ public static class UnrealBuildDiagnosticParser
 
     private static readonly Regex PlatformSdk = new(
         "(?:unable to find|not a valid|has no valid|SDK.*(?:missing|invalid)|SDK for .* not found).{0,80}(?:SDK|platform)|(?:SDK|platform).{0,80}(?:unable to find|not a valid|missing|invalid|not found)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex MissingUba = new(
+        @"UBA\s+is\s+not\s+available|ensure\s+the\s+UBA\s+binaries\s+exist",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static IReadOnlyList<UnrealBuildRequirement> Parse(string diagnostics, string? engineRoot = null)
@@ -92,6 +97,11 @@ public static class UnrealBuildDiagnosticParser
         if (PlatformSdk.IsMatch(diagnostics))
         {
             Add(results, keys, UnrealBuildRequirementKind.PlatformSdk, string.Empty, "platform SDK diagnostic");
+        }
+
+        if (MissingUba.IsMatch(diagnostics))
+        {
+            Add(results, keys, UnrealBuildRequirementKind.BuildExecutor, "UBA", "UBA runtime diagnostic");
         }
 
         return results;

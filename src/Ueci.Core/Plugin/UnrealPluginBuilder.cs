@@ -256,7 +256,7 @@ public sealed class UnrealPluginBuilder
                     ubtArguments,
                     cancellationToken).ConfigureAwait(false);
 
-                string diagnostics = CombineDiagnostics(last);
+                string diagnostics = CombineDiagnostics(last, bootstrap.EngineRoot);
                 string logPath = Path.Combine(logsDirectory, $"{phase.Target}-pass-{pass:D2}.log");
                 await File.WriteAllTextAsync(logPath, diagnostics, cancellationToken).ConfigureAwait(false);
 
@@ -392,11 +392,47 @@ public sealed class UnrealPluginBuilder
     private static string RequirementKey(UnrealBuildRequirement requirement)
         => requirement.Kind + "\0" + requirement.Value;
 
-    private static string CombineDiagnostics(ExternalProcessResult result)
-        => string.Join(
+    private static string CombineDiagnostics(ExternalProcessResult result, string engineRoot)
+    {
+        var parts = new List<string>
+        {
+            result.StandardOutput.Trim(),
+            result.StandardError.Trim(),
+        };
+
+        // UBT often keeps the actionable platform/executor diagnostics only in its full log
+        // while the console receives a short terminal error. Feed that log into lazy discovery
+        // so one failed pass can expose all requirements (for example UBA + Linux SDK).
+        string ubtLog = Path.Combine(
+            Path.GetFullPath(engineRoot),
+            "Engine",
+            "Programs",
+            "UnrealBuildTool",
+            "Log.txt");
+        if (File.Exists(ubtLog))
+        {
+            try
+            {
+                string log = File.ReadAllText(ubtLog).Trim();
+                if (log.Length != 0)
+                {
+                    parts.Add(log);
+                }
+            }
+            catch (IOException)
+            {
+                // The process diagnostics are still useful if the log cannot be read.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Keep discovery deterministic even on restrictive filesystems.
+            }
+        }
+
+        return string.Join(
             Environment.NewLine,
-            new[] { result.StandardOutput.Trim(), result.StandardError.Trim() }
-                .Where(value => value.Length != 0));
+            parts.Where(value => value.Length != 0));
+    }
 
     private static void ValidateOptions(UnrealPluginBuildOptions options)
     {

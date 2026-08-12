@@ -745,6 +745,7 @@ internal static class Program
               Found Sdk Version, Required=v26_clang-20.1.8-rockylinux8.
               Found AutoSdk Version, Required=v26_clang-20.1.8-rockylinux8.
             Linux is not a valid platform to build. Check that the SDK is installed properly.
+            UBA is not available - please ensure the UBA binaries exist for your host platform
             """;
         IReadOnlyList<UnrealBuildRequirement> requirements = UnrealBuildDiagnosticParser.Parse(diagnostics);
         Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.Module && r.Value == "Core"));
@@ -752,6 +753,7 @@ internal static class Program
         Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.EnginePath
             && r.Value.Contains("Engine/Source/ThirdParty/Foo/libFoo.a", StringComparison.Ordinal)));
         Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.PlatformSdk));
+        Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.BuildExecutor && r.Value == "UBA"));
         return Task.CompletedTask;
     }
 
@@ -951,6 +953,12 @@ internal static class Program
         EpicBundledDotNetSdkPlan sdk = EpicBundledDotNetSdkResolver.Resolve(manifest, "linux-x64");
         Assert.True(sdk.SdkVersion.Major >= 8);
         Assert.True(manifest.Files.Keys.Any(path => path.StartsWith(sdk.SdkPrefix, StringComparison.Ordinal)));
+
+        GitDependenciesPlan uba = GitDependenciesPlanner.CreatePlan(
+            manifest,
+            prefixes: ["Engine/Binaries/Linux/UnrealBuildAccelerator/"]);
+        Assert.True(uba.FileCount > 0);
+        Assert.True(uba.DownloadCompressedBytes > 0);
     }
 
     private sealed class FakeToolchainArchiveSource(byte[] payload) : IUnrealToolchainArchiveSource

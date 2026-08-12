@@ -114,6 +114,18 @@ public sealed class UnrealPluginRequirementMaterializer
                     break;
                 }
 
+                case UnrealBuildRequirementKind.BuildExecutor:
+                {
+                    string? executorPrefix = ResolveBuildExecutorPrefix(requirement.Value);
+                    if (executorPrefix is not null)
+                    {
+                        gitDepsPrefixes.Add(executorPrefix);
+                        details.Add($"build executor {requirement.Value} -> GitDependencies prefix {executorPrefix}");
+                        matched++;
+                    }
+                    break;
+                }
+
                 case UnrealBuildRequirementKind.PlatformSdk:
                 {
                     // Setup.sh installs the native Linux toolchain separately from Commit.gitdeps.xml.
@@ -316,6 +328,28 @@ public sealed class UnrealPluginRequirementMaterializer
         }
 
         return false;
+    }
+
+
+    private string? ResolveBuildExecutorPrefix(string executor)
+    {
+        if (!executor.Equals("UBA", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        string[] candidates = _runtimeIdentifier.StartsWith("linux-", StringComparison.OrdinalIgnoreCase)
+            ? ["Engine/Binaries/Linux/UnrealBuildAccelerator/"]
+            : _runtimeIdentifier.StartsWith("mac-", StringComparison.OrdinalIgnoreCase)
+                ? ["Engine/Binaries/Mac/UnrealBuildAccelerator/"]
+                : _runtimeIdentifier.Equals("win-x64", StringComparison.OrdinalIgnoreCase)
+                    ? ["Engine/Binaries/Win64/UnrealBuildAccelerator/x64/"]
+                    : _runtimeIdentifier.Equals("win-arm64", StringComparison.OrdinalIgnoreCase)
+                        ? ["Engine/Binaries/Win64/UnrealBuildAccelerator/arm64/"]
+                        : Array.Empty<string>();
+
+        return candidates.FirstOrDefault(prefix => _manifest.Files.Keys.Any(
+            path => path.StartsWith(prefix, StringComparison.Ordinal)));
     }
 
     private string? ResolvePlatformSdkPrefix(string platform)
