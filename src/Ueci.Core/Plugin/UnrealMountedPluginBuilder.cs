@@ -352,11 +352,11 @@ internal sealed class UnrealMountedPluginBuilder
                     context.Manifest,
                     runtimeConfig,
                     options.RuntimeIdentifier);
-                if (!string.IsNullOrWhiteSpace(managedRuntime.BundlePrefix)
-                    && !string.Equals(runtimePlan.BundlePrefix, managedRuntime.BundlePrefix, StringComparison.Ordinal))
+                if (!string.IsNullOrWhiteSpace(compile.Runtime.BundlePrefix)
+                    && !string.Equals(runtimePlan.BundlePrefix, compile.Runtime.BundlePrefix, StringComparison.Ordinal))
                 {
                     throw new InvalidDataException(
-                        $"UBT runtime resolved to '{runtimePlan.BundlePrefix}', but compilation used '{managedRuntime.BundlePrefix}'.");
+                        $"UBT runtime resolved to '{runtimePlan.BundlePrefix}', but compilation used '{compile.Runtime.BundlePrefix}'.");
                 }
             }
 

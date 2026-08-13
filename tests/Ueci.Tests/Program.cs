@@ -1106,6 +1106,10 @@ internal static class Program
                 new("Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/shared/Microsoft.NETCore.App/6.0.8/System.Private.CoreLib.dll", "g", false),
             ["Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/host/fxr/6.0.8/libhostfxr.so"] =
                 new("Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/host/fxr/6.0.8/libhostfxr.so", "h", false),
+            ["Engine/Source/Programs/Shared/UnrealEngine.CSharp.targets"] =
+                new("Engine/Source/Programs/Shared/UnrealEngine.CSharp.targets", "i", false),
+            ["Engine/Extras/Managed/Ionic.Zip.Reduced.dll"] =
+                new("Engine/Extras/Managed/Ionic.Zip.Reduced.dll", "j", false),
         };
         var manifest = new GitDependenciesManifest(
             "https://cdn.example.test/dependencies",
@@ -1122,6 +1126,12 @@ internal static class Program
         EpicBundledDotNetPlan runtime = EpicBundledDotNetResolver.Resolve(manifest, config, "linux-x64");
         Assert.Equal("Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/", runtime.BundlePrefix);
         Assert.Equal(new Version(6, 0, 8), runtime.ResolvedFrameworks[0].Version);
+
+        VirtualEngineSeed seed = VirtualEngineEmbeddedSeed.Create(manifest, "linux-x64");
+        Assert.True(seed.GitDependencyPaths.Contains(
+            "Engine/Source/Programs/Shared/UnrealEngine.CSharp.targets", StringComparer.Ordinal));
+        Assert.True(seed.GitDependencyPaths.Contains(
+            "Engine/Extras/Managed/Ionic.Zip.Reduced.dll", StringComparer.Ordinal));
         return Task.CompletedTask;
     }
 

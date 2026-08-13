@@ -21,6 +21,8 @@ public sealed record UnrealBuildToolRuntimePlan(
 {
     public string Description => Kind switch
     {
+        UnrealBuildToolRuntimeKind.DotNet when BundlePrefix is null && SdkVersion is not null => $"runner .NET SDK {SdkVersion}",
+        UnrealBuildToolRuntimeKind.DotNet when BundlePrefix is null => "runner .NET SDK",
         UnrealBuildToolRuntimeKind.DotNet => $"Epic bundled .NET SDK {SdkVersion}",
         UnrealBuildToolRuntimeKind.Mono => "Mono/MSBuild",
         _ => "direct executable",

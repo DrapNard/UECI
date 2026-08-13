@@ -86,9 +86,14 @@ public static class VirtualEngineEmbeddedSeed
         AddFilesNamed(manifest, gitDependencyPaths,
             "UnrealEngine.csproj.props",
             "UnrealEngine.csproj.targets",
+            "UnrealEngine.CSharp.props",
+            "UnrealEngine.CSharp.targets",
             "Directory.Build.props",
             "Directory.Build.targets",
+            "Ionic.Zip.Reduced.dll",
+            "RPCUtility.exe",
             "Microsoft.VisualStudio.Setup.Configuration.Interop.dll");
+        AddManagedBuildControlFiles(manifest, gitDependencyPaths);
 
         bool legacySeed = hasLegacyUbtPayload || sdk is null;
         IEnumerable<string> commonGitPaths = GitPaths.Value.Concat([
@@ -143,6 +148,27 @@ public static class VirtualEngineEmbeddedSeed
         foreach (string path in manifest.Files.Keys)
         {
             if (names.Contains(Path.GetFileName(path)))
+            {
+                paths.Add(path);
+            }
+        }
+    }
+
+    private static void AddManagedBuildControlFiles(
+        GitDependenciesManifest manifest,
+        HashSet<string> paths)
+    {
+        const string sharedPrefix = "Engine/Source/Programs/Shared/";
+        foreach (string path in manifest.Files.Keys)
+        {
+            if (!path.StartsWith(sharedPrefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            string extension = Path.GetExtension(path);
+            if (extension.Equals(".props", StringComparison.OrdinalIgnoreCase)
+                || extension.Equals(".targets", StringComparison.OrdinalIgnoreCase))
             {
                 paths.Add(path);
             }

@@ -55,20 +55,31 @@ public sealed class UnrealBuildToolCompiler
                 runtime.HostPath);
         }
 
+        UnrealBuildToolRuntimePlan effectiveRuntime = runtime;
+        if (runtime.Kind == UnrealBuildToolRuntimeKind.DotNet
+            && runtime.SdkVersion is { Major: <= 3 }
+            && TryCreateRunnerDotNetPlan() is { } cachedRunnerRuntime)
+        {
+            // A restored netcoreapp3.x UBT is perfectly reusable, but its historical host may not
+            // load on a modern OpenSSL-only runner. Execute the cached assembly through the runner
+            // .NET with roll-forward instead of reintroducing the host compatibility failure.
+            effectiveRuntime = cachedRunnerRuntime;
+        }
+
         if (reuseExistingOutput)
         {
             try
             {
                 UnrealBuildToolPaths existing = UnrealBuildToolLocator.LocateBuiltOutput(root, project) with
                 {
-                    RuntimeKind = runtime.Kind,
-                    RuntimeHostPath = runtime.HostPath,
+                    RuntimeKind = effectiveRuntime.Kind,
+                    RuntimeHostPath = effectiveRuntime.HostPath,
                 };
                 if (new FileInfo(existing.AssemblyPath).Length == 0)
                 {
                     throw new InvalidDataException("Cached UnrealBuildTool output is incomplete.");
                 }
-                if (runtime.Kind == UnrealBuildToolRuntimeKind.DotNet)
+                if (effectiveRuntime.Kind == UnrealBuildToolRuntimeKind.DotNet)
                 {
                     string existingDirectory = Path.GetDirectoryName(existing.AssemblyPath)!;
                     string deps = Path.Combine(existingDirectory, "UnrealBuildTool.deps.json");
@@ -81,10 +92,10 @@ public sealed class UnrealBuildToolCompiler
                 progress?.Invoke($"Reusing cached UnrealBuildTool output: {existing.AssemblyPath}");
                 return new UnrealBuildToolCompileResult(
                     project,
-                    runtime.HostPath,
+                    effectiveRuntime.HostPath,
                     new ExternalProcessResult(0, "UECI reused commit-scoped UnrealBuildTool artifacts.", string.Empty),
                     existing,
-                    runtime);
+                    effectiveRuntime);
             }
             catch (Exception ex) when (ex is FileNotFoundException or InvalidDataException)
             {
@@ -99,6 +110,9 @@ public sealed class UnrealBuildToolCompiler
                 project);
         }
 
+        // No reusable output was found. Start compilation with Epic's selected SDK and only move
+        // to the runner SDK if that historical host itself proves incompatible with this machine.
+        effectiveRuntime = runtime;
         ExternalProcessResult process = runtime.Kind switch
         {
             UnrealBuildToolRuntimeKind.DotNet => await CompileModernAsync(root, project, runtime, cancellationToken)
@@ -108,6 +122,22 @@ public sealed class UnrealBuildToolCompiler
             _ => throw new NotSupportedException($"UBT compilation runtime '{runtime.Kind}' is not supported."),
         };
 
+        if (!process.Succeeded
+            && runtime.Kind == UnrealBuildToolRuntimeKind.DotNet
+            && IsLegacyDotNetHostCompatibilityFailure(process))
+        {
+            UnrealBuildToolRuntimePlan? runnerRuntime = TryCreateRunnerDotNetPlan();
+            if (runnerRuntime is not null)
+            {
+                progress?.Invoke(
+                    $"{runtime.Description} cannot run against this runner's native crypto/globalization stack; " +
+                    $"retrying UBT bootstrap with {runnerRuntime.Description}.");
+                process = await CompileModernAsync(root, project, runnerRuntime, cancellationToken)
+                    .ConfigureAwait(false);
+                effectiveRuntime = runnerRuntime;
+            }
+        }
+
         if (!process.Succeeded)
         {
             string diagnostics = string.Join(
@@ -115,7 +145,7 @@ public sealed class UnrealBuildToolCompiler
                 new[] { process.StandardOutput.Trim(), process.StandardError.Trim() }
                     .Where(value => value.Length != 0));
             throw new InvalidOperationException(
-                $"{runtime.Description} failed to compile UnrealBuildTool."
+                $"{effectiveRuntime.Description} failed to compile UnrealBuildTool."
                 + (diagnostics.Length == 0 ? string.Empty : Environment.NewLine + diagnostics));
         }
 
@@ -124,8 +154,8 @@ public sealed class UnrealBuildToolCompiler
         {
             paths = UnrealBuildToolLocator.LocateBuiltOutput(root, project) with
             {
-                RuntimeKind = runtime.Kind,
-                RuntimeHostPath = runtime.HostPath,
+                RuntimeKind = effectiveRuntime.Kind,
+                RuntimeHostPath = effectiveRuntime.HostPath,
             };
         }
         catch (Exception ex) when (ex is FileNotFoundException or InvalidDataException)
@@ -142,7 +172,7 @@ public sealed class UnrealBuildToolCompiler
                 ex);
         }
 
-        return new UnrealBuildToolCompileResult(project, runtime.HostPath, process, paths, runtime);
+        return new UnrealBuildToolCompileResult(project, effectiveRuntime.HostPath, process, paths, effectiveRuntime);
     }
 
     private static Task<ExternalProcessResult> CompileModernAsync(
@@ -169,6 +199,10 @@ public sealed class UnrealBuildToolCompiler
             ["DOTNET_CLI_HOME"] = dotnetHome,
             ["NUGET_PACKAGES"] = nugetPackages,
         };
+        if (runtime.BundlePrefix is null)
+        {
+            environment["DOTNET_ROLL_FORWARD"] = "Major";
+        }
 
         return ExternalProcess.RunAsync(
             runtime.HostPath,
@@ -176,6 +210,69 @@ public sealed class UnrealBuildToolCompiler
             ["build", project, "--nologo", "--verbosity:minimal", "--no-incremental"],
             environment,
             cancellationToken: cancellationToken);
+    }
+
+    private static bool IsLegacyDotNetHostCompatibilityFailure(ExternalProcessResult process)
+    {
+        string diagnostics = process.StandardOutput + "\n" + process.StandardError;
+        return diagnostics.Contains("No usable version of libssl was found", StringComparison.OrdinalIgnoreCase)
+            || diagnostics.Contains("Couldn't find a valid ICU package", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static UnrealBuildToolRuntimePlan? TryCreateRunnerDotNetPlan()
+    {
+        string? dotnet = FindExecutable("dotnet");
+        if (dotnet is null)
+        {
+            return null;
+        }
+
+        string resolved = ResolveExecutableTarget(dotnet);
+        string root = Path.GetDirectoryName(resolved)!;
+        return new UnrealBuildToolRuntimePlan(
+            UnrealBuildToolRuntimeKind.DotNet,
+            root,
+            dotnet,
+            dotnet,
+            new Version(Environment.Version.Major, Environment.Version.Minor),
+            BundlePrefix: null,
+            ExactPaths: Array.Empty<string>(),
+            Prefixes: Array.Empty<string>());
+    }
+
+    private static string ResolveExecutableTarget(string executable)
+    {
+        string resolved = Path.GetFullPath(executable);
+        try
+        {
+            FileSystemInfo? target = new FileInfo(resolved).ResolveLinkTarget(returnFinalTarget: true);
+            if (target is not null)
+            {
+                resolved = target.FullName;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            // The visible executable is still usable; only DOTNET_ROOT resolution becomes less precise.
+        }
+        return resolved;
+    }
+
+    private static string? FindExecutable(string name)
+    {
+        string? path = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        foreach (string directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            string candidate = Path.Combine(directory, name);
+            if (File.Exists(candidate)) return Path.GetFullPath(candidate);
+            if (OperatingSystem.IsWindows())
+            {
+                string exe = candidate + ".exe";
+                if (File.Exists(exe)) return Path.GetFullPath(exe);
+            }
+        }
+        return null;
     }
 
     private static Task<ExternalProcessResult> CompileLegacyAsync(

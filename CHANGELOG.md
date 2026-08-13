@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.0-alpha.21] - 2026-08-13
+
+### Fixed
+
+- Trim and validate local Unreal matrix version arguments so whitespace cannot turn `4.6` into an invalid Epic ref.
+- Materialize Shared MSBuild `.props`/`.targets` controls from GitDependencies, including `UnrealEngine.CSharp.targets`, for modern UE5 cold UBT bootstrap.
+- Materialize legacy managed UBT support assemblies such as `Ionic.Zip.Reduced.dll` even when a modern Epic .NET SDK bundle is selected.
+- Export UE4 Linux SDK roots with the historical `LINUX_MULTIARCH_ROOT` trailing separator and `UE_SDKS_ROOT` AutoSDK root so UBT can register the installed Linux platform.
+- Fall back from ancient Epic .NET hosts that cannot load the runner OpenSSL/ICU stack to the runner's already-required modern .NET SDK, with major runtime roll-forward for the generated UBT.
+
 ## [0.5.0-alpha.20] - 2026-08-13
 
 ### Fixed

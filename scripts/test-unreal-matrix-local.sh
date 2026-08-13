@@ -98,7 +98,15 @@ fi
 passed=()
 failed=()
 
-for VERSION in "${VERSIONS[@]}"; do
+for RAW_VERSION in "${VERSIONS[@]}"; do
+  VERSION="${RAW_VERSION#"${RAW_VERSION%%[![:space:]]*}"}"
+  VERSION="${VERSION%"${VERSION##*[![:space:]]}"}"
+  if [[ ! "$VERSION" =~ ^[45]\.[0-9]+$ ]]; then
+    echo "FAIL: invalid Unreal version argument '$RAW_VERSION'" >&2
+    failed+=("$VERSION")
+    printf '%s\tFAIL_VERSION\t-\t-\n' "$VERSION" >> "$RESULTS"
+    continue
+  fi
   echo
   echo "################################################################"
   echo "# UE $VERSION"
