@@ -207,7 +207,8 @@ public sealed class UnrealBuildToolBootstrapper
             cancellationToken).ConfigureAwait(false);
 
         IReadOnlyList<DotNetFrameworkRequirement> frameworks = Array.Empty<DotNetFrameworkRequirement>();
-        if (compile.Paths.RuntimeKind == UnrealBuildToolRuntimeKind.DotNet)
+        if (compile.Paths.RuntimeKind == UnrealBuildToolRuntimeKind.DotNet
+            && !string.IsNullOrWhiteSpace(compile.Runtime.BundlePrefix))
         {
             if (string.IsNullOrWhiteSpace(compile.Paths.RuntimeConfigPath))
                 throw new InvalidDataException("Modern UBT output is missing UnrealBuildTool.runtimeconfig.json.");
@@ -219,11 +220,10 @@ public sealed class UnrealBuildToolBootstrapper
                 runtimeConfig,
                 options.RuntimeIdentifier);
             frameworks = runtimePlan.ResolvedFrameworks;
-            if (!string.IsNullOrWhiteSpace(managedRuntime.BundlePrefix)
-                && !string.Equals(runtimePlan.BundlePrefix, managedRuntime.BundlePrefix, StringComparison.Ordinal))
+            if (!string.Equals(runtimePlan.BundlePrefix, compile.Runtime.BundlePrefix, StringComparison.Ordinal))
             {
                 throw new InvalidDataException(
-                    $"UBT runtime resolved to '{runtimePlan.BundlePrefix}', but compilation used '{managedRuntime.BundlePrefix}'.");
+                    $"UBT runtime resolved to '{runtimePlan.BundlePrefix}', but compilation used '{compile.Runtime.BundlePrefix}'.");
             }
         }
 
@@ -246,9 +246,9 @@ public sealed class UnrealBuildToolBootstrapper
             options.RuntimeIdentifier,
             compatibility.Version,
             compile.Paths.RuntimeKind,
-            managedRuntime.RuntimeRoot,
-            managedRuntime.Description,
-            managedRuntime.SdkVersion,
+            compile.Runtime.RuntimeRoot,
+            compile.Runtime.Description,
+            compile.Runtime.SdkVersion,
             compile.Paths.AssemblyPath,
             compile.Paths,
             frameworks,

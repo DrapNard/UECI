@@ -339,7 +339,8 @@ internal sealed class UnrealMountedPluginBuilder
                     $"projection={FormatDuration(toolchain.ProjectionDuration)}.");
             }
 
-            if (compile.Paths.RuntimeKind == UnrealBuildToolRuntimeKind.DotNet)
+            if (compile.Paths.RuntimeKind == UnrealBuildToolRuntimeKind.DotNet
+                && !string.IsNullOrWhiteSpace(compile.Runtime.BundlePrefix))
             {
                 if (string.IsNullOrWhiteSpace(compile.Paths.RuntimeConfigPath))
                     throw new InvalidDataException("Modern UBT output is missing UnrealBuildTool.runtimeconfig.json.");
@@ -352,12 +353,20 @@ internal sealed class UnrealMountedPluginBuilder
                     context.Manifest,
                     runtimeConfig,
                     options.RuntimeIdentifier);
-                if (!string.IsNullOrWhiteSpace(compile.Runtime.BundlePrefix)
-                    && !string.Equals(runtimePlan.BundlePrefix, compile.Runtime.BundlePrefix, StringComparison.Ordinal))
+                if (!string.Equals(runtimePlan.BundlePrefix, compile.Runtime.BundlePrefix, StringComparison.Ordinal))
                 {
                     throw new InvalidDataException(
                         $"UBT runtime resolved to '{runtimePlan.BundlePrefix}', but compilation used '{compile.Runtime.BundlePrefix}'.");
                 }
+            }
+            else if (compile.Paths.RuntimeKind == UnrealBuildToolRuntimeKind.DotNet)
+            {
+                // A historical Epic host may be unable to start on a modern distro (notably
+                // netcoreapp3.x + OpenSSL 3). In that case the compiler deliberately rebuilt UBT
+                // with the runner SDK. The generated runtimeconfig may not name an Epic shared
+                // framework, and none is required because subsequent UBT runs use the same runner.
+                options.Progress?.Invoke(
+                    $"[compat] Using runner-managed UBT runtime: {compile.Runtime.Description}; skipping Epic framework projection validation.");
             }
 
             options.Progress?.Invoke(compatibility.Version.Major >= 5

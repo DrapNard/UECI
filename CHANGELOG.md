@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0-alpha.22] - 2026-08-14
+
+- Expand the mounted managed safety working set with `Engine/Config` plus GitDependencies-backed resources under `Engine/Source/Programs/Shared`, covering runtime config redirects, Oodle helper libraries and Horde protobuf inputs discovered by the alpha.21 boundary matrix.
+- Treat a runner-.NET UBT bootstrap as runner-managed end-to-end instead of requiring its generated runtimeconfig to resolve back into an Epic bundled shared-framework layout; this completes the OpenSSL-3 fallback path for UE5.0-era .NET Core hosts.
+- Prepend the projected legacy Epic Linux compiler to `PATH` and expose `CC`/`CXX` alongside `LINUX_ROOT`/`LINUX_MULTIARCH_ROOT`, allowing native UE4 UBT platform registration to inspect the intended compiler rather than the runner's clang.
+- Probe transitional UE4.6 release dependency ZIPs when available and index tracked `Engine/Binaries/DotNET` support files, covering legacy Ionic.Zip/RPCUtility layouts without weakening GitDependencies integrity checks.
+- CLI version advanced to `0.5.0-alpha.22`.
+
 ## [0.5.0-alpha.21] - 2026-08-13
 
 ### Fixed

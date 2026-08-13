@@ -91,9 +91,12 @@ public static class VirtualEngineEmbeddedSeed
             "Directory.Build.props",
             "Directory.Build.targets",
             "Ionic.Zip.Reduced.dll",
+            "Ionic.Zip.dll",
             "RPCUtility.exe",
+            "RPCUtility.dll",
             "Microsoft.VisualStudio.Setup.Configuration.Interop.dll");
         AddManagedBuildControlFiles(manifest, gitDependencyPaths);
+        AddManagedSharedDependencies(manifest, gitDependencyPaths);
 
         bool legacySeed = hasLegacyUbtPayload || sdk is null;
         IEnumerable<string> commonGitPaths = GitPaths.Value.Concat([
@@ -104,6 +107,10 @@ public static class VirtualEngineEmbeddedSeed
             // UE5 releases, and indexing this bounded subtree is cheaper and safer than chasing each
             // new .props/.targets/project source through a dynamic full-Engine fallback.
             "Engine/Source/Programs/Shared",
+            // UBT reads Engine config before creating the native action graph. Keeping this bounded
+            // directory in the safety seed avoids a dynamic fallback for files such as
+            // ConfigRedirects.ini on older UE5 releases.
+            "Engine/Config",
             "Directory.Build.props",
             "Directory.Build.targets",
         ]);
@@ -117,6 +124,10 @@ public static class VirtualEngineEmbeddedSeed
                 // also reference the EnvVarsToXML project directly from UnrealBuildTool.csproj.
                 "Engine/Source/Programs/DotNETCommon",
                 "Engine/Source/Programs/EnvVarsToXML",
+                // Some early UE4 branches tracked the managed support binaries directly rather
+                // than listing every one in Commit.gitdeps.xml. Index this tiny directory so
+                // Ionic.Zip/RPCUtility references can resolve either way.
+                "Engine/Binaries/DotNET",
             ]))
             .Distinct(StringComparer.Ordinal)
             .OrderBy(value => value, StringComparer.Ordinal)
@@ -170,6 +181,23 @@ public static class VirtualEngineEmbeddedSeed
             if (extension.Equals(".props", StringComparison.OrdinalIgnoreCase)
                 || extension.Equals(".targets", StringComparison.OrdinalIgnoreCase))
             {
+                paths.Add(path);
+            }
+        }
+    }
+
+    private static void AddManagedSharedDependencies(
+        GitDependenciesManifest manifest,
+        HashSet<string> paths)
+    {
+        const string sharedPrefix = "Engine/Source/Programs/Shared/";
+        foreach (string path in manifest.Files.Keys)
+        {
+            if (path.StartsWith(sharedPrefix, StringComparison.Ordinal))
+            {
+                // Modern managed projects copy native helpers (Oodle), protobuf inputs and other
+                // generated resources from their own Shared project directories. These files are
+                // part of the managed bootstrap working set even though they are not .cs/.props.
                 paths.Add(path);
             }
         }

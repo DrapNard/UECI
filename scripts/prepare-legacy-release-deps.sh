@@ -5,22 +5,23 @@ VERSION="${1:?usage: prepare-legacy-release-deps.sh VERSION RELEASE_REF ENGINE_D
 RELEASE_REF="${2:?usage: prepare-legacy-release-deps.sh VERSION RELEASE_REF ENGINE_DIR}"
 ENGINE_DIR="${3:?usage: prepare-legacy-release-deps.sh VERSION RELEASE_REF ENGINE_DIR}"
 
-# Commit.gitdeps.xml replaced the large release ZIP workflow in UE4.6. UE4.5 therefore needs the
-# historical Required archives, and Linux additionally needs Optional.zip. They are extracted into
-# the mounted backend's writable upper layer so the Git tree remains blobless and disposable.
-if [[ "$VERSION" != "4.5" ]]; then
+# UE4.5 requires the historical Required/Optional archives. UE4.6 introduced Commit.gitdeps.xml,
+# but some release tags still expose the old archives and their managed UBT support binaries are
+# useful when the transitional manifest does not carry Ionic.Zip/RPCUtility. Probe those assets for
+# 4.6 as an optional compatibility overlay; all later releases use GitDependencies only.
+if [[ "$VERSION" != "4.5" && "$VERSION" != "4.6" ]]; then
   exit 0
 fi
 if [[ -z "$RELEASE_REF" ]]; then
-  echo "UE4.5 legacy dependencies require an exact Epic release tag." >&2
+  echo "UE$VERSION legacy dependencies require an exact Epic release tag." >&2
   exit 2
 fi
 if ! command -v gh >/dev/null 2>&1; then
-  echo "gh is required to fetch UE4.5 release dependency archives." >&2
+  echo "gh is required to fetch UE$VERSION release dependency archives." >&2
   exit 2
 fi
 if ! command -v unzip >/dev/null 2>&1; then
-  echo "unzip is required to prepare UE4.5 release dependency archives." >&2
+  echo "unzip is required to prepare UE$VERSION release dependency archives." >&2
   exit 2
 fi
 
@@ -29,7 +30,7 @@ STATE="$ENGINE_DIR/.ueci/mounted-build/state"
 MARKER="$STATE/legacy-release-deps.tag"
 mkdir -p "$UPPER" "$STATE"
 if [[ -f "$MARKER" ]] && [[ "$(cat "$MARKER")" == "$RELEASE_REF" ]]; then
-  echo "[matrix] UE4.5 legacy release dependencies already prepared for $RELEASE_REF"
+  echo "[matrix] UE$VERSION legacy release dependencies already prepared for $RELEASE_REF"
   exit 0
 fi
 
@@ -50,12 +51,19 @@ for name in ("required_1of2.zip", "required_2of2.zip", "optional.zip"):
 ' <<<"$release_json")"
 
 if [[ "$selection" == MISSING$'\t'* ]]; then
-  echo "Epic release $RELEASE_REF is missing required legacy assets: ${selection#*$'\t'}" >&2
-  exit 1
+  if [[ "$VERSION" == "4.5" ]]; then
+    echo "Epic release $RELEASE_REF is missing required legacy assets: ${selection#*$'\t'}" >&2
+    exit 1
+  fi
+  echo "[matrix] UE$VERSION exposes no complete legacy Required archive set; using Commit.gitdeps.xml only"
+  exit 0
 fi
 if [[ -z "$selection" ]]; then
-  echo "Epic release $RELEASE_REF exposes no legacy dependency archives." >&2
-  exit 1
+  if [[ "$VERSION" == "4.5" ]]; then
+    echo "Epic release $RELEASE_REF exposes no legacy dependency archives." >&2
+    exit 1
+  fi
+  exit 0
 fi
 
 ARCHIVE_DIR="${TMPDIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/ueci-legacy-assets-$VERSION-$$"
@@ -65,7 +73,7 @@ trap 'rm -rf -- "$ARCHIVE_DIR"' EXIT
 while IFS=$'\t' read -r name url; do
   [[ -n "$name" && -n "$url" ]] || continue
   archive="$ARCHIVE_DIR/$name"
-  echo "[matrix] downloading UE4.5 legacy dependency asset: $name"
+  echo "[matrix] downloading UE$VERSION legacy dependency asset: $name"
   gh api "$url" -H 'Accept: application/octet-stream' > "$archive"
   [[ -s "$archive" ]] || { echo "Downloaded asset is empty: $name" >&2; exit 1; }
   echo "[matrix] extracting $name into the FUSE upper overlay"
@@ -73,4 +81,4 @@ while IFS=$'\t' read -r name url; do
 done <<<"$selection"
 
 printf '%s\n' "$RELEASE_REF" > "$MARKER"
-echo "[matrix] UE4.5 legacy dependencies prepared in $UPPER"
+echo "[matrix] UE$VERSION legacy dependencies prepared in $UPPER"

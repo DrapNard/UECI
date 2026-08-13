@@ -1110,6 +1110,10 @@ internal static class Program
                 new("Engine/Source/Programs/Shared/UnrealEngine.CSharp.targets", "i", false),
             ["Engine/Extras/Managed/Ionic.Zip.Reduced.dll"] =
                 new("Engine/Extras/Managed/Ionic.Zip.Reduced.dll", "j", false),
+            ["Engine/Source/Programs/Shared/EpicGames.Oodle/Sdk/2.9.10/linux/lib/liboo2corelinux64.so.9"] =
+                new("Engine/Source/Programs/Shared/EpicGames.Oodle/Sdk/2.9.10/linux/lib/liboo2corelinux64.so.9", "k", false),
+            ["Engine/Source/Programs/Shared/EpicGames.Horde/Protos/horde/log_rpc.proto"] =
+                new("Engine/Source/Programs/Shared/EpicGames.Horde/Protos/horde/log_rpc.proto", "l", false),
         };
         var manifest = new GitDependenciesManifest(
             "https://cdn.example.test/dependencies",
@@ -1132,6 +1136,13 @@ internal static class Program
             "Engine/Source/Programs/Shared/UnrealEngine.CSharp.targets", StringComparer.Ordinal));
         Assert.True(seed.GitDependencyPaths.Contains(
             "Engine/Extras/Managed/Ionic.Zip.Reduced.dll", StringComparer.Ordinal));
+        Assert.True(seed.GitDependencyPaths.Contains(
+            "Engine/Source/Programs/Shared/EpicGames.Oodle/Sdk/2.9.10/linux/lib/liboo2corelinux64.so.9",
+            StringComparer.Ordinal));
+        Assert.True(seed.GitDependencyPaths.Contains(
+            "Engine/Source/Programs/Shared/EpicGames.Horde/Protos/horde/log_rpc.proto",
+            StringComparer.Ordinal));
+        Assert.True(seed.GitPathspecs.Contains("Engine/Config", StringComparer.Ordinal));
         return Task.CompletedTask;
     }
 
@@ -1167,6 +1178,8 @@ internal static class Program
         Assert.True(seed.GitPathspecs.Contains("Engine/Source/Programs/DotNETCommon", StringComparer.Ordinal));
         Assert.True(seed.GitPathspecs.Contains("Engine/Source/Programs/EnvVarsToXML", StringComparer.Ordinal));
         Assert.True(seed.GitPathspecs.Contains("Engine/Source/Programs/Shared", StringComparer.Ordinal));
+        Assert.True(seed.GitPathspecs.Contains("Engine/Config", StringComparer.Ordinal));
+        Assert.True(seed.GitPathspecs.Contains("Engine/Binaries/DotNET", StringComparer.Ordinal));
 
         var ubtOnlyManifest = new GitDependenciesManifest(
             "https://cdn.example.test/dependencies",

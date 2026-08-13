@@ -128,6 +128,19 @@ public sealed class UnrealBuildToolRunner
                     // troubleshooting command likewise assumes the separator is part of the value.
                     environment["LINUX_MULTIARCH_ROOT"] = toolchainRoot + Path.DirectorySeparatorChar;
 
+                    string compilerBin = Path.Combine(
+                        toolchainRoot, "x86_64-unknown-linux-gnu", "bin");
+                    string clang = Path.Combine(compilerBin, OperatingSystem.IsWindows() ? "clang.exe" : "clang");
+                    string clangxx = Path.Combine(compilerBin, OperatingSystem.IsWindows() ? "clang++.exe" : "clang++");
+                    if (Directory.Exists(compilerBin))
+                    {
+                        string inheritedPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+                        environment["PATH"] = compilerBin +
+                            (inheritedPath.Length == 0 ? string.Empty : Path.PathSeparator + inheritedPath);
+                    }
+                    if (File.Exists(clang)) environment["CC"] = clang;
+                    if (File.Exists(clangxx)) environment["CXX"] = clangxx;
+
                     string autoSdkRoot = Path.Combine(
                         Path.GetFullPath(ubt.EngineRoot),
                         "Engine", "Extras", "ThirdPartyNotUE", "SDKs");
