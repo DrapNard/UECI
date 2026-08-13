@@ -165,6 +165,7 @@ public sealed class UnrealBuildToolCompiler
             ["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1",
             ["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"] = "1",
             ["DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE"] = "1",
+            ["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "1",
             ["DOTNET_CLI_HOME"] = dotnetHome,
             ["NUGET_PACKAGES"] = nugetPackages,
         };

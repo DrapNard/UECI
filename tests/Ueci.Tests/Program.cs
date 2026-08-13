@@ -140,7 +140,7 @@ internal static class Program
                     <Blob Hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" Size="1" PackHash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" PackOffset="0" />
                   </Blobs>
                   <Packs>
-                    <Pack Hash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" Size="1" CompressedSize="1" RemotePath="UnrealEngine-42" />
+                    <Pack Hash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" Size="1" CompressedSize="1" RemotePath="2369409-8e3ef78261c144639cff509a0b6b4805" />
                   </Packs>
                 </DependencyManifest>
                 """);
@@ -149,7 +149,7 @@ internal static class Program
             GitDependencyResolution resolution = manifest.Resolve("Engine/Binaries/Test.bin")
                 ?? throw new Exception("legacy resolution missing");
             Assert.Equal(
-                "https://cdn.unrealengine.com/dependencies/UnrealEngine-42/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "https://cdn.unrealengine.com/dependencies/2369409-8e3ef78261c144639cff509a0b6b4805/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 resolution.PackUri.ToString());
         }
         finally
@@ -1104,6 +1104,8 @@ internal static class Program
                 new("Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/sdk/6.0.302/MSBuild.dll", "f", false),
             ["Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/shared/Microsoft.NETCore.App/6.0.8/System.Private.CoreLib.dll"] =
                 new("Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/shared/Microsoft.NETCore.App/6.0.8/System.Private.CoreLib.dll", "g", false),
+            ["Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/host/fxr/6.0.8/libhostfxr.so"] =
+                new("Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/host/fxr/6.0.8/libhostfxr.so", "h", false),
         };
         var manifest = new GitDependenciesManifest(
             "https://cdn.example.test/dependencies",
@@ -1133,6 +1135,8 @@ internal static class Program
                 new("Engine/Binaries/ThirdParty/Mono/Linux/bin/xbuild", "b", true),
             ["Engine/Binaries/DotNET/UnrealBuildTool.exe"] =
                 new("Engine/Binaries/DotNET/UnrealBuildTool.exe", "c", false),
+            ["Engine/Extras/Managed/Microsoft.VisualStudio.Setup.Configuration.Interop.dll"] =
+                new("Engine/Extras/Managed/Microsoft.VisualStudio.Setup.Configuration.Interop.dll", "interop", false),
         };
         var manifest = new GitDependenciesManifest(
             "https://cdn.example.test/dependencies",
@@ -1148,9 +1152,11 @@ internal static class Program
 
         VirtualEngineSeed seed = VirtualEngineEmbeddedSeed.Create(manifest, "linux-x64");
         Assert.True(seed.GitDependencyPaths.Contains("Engine/Binaries/DotNET/UnrealBuildTool.exe", StringComparer.Ordinal));
+        Assert.True(seed.GitDependencyPaths.Contains("Engine/Extras/Managed/Microsoft.VisualStudio.Setup.Configuration.Interop.dll", StringComparer.Ordinal));
         Assert.True(seed.GitPathspecs.Contains("Engine/Source/Runtime/Core", StringComparer.Ordinal));
         Assert.True(seed.GitPathspecs.Contains("Engine/Source/Programs/DotNETCommon", StringComparer.Ordinal));
         Assert.True(seed.GitPathspecs.Contains("Engine/Source/Programs/EnvVarsToXML", StringComparer.Ordinal));
+        Assert.True(seed.GitPathspecs.Contains("Engine/Source/Programs/Shared", StringComparer.Ordinal));
 
         var ubtOnlyManifest = new GitDependenciesManifest(
             "https://cdn.example.test/dependencies",
@@ -1454,7 +1460,7 @@ internal static class Program
             string rules = await File.ReadAllTextAsync(Path.Combine(host.Root, "Source", "UECIHost", "UECIHost.Build.cs"));
             Assert.True(target.Contains("SetupBinaries", StringComparison.Ordinal));
             Assert.True(target.Contains("OutExtraModuleNames.Add(\"Fixture\")", StringComparison.Ordinal));
-            Assert.False(target.Contains("ExtraModuleNames.Add", StringComparison.Ordinal));
+            Assert.False(target.Contains("        ExtraModuleNames.Add(", StringComparison.Ordinal));
             Assert.False(target.Contains("TargetLinkType.Modular", StringComparison.Ordinal));
             Assert.True(target.Contains("ShouldCompileMonolithic", StringComparison.Ordinal));
             Assert.True(target.Contains("return false;", StringComparison.Ordinal));

@@ -80,12 +80,25 @@ public static class VirtualEngineEmbeddedSeed
         // alpha.6's UHT/rules pass needed ISPC before the native C++ action graph was executed.
         AddIfPresent(manifest, gitDependencyPaths, "Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc");
 
+        // Some release manifests place managed build support outside the runtime/SDK bundle that
+        // selected the host. Pull these tiny compatibility files by basename wherever Epic stored
+        // them so old Mono projects and newer SDK-style projects can resolve their imports/references.
+        AddFilesNamed(manifest, gitDependencyPaths,
+            "UnrealEngine.csproj.props",
+            "UnrealEngine.csproj.targets",
+            "Directory.Build.props",
+            "Directory.Build.targets",
+            "Microsoft.VisualStudio.Setup.Configuration.Interop.dll");
+
         bool legacySeed = hasLegacyUbtPayload || sdk is null;
         IEnumerable<string> commonGitPaths = GitPaths.Value.Concat([
             // SDK-style UBT projects in UE5.5/5.6 import this shared props file even when the
             // exact alpha.6 seed predates that path. Root Directory.Build files are similarly
             // cheap compatibility inputs for branches whose managed layout moved slightly.
-            "Engine/Source/Programs/Shared/UnrealEngine.csproj.props",
+            // Keep the complete managed Shared tree visible. UBT project references change across
+            // UE5 releases, and indexing this bounded subtree is cheaper and safer than chasing each
+            // new .props/.targets/project source through a dynamic full-Engine fallback.
+            "Engine/Source/Programs/Shared",
             "Directory.Build.props",
             "Directory.Build.targets",
         ]);
@@ -118,6 +131,21 @@ public static class VirtualEngineEmbeddedSeed
         if (manifest.Files.ContainsKey(path))
         {
             paths.Add(path);
+        }
+    }
+
+    private static void AddFilesNamed(
+        GitDependenciesManifest manifest,
+        HashSet<string> paths,
+        params string[] fileNames)
+    {
+        var names = new HashSet<string>(fileNames, StringComparer.OrdinalIgnoreCase);
+        foreach (string path in manifest.Files.Keys)
+        {
+            if (names.Contains(Path.GetFileName(path)))
+            {
+                paths.Add(path);
+            }
         }
     }
 

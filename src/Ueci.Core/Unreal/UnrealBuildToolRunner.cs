@@ -94,6 +94,7 @@ public sealed class UnrealBuildToolRunner
                 environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
                 environment["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"] = "1";
                 environment["DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE"] = "1";
+                environment["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "1";
                 await UnrealBuildToolConfiguration.WriteHermeticLocalExecutorAsync(
                     isolatedUbtConfigDirectory,
                     cancellationToken,

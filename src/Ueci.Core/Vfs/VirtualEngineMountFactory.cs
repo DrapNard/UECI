@@ -193,12 +193,28 @@ public static class VirtualEngineMountFactory
                 .Concat(safetySeed.GitDependencyPaths)
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
-            gitIndex = EpicGitTreeIndex.FromEntries(commit, persisted.GitEntries);
+
+            // Learned profiles are intentionally minimal, but the embedded compatibility seed can
+            // grow when a later release teaches UECI about a newly required managed bootstrap path.
+            // Merge the current seed's Git tree metadata into old profiles without fetching blobs or
+            // rebuilding the global Engine index. This makes profile upgrades forward-compatible.
+            EpicGitTreeIndex safetyGitIndex = await EpicGitTreeIndex.LoadPathsAsync(
+                repositoryDirectory: metadataRoot,
+                paths: safetySeed.GitPathspecs,
+                includeBlobSizes: false,
+                tokenEnvironmentVariable: options.TokenEnvironmentVariable,
+                progress: options.Progress,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            // Put persisted entries last so their learned exact sizes win over the metadata-only
+            // safety index when the same path exists in both sets.
+            gitIndex = EpicGitTreeIndex.FromEntries(
+                commit,
+                safetyGitIndex.Entries.Values.Concat(persisted.GitEntries));
             visibleManifest = VirtualEngineManifestSubset.Create(fullManifest, gitDependencyPaths);
             profileSource = VirtualEngineProfileSource.Persisted;
             options.Progress?.Invoke(
                 $"[vfs/profile] Fast path active for {commit[..Math.Min(12, commit.Length)]}: " +
-                $"skipping global Git tree/size indexing.");
+                $"merged {safetyGitIndex.Entries.Count:N0} safety Git entries without global indexing.");
         }
         else if (options.EnableEngineProfiles && !options.ForceDynamicProfile)
         {

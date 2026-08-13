@@ -10,7 +10,7 @@ namespace Ueci.Cli;
 
 internal static class Program
 {
-    private const string CliVersion = "0.5.0-alpha.19";
+    private const string CliVersion = "0.5.0-alpha.20";
 
     public static async Task<int> Main(string[] args)
     {

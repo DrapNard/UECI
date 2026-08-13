@@ -1,11 +1,25 @@
 # Changelog
 
+## [0.5.0-alpha.20] - 2026-08-13
+
+### Fixed
+
+- Recognizes the strict numeric/GUID pack-directory convention used by UE4.6-4.10 `Commit.gitdeps.xml` files that omit `BaseUrl`, while keeping arbitrary custom relative manifests fail-closed.
+- Makes embedded compatibility seeds forward-compatible with persisted profiles by merging current safety Git metadata into learned profiles without a global Engine index or blob download.
+- Expands the managed bootstrap safety set to the complete `Engine/Source/Programs/Shared` subtree and discovers tiny release-specific build inputs such as `UnrealEngine.csproj.props` and `Microsoft.VisualStudio.Setup.Configuration.Interop.dll` wherever GitDependencies stores them.
+- Runs bundled .NET hosts with invariant globalization so UE5.0's historical .NET Core 3.1 SDK can bootstrap on minimal modern CI runners without a host ICU package.
+- Fixes the two remaining alpha.19 preflight false negatives: the historical bundled-.NET fixture now contains a coherent host/runtime root, and the classic UE4 target assertion no longer mistakes `OutExtraModuleNames` for the modern property.
+
+### Changed
+
+- CLI version advanced to `0.5.0-alpha.20`.
+
 ## [0.5.0-alpha.19] - 2026-08-13
 
 ### Fixed
 
 - Hardens the first complete 32-release Linux matrix run. Exact identifier detection no longer mistakes classic UE4 `OutExtraModuleNames` for modern `ExtraModuleNames`, fixing both alpha.18 compatibility preflight failures and classic synthetic-host emission.
-- Supports historical GitDependencies layouts without a root `BaseUrl`, and lets commits that predate `Engine/Build/Commit.gitdeps.xml` continue with a Git-only virtual Engine view. UE4.5 matrix jobs can overlay Epic's historical Required/Optional release ZIP assets before mounting.
+- Adds initial historical GitDependencies handling for manifests without a root `BaseUrl`, and lets commits that predate `Engine/Build/Commit.gitdeps.xml` continue with a Git-only virtual Engine view. UE4.5 matrix jobs can overlay Epic's historical Required/Optional release ZIP assets before mounting. Alpha.20 extends this to the numeric/GUID pack layout observed in UE4.6-4.10.
 - Broadens bundled .NET SDK/runtime discovery to historical Linux directory layouts instead of assuming the UE5.8 `<bundle>/<rid>` shape.
 - Adds the legacy `Engine/Source/Programs/DotNETCommon` and early `EnvVarsToXML` sibling trees, the required `Engine/Binaries/DotNET` managed payload, and shared MSBuild props such as `UnrealEngine.csproj.props` to cold bootstrap seeds.
 - Accepts comments/trailing commas in Engine-generated JSON metadata/runtimeconfig files and hardens FUSE unmount recovery after disk-full or interrupted builds.

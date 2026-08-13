@@ -185,11 +185,39 @@ public static class GitDependenciesManifestReader
         // client supplied the CDN root. Only recognize the historical Epic pack naming convention;
         // an explicit/custom manifest with some other relative layout must fail closed instead of
         // silently redirecting its packs to Epic's CDN.
-        if (all.All(pack => pack.RemotePath.Trim('/').StartsWith("UnrealEngine-", StringComparison.OrdinalIgnoreCase)))
+        if (all.All(pack => IsKnownEpicLegacyRemotePath(pack.RemotePath)))
         {
             return "https://cdn.unrealengine.com/dependencies";
         }
         return string.Empty;
+    }
+
+    private static bool IsKnownEpicLegacyRemotePath(string remotePath)
+    {
+        string value = remotePath.Trim('/');
+        if (value.StartsWith("UnrealEngine-", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // UE4.6-4.10 manifests use <decimal>-<32 hex digits> pack directories, for
+        // example 2369409-8e3ef78261c144639cff509a0b6b4805. Keep this deliberately
+        // strict so arbitrary/custom relative manifests still fail closed instead of being
+        // redirected to Epic's dependency CDN.
+        int dash = value.IndexOf('-');
+        if (dash <= 0 || dash != value.LastIndexOf('-') || value.Length - dash - 1 != 32)
+        {
+            return false;
+        }
+        for (int i = 0; i < dash; i++)
+        {
+            if (!char.IsAsciiDigit(value[i])) return false;
+        }
+        for (int i = dash + 1; i < value.Length; i++)
+        {
+            if (!char.IsAsciiHexDigit(value[i])) return false;
+        }
+        return true;
     }
 
     private static void ValidatePackLocations(string baseUrl, IEnumerable<GitDependencyPack> packs)
