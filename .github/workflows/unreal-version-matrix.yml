@@ -1,0 +1,160 @@
+name: Unreal release compatibility matrix
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 0"
+
+permissions:
+  contents: read
+
+jobs:
+  ueci-tests:
+    name: UECI unit / compatibility tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out UECI
+        uses: actions/checkout@v5
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+      - name: Run offline test suite
+        shell: bash
+        run: ./scripts/test.sh
+
+  build-plugin:
+    name: UE ${{ matrix.version }} / Linux
+    needs: ueci-tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        version:
+          - "4.5"
+          - "4.6"
+          - "4.7"
+          - "4.8"
+          - "4.9"
+          - "4.10"
+          - "4.11"
+          - "4.12"
+          - "4.13"
+          - "4.14"
+          - "4.15"
+          - "4.16"
+          - "4.17"
+          - "4.18"
+          - "4.19"
+          - "4.20"
+          - "4.21"
+          - "4.22"
+          - "4.23"
+          - "4.24"
+          - "4.25"
+          - "4.26"
+          - "4.27"
+          - "5.0"
+          - "5.1"
+          - "5.2"
+          - "5.3"
+          - "5.4"
+          - "5.5"
+          - "5.6"
+          - "5.7"
+          - "5.8"
+
+    steps:
+      - name: Check Epic credential
+        shell: bash
+        env:
+          EPIC_TOKEN: ${{ secrets.UECI_EPIC_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$EPIC_TOKEN" ]]; then
+            echo "Repository secret UECI_EPIC_GITHUB_TOKEN is required for the private EpicGames/UnrealEngine matrix." >&2
+            exit 2
+          fi
+
+      - name: Check out UECI
+        uses: actions/checkout@v5
+
+      - name: Install Linux build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fuse3 libfuse3-dev pkg-config build-essential mono-devel pigz clang
+          if [[ -e /dev/fuse ]]; then sudo chmod a+rw /dev/fuse; fi
+
+      - name: Resolve historical release GitDependencies manifest
+        id: release_manifest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.UECI_EPIC_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ref_file="$RUNNER_TEMP/Commit-${{ matrix.version }}.release-ref"
+          manifest="$(./scripts/resolve-release-gitdeps.sh '${{ matrix.version }}' "$RUNNER_TEMP/Commit-${{ matrix.version }}.gitdeps.xml" "$ref_file")"
+          engine_ref='${{ matrix.version }}'
+          if [[ -n "$manifest" && -s "$ref_file" ]]; then
+            engine_ref="$(cat "$ref_file")"
+            echo "Using Epic release GitDependencies asset: $manifest (release tag: $engine_ref)"
+          else
+            echo "No release GitDependencies asset found; using the manifest tracked by the $engine_ref branch."
+          fi
+          printf 'path=%s\n' "$manifest" >> "$GITHUB_OUTPUT"
+          printf 'engine-ref=%s\n' "$engine_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare version-compatible minimal plugin
+        id: fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          plugin="$(./scripts/prepare-compat-fixture.sh '${{ matrix.version }}' "$RUNNER_TEMP/ueci-plugin-${{ matrix.version }}")"
+          printf 'plugin=%s\n' "$plugin" >> "$GITHUB_OUTPUT"
+
+      - name: Build plugin against Epic UE ${{ matrix.version }}
+        uses: ./
+        with:
+          epic-token: ${{ secrets.UECI_EPIC_GITHUB_TOKEN }}
+          engine-ref: ${{ steps.release_manifest.outputs.engine-ref }}
+          engine-dir: ${{ runner.temp }}/ueci-engine-${{ matrix.version }}
+          cache-dir: ${{ runner.temp }}/ueci-cache-${{ matrix.version }}
+          cache-scope: ue-${{ matrix.version }}
+          manifest-path: ${{ steps.release_manifest.outputs.path }}
+          plugin-path: ${{ steps.fixture.outputs.plugin }}
+          package-dir: ${{ runner.temp }}/ueci-package-${{ matrix.version }}
+          platform: Linux
+          configuration: Development
+          backend: fuse
+          cache-enabled: "true"
+          cache-compressed-packs: "false"
+
+      - name: Verify native package
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="$RUNNER_TEMP/ueci-package-${{ matrix.version }}/UECIMinimal"
+          test -f "$package/UECIMinimal.uplugin"
+          binary="$(find "$package/Binaries" -type f -name '*.so' -print -quit 2>/dev/null || true)"
+          if [[ -z "$binary" ]]; then
+            echo "UE ${{ matrix.version }} produced no native Linux plugin binary." >&2
+            find "$package" -maxdepth 5 -type f -print >&2 || true
+            exit 1
+          fi
+          echo "UE ${{ matrix.version }} native smoke OK: $binary"
+
+      - name: Upload compatibility diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ueci-ue-${{ matrix.version }}-linux
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/ueci-package-${{ matrix.version }}/ueci-build.json
+            ${{ runner.temp }}/ueci-engine-${{ matrix.version }}/.ueci/mounted-build/plugin-work/**/Logs/**

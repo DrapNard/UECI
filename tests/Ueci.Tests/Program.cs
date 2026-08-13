@@ -40,21 +40,27 @@ internal static class Program
         ("runtimeconfig parser reads shared framework", RuntimeConfigParsesAsync),
         ("Epic bundled dotnet resolver selects host runtime", BundledDotNetResolverAsync),
         ("Epic bundled dotnet SDK resolver selects latest SDK", BundledDotNetSdkResolverAsync),
+        ("Epic bundled Mono resolver selects legacy host runtime", BundledMonoResolverAsync),
+        ("Engine compatibility feature-detects UE4 legacy and UE5 modern rules", EngineCompatibilityDetectsAsync),
         ("Epic bundled UBA resolver selects managed + native host payload", BundledUbaResolverAsync),
         ("UBT locator requires compiled bootstrap files", UnrealBuildToolLocatorAsync),
+        ("UBT locator discovers legacy UnrealBuildTool.exe", UnrealBuildToolLocatorLegacyAsync),
         ("UBT locator discovers project bin output", UnrealBuildToolLocatorFindsProjectBinAsync),
         ("plugin descriptor classifies runtime and editor modules", PluginDescriptorParsesAsync),
         ("plugin host project is ephemeral and strips stale outputs", PluginHostProjectPreparesAsync),
+        ("plugin host emits classic UE4 rules when required", PluginHostProjectLegacyRulesAsync),
         ("plugin host project supports an external mounted-build workspace", PluginHostProjectExternalWorkspaceAsync),
         ("plugin diagnostic parser derives lazy requirements", PluginDiagnosticsParseAsync),
         ("module dependency hints parse standard Build.cs lists", ModuleDependencyHintsParseAsync),
         ("tracked Epic index locates module rules and suffixes", EpicTrackedIndexFindsAsync),
         ("explicit module requirement force-refreshes an already-sparse Build.cs", ExplicitModuleRefreshAsync),
         ("plugin UBT invocation targets only requested modules", PluginBuildInvocationAsync),
+        ("plugin UBT invocation filters unsupported flags for legacy UE4", PluginBuildInvocationLegacyAsync),
         ("plugin failure excerpt preserves early actionable diagnostics", PluginFailureExcerptAsync),
         ("plugin product collector harvests synthetic target binaries", PluginProductCollectorAsync),
         ("plugin packager keeps binaries and drops Intermediate", PluginPackagerAsync),
         ("Linux SDK descriptor resolves Epic native toolchain", LinuxToolchainDescriptorAsync),
+        ("Linux SDK descriptor discovers legacy setup-script toolchain", LinuxToolchainLegacyDescriptorAsync),
         ("Linux native toolchain installer is offline-testable and cached", LinuxToolchainInstallerAsync),
         ("Linux toolchain projection is restored after sparse expansion", LinuxToolchainSparseProtectionAsync),
     ];
@@ -985,6 +991,99 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static Task BundledMonoResolverAsync()
+    {
+        var files = new Dictionary<string, GitDependencyFile>(StringComparer.Ordinal)
+        {
+            ["Engine/Binaries/ThirdParty/Mono/Linux/bin/mono"] =
+                new("Engine/Binaries/ThirdParty/Mono/Linux/bin/mono", "a", true),
+            ["Engine/Binaries/ThirdParty/Mono/Linux/bin/xbuild"] =
+                new("Engine/Binaries/ThirdParty/Mono/Linux/bin/xbuild", "b", true),
+            ["Engine/Binaries/DotNET/UnrealBuildTool.exe"] =
+                new("Engine/Binaries/DotNET/UnrealBuildTool.exe", "c", false),
+        };
+        var manifest = new GitDependenciesManifest(
+            "https://cdn.example.test/dependencies",
+            files,
+            new Dictionary<string, GitDependencyBlob>(),
+            new Dictionary<string, GitDependencyPack>());
+
+        EpicBundledMonoPlan plan = EpicBundledMonoResolver.TryResolve(manifest, "linux-x64")
+            ?? throw new Exception("Mono plan missing");
+        Assert.Equal("Engine/Binaries/ThirdParty/Mono/Linux/", plan.BundlePrefix);
+        Assert.Equal("Engine/Binaries/ThirdParty/Mono/Linux/bin/mono", plan.MonoPath);
+        Assert.Equal("Engine/Binaries/ThirdParty/Mono/Linux/bin/xbuild", plan.BuildToolPath);
+
+        VirtualEngineSeed seed = VirtualEngineEmbeddedSeed.Create(manifest, "linux-x64");
+        Assert.True(seed.GitDependencyPaths.Contains("Engine/Binaries/DotNET/UnrealBuildTool.exe", StringComparer.Ordinal));
+        Assert.True(seed.GitPathspecs.Contains("Engine/Source/Runtime/Core", StringComparer.Ordinal));
+
+        var ubtOnlyManifest = new GitDependenciesManifest(
+            "https://cdn.example.test/dependencies",
+            new Dictionary<string, GitDependencyFile>(StringComparer.Ordinal)
+            {
+                ["Engine/Binaries/DotNET/UnrealBuildTool.exe"] =
+                    new("Engine/Binaries/DotNET/UnrealBuildTool.exe", "d", false),
+                ["Engine/Binaries/DotNET/UnrealBuildTool.exe.config"] =
+                    new("Engine/Binaries/DotNET/UnrealBuildTool.exe.config", "e", false),
+            },
+            new Dictionary<string, GitDependencyBlob>(),
+            new Dictionary<string, GitDependencyPack>());
+        VirtualEngineSeed ubtOnlySeed = VirtualEngineEmbeddedSeed.Create(ubtOnlyManifest, "linux-x64");
+        Assert.True(ubtOnlySeed.GitDependencyPaths.Contains(
+            "Engine/Binaries/DotNET/UnrealBuildTool.exe.config", StringComparer.Ordinal));
+        return Task.CompletedTask;
+    }
+
+    private static async Task EngineCompatibilityDetectsAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string legacy = Path.Combine(root, "legacy");
+            await WriteCompatibilityFixtureAsync(legacy, 4, 14, modern: false);
+            UnrealEngineCompatibility ue414 = await UnrealEngineCompatibility.DetectAsync(legacy, "4.14");
+            Assert.Equal(4, ue414.Version.Major);
+            Assert.Equal(14, ue414.Version.Minor);
+            Assert.Equal(UnrealBuildToolProjectStyle.LegacyMsBuild, ue414.ProjectStyle);
+            Assert.False(ue414.SupportsReadOnlyTargetRules);
+            Assert.False(ue414.SupportsExtraModuleNames);
+            Assert.False(ue414.SupportsTargetLinkType);
+            Assert.True(ue414.SupportsShouldCompileMonolithic);
+
+            string headerOnly = Path.Combine(root, "header-only");
+            await WriteCompatibilityFixtureAsync(headerOnly, 4, 5, modern: false);
+            File.Delete(Path.Combine(headerOnly, "Engine", "Build", "Build.version"));
+            string legacyVersionHeader = Path.Combine(
+                headerOnly, "Engine", "Source", "Runtime", "Launch", "Resources", "Version.h");
+            Directory.CreateDirectory(Path.GetDirectoryName(legacyVersionHeader)!);
+            await File.WriteAllTextAsync(
+                legacyVersionHeader,
+                "#define ENGINE_MAJOR_VERSION 4\n#define ENGINE_MINOR_VERSION 5\n#define ENGINE_PATCH_VERSION 1\n");
+            UnrealEngineCompatibility ue45BySha = await UnrealEngineCompatibility.DetectAsync(
+                headerOnly,
+                "0123456789abcdef0123456789abcdef01234567");
+            Assert.Equal(4, ue45BySha.Version.Major);
+            Assert.Equal(5, ue45BySha.Version.Minor);
+            Assert.Equal(1, ue45BySha.Version.Patch);
+
+            string modern = Path.Combine(root, "modern");
+            await WriteCompatibilityFixtureAsync(modern, 5, 8, modern: true);
+            UnrealEngineCompatibility ue58 = await UnrealEngineCompatibility.DetectAsync(modern, "5.8");
+            Assert.Equal(UnrealBuildToolProjectStyle.ModernDotNet, ue58.ProjectStyle);
+            Assert.True(ue58.SupportsReadOnlyTargetRules);
+            Assert.True(ue58.SupportsExtraModuleNames);
+            Assert.True(ue58.SupportsTargetLinkType);
+            Assert.True(ue58.SupportsUniqueBuildEnvironment);
+            Assert.True(ue58.SupportsDisableDumpSymsConfig);
+            Assert.True(ue58.SupportsNoDumpSymsFlag);
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
     private static Task BundledUbaResolverAsync()
     {
         const string libraryProps = EpicBundledUbaResolver.LibraryPropsPath;
@@ -1062,6 +1161,27 @@ internal static class Program
         }
     }
 
+    private static async Task UnrealBuildToolLocatorLegacyAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string dotnet = Path.Combine(root, "Engine", "Binaries", "DotNET");
+            Directory.CreateDirectory(dotnet);
+            string exe = Path.Combine(dotnet, "UnrealBuildTool.exe");
+            await File.WriteAllBytesAsync(exe, [1, 2, 3]);
+
+            UnrealBuildToolPaths paths = UnrealBuildToolLocator.Locate(root);
+            Assert.Equal(exe, paths.AssemblyPath);
+            Assert.True(paths.RuntimeConfigPath is null);
+            Assert.Equal(UnrealBuildToolRuntimeKind.Mono, paths.RuntimeKind);
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
     private static async Task PluginDescriptorParsesAsync()
     {
         string root = CreateTempDirectory();
@@ -1116,7 +1236,7 @@ internal static class Program
 
             UnrealPluginDescriptor plugin = await UnrealPluginDescriptor.ReadAsync(descriptor);
             string engine = Path.Combine(root, "EngineRoot");
-            Directory.CreateDirectory(engine);
+            await WriteCompatibilityFixtureAsync(engine, 5, 8, modern: true);
             UnrealPluginHostLayout host = await UnrealPluginHostProject.PrepareAsync(engine, plugin);
 
             Assert.True(File.Exists(host.ProjectPath));
@@ -1171,6 +1291,51 @@ internal static class Program
         }
     }
 
+    private static async Task PluginHostProjectLegacyRulesAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string source = Path.Combine(root, "PluginSource");
+            Directory.CreateDirectory(Path.Combine(source, "Source", "Fixture"));
+            string descriptor = Path.Combine(source, "Fixture.uplugin");
+            await File.WriteAllTextAsync(
+                descriptor,
+                "{ \"FileVersion\": 3, \"Modules\": [{ \"Name\": \"Fixture\", \"Type\": \"Runtime\" }] }");
+            await File.WriteAllTextAsync(
+                Path.Combine(source, "Source", "Fixture", "Fixture.Build.cs"),
+                "using UnrealBuildTool; public class Fixture : ModuleRules { public Fixture(TargetInfo Target) { PrivateDependencyModuleNames.Add(\"Core\"); } }");
+
+            string engine = Path.Combine(root, "UE414");
+            await WriteCompatibilityFixtureAsync(engine, 4, 14, modern: false);
+            UnrealEngineCompatibility compatibility = await UnrealEngineCompatibility.DetectAsync(engine, "4.14");
+            UnrealPluginDescriptor plugin = await UnrealPluginDescriptor.ReadAsync(descriptor);
+            UnrealPluginHostLayout host = await UnrealPluginHostProject.PrepareAsync(
+                engine,
+                plugin,
+                workspaceBaseDirectory: null,
+                compatibility: compatibility);
+
+            string target = await File.ReadAllTextAsync(Path.Combine(host.Root, "Source", "UECIHost.Target.cs"));
+            string rules = await File.ReadAllTextAsync(Path.Combine(host.Root, "Source", "UECIHost", "UECIHost.Build.cs"));
+            Assert.True(target.Contains("SetupBinaries", StringComparison.Ordinal));
+            Assert.True(target.Contains("OutExtraModuleNames.Add(\"Fixture\")", StringComparison.Ordinal));
+            Assert.False(target.Contains("ExtraModuleNames.Add", StringComparison.Ordinal));
+            Assert.False(target.Contains("TargetLinkType.Modular", StringComparison.Ordinal));
+            Assert.True(target.Contains("ShouldCompileMonolithic", StringComparison.Ordinal));
+            Assert.True(target.Contains("return false;", StringComparison.Ordinal));
+            Assert.False(target.Contains(": base(Target)", StringComparison.Ordinal));
+            Assert.False(target.Contains("BuildSettingsVersion", StringComparison.Ordinal));
+            Assert.True(rules.Contains("UECIHost(TargetInfo Target)", StringComparison.Ordinal));
+            Assert.False(rules.Contains("ReadOnlyTargetRules", StringComparison.Ordinal));
+            Assert.False(File.Exists(Path.Combine(host.Root, "Saved", "UnrealBuildTool", "BuildConfiguration.xml")));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
     private static async Task PluginHostProjectExternalWorkspaceAsync()
     {
         string root = CreateTempDirectory();
@@ -1187,7 +1352,7 @@ internal static class Program
             UnrealPluginDescriptor plugin = await UnrealPluginDescriptor.ReadAsync(descriptor);
             string engine = Path.Combine(root, "VirtualEngine");
             string external = Path.Combine(root, "MountedState", "plugin-work");
-            Directory.CreateDirectory(engine);
+            await WriteCompatibilityFixtureAsync(engine, 5, 8, modern: true);
             UnrealPluginHostLayout host = await UnrealPluginHostProject.PrepareAsync(
                 engine,
                 plugin,
@@ -1381,6 +1546,41 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static async Task PluginBuildInvocationLegacyAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            await WriteCompatibilityFixtureAsync(root, 4, 5, modern: false);
+            UnrealEngineCompatibility compatibility = await UnrealEngineCompatibility.DetectAsync(root, "4.5");
+            var host = new UnrealPluginHostLayout(
+                "/tmp/host",
+                "/tmp/host/UECIHost.uproject",
+                "/tmp/host/Plugins/Fixture",
+                "/tmp/host/Plugins/Fixture/Fixture.uplugin",
+                "UECIHost",
+                "UECIHostEditor");
+            IReadOnlyList<string> arguments = UnrealPluginBuildInvocation.CreateArguments(
+                host,
+                "UECIHost",
+                "Linux",
+                "Development",
+                ["Fixture"],
+                "linux-x64",
+                compatibility);
+            Assert.True(arguments.Contains("-Module=Fixture", StringComparer.Ordinal));
+            Assert.True(arguments.Contains("-Progress", StringComparer.Ordinal));
+            Assert.False(arguments.Contains("-NoDumpSyms", StringComparer.Ordinal));
+            Assert.False(arguments.Contains("-NoUBTMakefiles", StringComparer.Ordinal));
+            Assert.False(arguments.Contains("-NoHotReloadFromIDE", StringComparer.Ordinal));
+            Assert.False(arguments.Any(arg => arg.StartsWith("-Architecture=", StringComparison.Ordinal)));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
     private static Task PluginFailureExcerptAsync()
     {
         var lines = new List<string>();
@@ -1526,6 +1726,38 @@ internal static class Program
             Assert.Equal(
                 "https://cdn.unrealengine.com/Toolchain_Linux/native-linux-v26_clang-20.1.8-rockylinux8.tar.gz",
                 descriptor.DownloadUri.ToString());
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task LinuxToolchainLegacyDescriptorAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string setup = Path.Combine(root, "Engine", "Build", "BatchFiles", "Linux", "SetupToolchain.sh");
+            Directory.CreateDirectory(Path.GetDirectoryName(setup)!);
+            await File.WriteAllTextAsync(
+                setup,
+                "#!/bin/sh\nTOOLCHAIN=v17_clang-10.0.1-centos7\necho $TOOLCHAIN\n");
+
+            UnrealLinuxNativeToolchainDescriptor descriptor = await UnrealLinuxNativeToolchainDescriptor.ReadAsync(root);
+            Assert.Equal("v17_clang-10.0.1-centos7", descriptor.Version);
+            Assert.Equal(
+                "https://cdn.unrealengine.com/Toolchain_Linux/native-linux-v17_clang-10.0.1-centos7.tar.gz",
+                descriptor.DownloadUri.ToString());
+
+            string mapped = Path.Combine(root, "mapped");
+            string build = Path.Combine(mapped, "Engine", "Build");
+            Directory.CreateDirectory(build);
+            await File.WriteAllTextAsync(
+                Path.Combine(build, "Build.version"),
+                "{ \"MajorVersion\": 4, \"MinorVersion\": 27, \"PatchVersion\": 2 }");
+            UnrealLinuxNativeToolchainDescriptor mappedDescriptor = await UnrealLinuxNativeToolchainDescriptor.ReadAsync(mapped);
+            Assert.Equal("v19_clang-11.0.1-centos7", mappedDescriptor.Version);
         }
         finally
         {
@@ -1687,6 +1919,64 @@ internal static class Program
             Environment.SetEnvironmentVariable(tokenVariable, previousToken);
             DeleteDirectory(root);
             DeleteDirectory(cacheRoot);
+        }
+    }
+
+    private static async Task WriteCompatibilityFixtureAsync(
+        string engineRoot,
+        int major,
+        int minor,
+        bool modern)
+    {
+        string build = Path.Combine(engineRoot, "Engine", "Build");
+        string ubt = Path.Combine(engineRoot, "Engine", "Source", "Programs", "UnrealBuildTool");
+        string configuration = Path.Combine(ubt, "Configuration");
+        string modes = Path.Combine(ubt, "Modes");
+        Directory.CreateDirectory(build);
+        Directory.CreateDirectory(configuration);
+        Directory.CreateDirectory(modes);
+        await File.WriteAllTextAsync(
+            Path.Combine(build, "Build.version"),
+            $"{{ \"MajorVersion\": {major}, \"MinorVersion\": {minor}, \"PatchVersion\": 0, \"BranchName\": \"UE{major}.{minor}\" }}");
+
+        if (modern)
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(ubt, "UnrealBuildTool.csproj"),
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>");
+            await File.WriteAllTextAsync(
+                Path.Combine(configuration, "ModuleRules.cs"),
+                "public class ReadOnlyTargetRules {} public class ModuleRules { public ModuleRules(ReadOnlyTargetRules Target) {} }");
+            await File.WriteAllTextAsync(
+                Path.Combine(configuration, "TargetRules.cs"),
+                "public enum TargetBuildEnvironment { Unique } public enum TargetLinkType { Modular } public enum EngineIncludeOrderVersion { Latest } " +
+                "public class TargetRules { public object ExtraModuleNames; public TargetLinkType LinkType; public string LaunchModuleName; " +
+                "public TargetBuildEnvironment BuildEnvironment; public object DefaultBuildSettings; public EngineIncludeOrderVersion IncludeOrderVersion; " +
+                "public bool bCompileAgainstEngine; public bool bCompileAgainstCoreUObject; public bool bCompileAgainstApplicationCore; public bool bBuildDeveloperTools; " +
+                "public bool bBuildTargetDeveloperTools; public bool bForceBuildTargetPlatforms; public bool bForceBuildShaderFormats; public bool bNeedsExtraShaderFormatsOverride; " +
+                "public bool bCompileWithPluginSupport; public bool bIncludePluginsForTargetPlatforms; public bool bAllowEnginePluginsEnabledByDefault; public object AdditionalPlugins; " +
+                "public bool bUsesSlate; public bool bCompileICU; public bool bEnableTrace; public bool bAllowRuntimeSymbolFiles; public object GlobalDefinitions; }");
+            await File.WriteAllTextAsync(
+                Path.Combine(configuration, "BuildConfiguration.cs"),
+                "public class BuildConfiguration { public bool bAllowUBAExecutor; public bool bAllowUBALocalExecutor; public bool bAllowXGE; public bool bAllowFASTBuild; public bool bAllowSNDBS; public bool bDisableDumpSyms; }");
+            await File.WriteAllTextAsync(
+                Path.Combine(modes, "BuildMode.cs"),
+                "// NoDumpSyms NoUBTMakefiles NoHotReloadFromIDE");
+        }
+        else
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(ubt, "UnrealBuildTool.csproj"),
+                "<Project ToolsVersion=\"14.0\" xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\"></Project>");
+            await File.WriteAllTextAsync(
+                Path.Combine(configuration, "ModuleRules.cs"),
+                "public class TargetInfo {} public class ModuleRules { public ModuleRules() {} }");
+            await File.WriteAllTextAsync(
+                Path.Combine(configuration, "TargetRules.cs"),
+                "public class TargetInfo {} public enum UnrealTargetPlatform {} public enum UnrealTargetConfiguration {} public class UEBuildBinaryConfiguration {} public class TargetRules { public virtual bool ShouldCompileMonolithic(UnrealTargetPlatform InPlatform, UnrealTargetConfiguration InConfiguration) { return true; } public virtual void SetupBinaries(TargetInfo Target, ref System.Collections.Generic.List<UEBuildBinaryConfiguration> OutBuildBinaryConfigurations, ref System.Collections.Generic.List<string> OutExtraModuleNames) {} }");
+            await File.WriteAllTextAsync(
+                Path.Combine(configuration, "BuildConfiguration.cs"),
+                "public class BuildConfiguration { }");
         }
     }
 

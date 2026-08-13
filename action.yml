@@ -20,10 +20,18 @@ inputs:
     description: Stable UECI content/toolchain/UBT cache directory.
     required: false
     default: .ueci/cache
+  manifest-path:
+    description: Optional Commit.gitdeps.xml override, for example an Epic release asset used by historical compatibility jobs.
+    required: false
+    default: ""
   cache-enabled:
     description: Restore/save the cold-start cache on trusted runs using the exact Epic commit. Fork PRs and pull_request_target are always uncached.
     required: false
     default: "true"
+  cache-scope:
+    description: Optional compatibility/cache namespace. Use one scope per Unreal release family in large matrices.
+    required: false
+    default: default
   cache-compressed-packs:
     description: Keep downloaded GitDependencies .gz packs after verified blobs are extracted.
     required: false
@@ -98,9 +106,9 @@ runs:
           ${{ inputs.cache-dir }}/blobs
           ${{ inputs.cache-dir }}/git-blobs
           ${{ inputs.cache-dir }}/toolchains/installed
-        key: ueci-cold-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.engine.outputs.commit }}
+        key: ueci-cold-v3-${{ inputs.cache-scope }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.engine.outputs.commit }}
         restore-keys: |
-          ueci-cold-v2-${{ runner.os }}-${{ runner.arch }}-
+          ueci-cold-v3-${{ inputs.cache-scope }}-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Bootstrap UnrealBuildTool
       if: ${{ inputs.plugin-path == '' }}
@@ -111,11 +119,15 @@ runs:
         UECI_ACTION_CACHE_DIR: ${{ inputs.cache-dir }}
         UECI_ACTION_ENGINE_REF: ${{ steps.engine.outputs.commit }}
         UECI_ACTION_CACHE_PACKS: ${{ inputs.cache-compressed-packs }}
+        UECI_ACTION_MANIFEST_PATH: ${{ inputs.manifest-path }}
       run: |
         set -euo pipefail
         extra=()
         if [[ "$UECI_ACTION_CACHE_PACKS" != "true" ]]; then
           extra+=(--no-pack-cache)
+        fi
+        if [[ -n "$UECI_ACTION_MANIFEST_PATH" ]]; then
+          extra+=(--manifest "$UECI_ACTION_MANIFEST_PATH")
         fi
         dotnet run --project "$GITHUB_ACTION_PATH/src/Ueci.Cli/Ueci.Cli.csproj" \
           -c Release --no-build -- \
@@ -139,6 +151,7 @@ runs:
         UECI_ACTION_PLATFORM: ${{ inputs.platform }}
         UECI_ACTION_CACHE_PACKS: ${{ inputs.cache-compressed-packs }}
         UECI_ACTION_BACKEND: ${{ inputs.backend }}
+        UECI_ACTION_MANIFEST_PATH: ${{ inputs.manifest-path }}
       run: |
         set -euo pipefail
         extra=(--backend "$UECI_ACTION_BACKEND")
@@ -147,6 +160,9 @@ runs:
         fi
         if [[ -n "$UECI_ACTION_PLATFORM" ]]; then
           extra+=(--platform "$UECI_ACTION_PLATFORM")
+        fi
+        if [[ -n "$UECI_ACTION_MANIFEST_PATH" ]]; then
+          extra+=(--manifest "$UECI_ACTION_MANIFEST_PATH")
         fi
         dotnet run --project "$GITHUB_ACTION_PATH/src/Ueci.Cli/Ueci.Cli.csproj" \
           -c Release --no-build -- \

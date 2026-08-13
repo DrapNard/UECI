@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.5.0-alpha.18] - 2026-08-13
+
+### Added
+
+- Adds an exact-commit Unreal compatibility detector that reads `Engine/Build/Build.version` or historical `ENGINE_*_VERSION` macros from `Launch/Resources/Version.h`, then feature-detects the UBT `TargetRules`, `ModuleRules`, configuration and command-line surface instead of assuming the UE 5.8 API.
+- Adds legacy UBT runtime support: UE4 MSBuild projects can use Epic-bundled Mono/xbuild payloads when present, system Mono as a fallback, and ready-to-run `Engine/Binaries/DotNET/UnrealBuildTool.exe` artifacts without recompiling old UBT projects unnecessarily.
+- Generates version-compatible synthetic host rules. UE4 generations before the `ReadOnlyTargetRules`/`ExtraModuleNames` transition use `TargetInfo`, classic `SetupBinaries`, the legacy `ShouldCompileMonolithic()` override when required, and no modern target/configuration members; modern branches retain the alpha.17 lean modular host.
+- Filters UBT command-line flags and `BuildConfiguration.xml` fields against capabilities present in the exact Engine source, keeping old parsers free of modern UE5-only switches.
+- Adds legacy Linux toolchain discovery from Engine setup scripts plus a conservative UE4.20–4.27 native-toolchain mapping fallback, and exposes `LINUX_ROOT`/`LINUX_MULTIARCH_ROOT` to legacy UBT when an Epic toolchain projection is available, while allowing older branches without an official native bundle to reach their own compiler validation on the runner.
+- Adds `scripts/prepare-compat-fixture.sh` and a 32-release GitHub Actions matrix covering stable Epic branches UE 4.5 through 4.27 and UE 5.0 through 5.8. Every matrix row performs a real FUSE plugin build and fails unless the package contains a native Linux `.so`.
+- Adds per-release `cache-scope` isolation to the composite Action so compatibility jobs never restore UBT/profile state from a different Engine release family.
+- Adds an optional `--manifest` / Action `manifest-path` override and a matrix helper that prefers an Epic release `Commit.gitdeps.xml` asset when one exists, pins the release tag that owns that asset, and otherwise falls back to the manifest tracked by the exact stable-branch commit.
+- Adds regression tests for legacy Mono resolution, compatibility feature detection, legacy UBT discovery, classic UE4 host generation, legacy invocation filtering, and setup-script toolchain discovery.
+
+### Changed
+
+- Broadens the mounted fast seed and generated managed-artifact cache to preserve the legacy UE4 UBT/Core/Projects/Launch working set while retaining the exact-commit learned-profile fallback.
+- CLI version advanced to `0.5.0-alpha.18`.
+- Linux release compatibility is now the active validation target; Windows and macOS mounted backends remain the next platform ports after the release matrix is green.
+
 ## [0.5.0-alpha.17] - 2026-08-13
 
 ### Performance

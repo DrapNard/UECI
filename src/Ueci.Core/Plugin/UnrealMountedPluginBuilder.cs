@@ -108,7 +108,7 @@ internal sealed class UnrealMountedPluginBuilder
             new VirtualEngineMountPreparationOptions(
                 MetadataRepositoryDirectory: metadataRoot,
                 StateDirectory: stateRoot,
-                ManifestPath: null,
+                ManifestPath: options.ManifestPath,
                 Repository: options.Repository,
                 GitRef: options.GitRef,
                 TokenEnvironmentVariable: options.TokenEnvironmentVariable,
@@ -151,10 +151,6 @@ internal sealed class UnrealMountedPluginBuilder
         Exception? failure = null;
         try
         {
-            EpicBundledDotNetSdkPlan sdkPlan = EpicBundledDotNetSdkResolver.Resolve(
-                context.Manifest,
-                options.RuntimeIdentifier);
-
             // A warm commit cache already contains UBT managed outputs, so there is no reason to
             // hydrate their managed source trees again. On a cold cache, batch-prefetching these
             // stable bootstrap roots avoids thousands of individual promisor round-trips. The
@@ -203,7 +199,6 @@ internal sealed class UnrealMountedPluginBuilder
             await using LinuxFuseMountSession mount = mountSession;
 
             string virtualEngineRoot = mount.MountPoint;
-            string dotNetRoot = GitDependencyPath.CombineUnderRoot(virtualEngineRoot, sdkPlan.BundlePrefix);
 
             // Content-only plugins never need UBT or a native toolchain. This matters on cold CI
             // runners: package them immediately instead of paying the managed/native bootstrap cost.
@@ -255,18 +250,33 @@ internal sealed class UnrealMountedPluginBuilder
                     ]);
             }
 
-            // These three cold-start jobs are independent once the FUSE view exists. Run them
-            // concurrently so toolchain download/extraction overlaps UBT compilation and host
-            // generation instead of serially extending every fresh runner.
+            UnrealEngineCompatibility compatibility = await timings.MeasureAsync(
+                "engine.compatibility",
+                () => UnrealEngineCompatibility.DetectAsync(
+                    virtualEngineRoot,
+                    options.GitRef,
+                    cancellationToken)).ConfigureAwait(false);
             options.Progress?.Invoke(
-                $"Cold bootstrap: preparing UBT, synthetic host, and Epic Linux toolchain concurrently...");
+                $"[compat] UE {compatibility.Version} / UBT {compatibility.ProjectStyle} detected for {context.Commit[..Math.Min(12, context.Commit.Length)]}.");
+
+            UnrealBuildToolRuntimePlan managedRuntime = UnrealBuildToolRuntimeResolver.Resolve(
+                context.Manifest,
+                virtualEngineRoot,
+                options.RuntimeIdentifier,
+                compatibility.ProjectStyle);
+            options.Progress?.Invoke($"[compat] Managed UBT runtime: {managedRuntime.Description}.");
+
+            // These three cold-start jobs are independent once the FUSE view exists. Run them
+            // concurrently so toolchain acquisition overlaps UBT compilation and host generation.
+            options.Progress?.Invoke(
+                "Cold bootstrap: preparing UBT, version-compatible synthetic host, and Epic Linux toolchain concurrently...");
 
             var compiler = new UnrealBuildToolCompiler();
             Task<UnrealBuildToolCompileResult> compileTask = timings.MeasureAsync(
                 "ubt.compile",
                 () => compiler.CompileAsync(
                     virtualEngineRoot,
-                    dotNetRoot,
+                    managedRuntime,
                     cancellationToken,
                     reuseExistingOutput: true,
                     progress: options.Progress));
@@ -277,55 +287,80 @@ internal sealed class UnrealMountedPluginBuilder
                     virtualEngineRoot,
                     plugin,
                     hostWorkspaceRoot,
+                    compatibility,
                     cancellationToken));
 
             options.Progress?.Invoke("Ensuring Epic Linux native toolchain for the mounted build...");
             var linuxToolchain = new UnrealLinuxNativeToolchainInstaller();
-            Task<UnrealLinuxNativeToolchainResult> toolchainTask = timings.MeasureAsync(
+            Task<UnrealLinuxNativeToolchainResult?> toolchainTask = timings.MeasureAsync(
                 "toolchain.ensure",
-                () => linuxToolchain.EnsureAsync(
-                    virtualEngineRoot,
-                    options.FetchOptions.CacheDirectory,
-                    // The installed toolchain itself now lives in the shared cache. Keeping the
-                    // 1+ GiB gzip as well only duplicates CI cache payload, so discard it after a
-                    // verified install. Direct installer callers can still opt into archive caching.
-                    cacheArchive: false,
-                    progress: options.Progress,
-                    cancellationToken: cancellationToken,
-                    persistentStoreRoot: toolchainStore));
+                async () =>
+                {
+                    try
+                    {
+                        return await linuxToolchain.EnsureAsync(
+                            virtualEngineRoot,
+                            options.FetchOptions.CacheDirectory,
+                            cacheArchive: false,
+                            progress: options.Progress,
+                            cancellationToken: cancellationToken,
+                            persistentStoreRoot: toolchainStore).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (compatibility.Version.Major == 4
+                        && ex is FileNotFoundException or InvalidDataException or HttpRequestException)
+                    {
+                        // Very old UE4 branches predate Linux_SDK.json and some do not advertise a
+                        // downloadable native bundle in a machine-readable form. Let their UBT use
+                        // the runner's native clang rather than rejecting the Engine before UBT can
+                        // perform its own toolchain validation.
+                        options.Progress?.Invoke(
+                            $"[compat] UE {compatibility.Version}: no machine-readable Epic Linux toolchain descriptor ({ex.Message}); using the runner toolchain.");
+                        return null;
+                    }
+                });
 
             await Task.WhenAll(compileTask, hostTask, toolchainTask).ConfigureAwait(false);
             UnrealBuildToolCompileResult compile = await compileTask.ConfigureAwait(false);
             UnrealPluginHostLayout host = await hostTask.ConfigureAwait(false);
-            UnrealLinuxNativeToolchainResult toolchain = await toolchainTask.ConfigureAwait(false);
-            timings.Add("toolchain.download", toolchain.DownloadDuration);
-            timings.Add("toolchain.extract", toolchain.ExtractionDuration);
-            timings.Add("toolchain.project", toolchain.ProjectionDuration);
-            options.Progress?.Invoke(
-                $"[toolchain] {toolchain.Version}: " +
-                $"download={FormatDuration(toolchain.DownloadDuration)}, " +
-                $"extract={FormatDuration(toolchain.ExtractionDuration)} ({toolchain.ExtractionBackend}), " +
-                $"projection={FormatDuration(toolchain.ProjectionDuration)}.");
-
-            DotNetRuntimeConfig runtimeConfig = await timings.MeasureAsync(
-                "ubt.runtime-config",
-                () => DotNetRuntimeConfig.ReadAsync(
-                    compile.Paths.RuntimeConfigPath,
-                    cancellationToken)).ConfigureAwait(false);
-            EpicBundledDotNetPlan runtimePlan = EpicBundledDotNetResolver.Resolve(
-                context.Manifest,
-                runtimeConfig,
-                options.RuntimeIdentifier);
-            if (!string.Equals(runtimePlan.BundlePrefix, sdkPlan.BundlePrefix, StringComparison.Ordinal))
+            UnrealLinuxNativeToolchainResult? toolchain = await toolchainTask.ConfigureAwait(false);
+            long downloaded = 0;
+            if (toolchain is not null)
             {
-                throw new InvalidDataException(
-                    $"UBT runtime resolved to '{runtimePlan.BundlePrefix}', but compilation used '{sdkPlan.BundlePrefix}'.");
+                downloaded += toolchain.DownloadedBytes;
+                timings.Add("toolchain.download", toolchain.DownloadDuration);
+                timings.Add("toolchain.extract", toolchain.ExtractionDuration);
+                timings.Add("toolchain.project", toolchain.ProjectionDuration);
+                options.Progress?.Invoke(
+                    $"[toolchain] {toolchain.Version}: " +
+                    $"download={FormatDuration(toolchain.DownloadDuration)}, " +
+                    $"extract={FormatDuration(toolchain.ExtractionDuration)} ({toolchain.ExtractionBackend}), " +
+                    $"projection={FormatDuration(toolchain.ProjectionDuration)}.");
             }
 
-            options.Progress?.Invoke(
-                "Using hermetic local UBT executor configuration (UBA/XGE/FASTBuild/SN-DBS disabled).");
+            if (compile.Paths.RuntimeKind == UnrealBuildToolRuntimeKind.DotNet)
+            {
+                if (string.IsNullOrWhiteSpace(compile.Paths.RuntimeConfigPath))
+                    throw new InvalidDataException("Modern UBT output is missing UnrealBuildTool.runtimeconfig.json.");
+                DotNetRuntimeConfig runtimeConfig = await timings.MeasureAsync(
+                    "ubt.runtime-config",
+                    () => DotNetRuntimeConfig.ReadAsync(
+                        compile.Paths.RuntimeConfigPath,
+                        cancellationToken)).ConfigureAwait(false);
+                EpicBundledDotNetPlan runtimePlan = EpicBundledDotNetResolver.Resolve(
+                    context.Manifest,
+                    runtimeConfig,
+                    options.RuntimeIdentifier);
+                if (!string.IsNullOrWhiteSpace(managedRuntime.BundlePrefix)
+                    && !string.Equals(runtimePlan.BundlePrefix, managedRuntime.BundlePrefix, StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException(
+                        $"UBT runtime resolved to '{runtimePlan.BundlePrefix}', but compilation used '{managedRuntime.BundlePrefix}'.");
+                }
+            }
 
-            long downloaded = toolchain.DownloadedBytes;
+            options.Progress?.Invoke(compatibility.Version.Major >= 5
+                ? "Using version-filtered hermetic local UBT executor configuration."
+                : "Using legacy UE4 local UBT execution without modern executor XML injection.");
 
             IReadOnlyList<MountedBuildPhase> phases = CreatePhases(plugin, host);
             var phaseResults = new List<UnrealPluginBuildPhaseResult>();
@@ -350,14 +385,16 @@ internal sealed class UnrealMountedPluginBuilder
                     options.Platform,
                     options.Configuration,
                     phase.Modules,
-                    options.RuntimeIdentifier);
+                    options.RuntimeIdentifier,
+                    compatibility);
                 ExternalProcessResult result = await timings.MeasureAsync(
                     $"ubt.build.{phase.Target}",
                     () => runner.RunAsync(
                         compile.Paths,
-                        dotNetRoot,
                         arguments,
-                        cancellationToken)).ConfigureAwait(false);
+                        cancellationToken,
+                        compatibility,
+                        compatibility.Version.Major == 4 ? toolchain?.ToolchainDirectory : null)).ConfigureAwait(false);
 
                 string diagnostics = CombineDiagnostics(result, virtualEngineRoot);
                 string logPath = Path.Combine(logsDirectory, $"{phase.Target}-mounted.log");
@@ -428,6 +465,8 @@ internal sealed class UnrealMountedPluginBuilder
                 phaseResults,
                 [
                     "MountedBackend:FUSE3",
+                    $"EngineCompatibility:{compatibility.Version}",
+                    $"UbtRuntime:{compile.Paths.RuntimeKind}",
                     $"EngineProfile:{context.ProfileSource}",
                     $"VirtualEngine:{virtualEngineRoot}",
                     $"VirtualEntries:{context.FileSystem.LowerEntryCount:N0}",

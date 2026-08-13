@@ -19,32 +19,105 @@ public sealed record UnrealLinuxNativeToolchainDescriptor(string Version, Uri Do
     {
         string sdkJson = Path.Combine(
             Path.GetFullPath(engineRoot), "Engine", "Config", "Linux", "Linux_SDK.json");
-        if (!File.Exists(sdkJson))
+        string? mainVersion = null;
+        if (File.Exists(sdkJson))
         {
-            throw new FileNotFoundException(
-                "Linux_SDK.json is missing from the Epic source seed.",
-                sdkJson);
+            await using FileStream stream = File.OpenRead(sdkJson);
+            using JsonDocument document = await JsonDocument.ParseAsync(
+                stream,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            mainVersion = TryGetStringPropertyRecursive(document.RootElement, "MainVersion")
+                ?? FindToolchainVersionRecursive(document.RootElement);
         }
-
-        await using FileStream stream = File.OpenRead(sdkJson);
-        using JsonDocument document = await JsonDocument.ParseAsync(
-            stream,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
-
-        string? mainVersion = TryGetStringPropertyRecursive(document.RootElement, "MainVersion")
-            ?? FindToolchainVersionRecursive(document.RootElement);
+        else
+        {
+            string root = Path.GetFullPath(engineRoot);
+            mainVersion = await TryReadLegacySetupToolchainVersionAsync(
+                root,
+                cancellationToken).ConfigureAwait(false)
+                ?? await TryReadKnownNativeToolchainFromBuildVersionAsync(root, cancellationToken).ConfigureAwait(false);
+        }
         if (string.IsNullOrWhiteSpace(mainVersion)
             || !SafeVersion.IsMatch(mainVersion)
             || !mainVersion.Contains("clang-", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidDataException(
-                $"Could not determine a safe Linux toolchain MainVersion from '{sdkJson}'.");
+                $"Could not determine a safe Epic Linux toolchain version from Linux_SDK.json or legacy Linux setup scripts under '{Path.GetFullPath(engineRoot)}'.");
         }
 
         string fileName = $"native-linux-{mainVersion}.tar.gz";
         return new UnrealLinuxNativeToolchainDescriptor(
             mainVersion,
             new Uri($"https://cdn.unrealengine.com/Toolchain_Linux/{fileName}"));
+    }
+
+    private static async Task<string?> TryReadLegacySetupToolchainVersionAsync(
+        string engineRoot,
+        CancellationToken cancellationToken)
+    {
+        string linuxBuildScripts = Path.Combine(engineRoot, "Engine", "Build", "BatchFiles", "Linux");
+        if (!Directory.Exists(linuxBuildScripts)) return null;
+
+        var versionPattern = new Regex(
+            @"v[0-9]+_clang-[A-Za-z0-9._+\-]+",
+            RegexOptions.CultureInvariant | RegexOptions.Compiled);
+        foreach (string path in Directory.EnumerateFiles(linuxBuildScripts, "*", SearchOption.AllDirectories)
+                     .Where(path => path.EndsWith(".sh", StringComparison.OrdinalIgnoreCase)
+                         || path.EndsWith(".txt", StringComparison.OrdinalIgnoreCase)
+                         || path.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(path => path, StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            FileInfo info = new(path);
+            if (info.Length > 2_000_000) continue;
+            string text = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+            Match match = versionPattern.Match(text);
+            if (match.Success && SafeVersion.IsMatch(match.Value)) return match.Value;
+        }
+        return null;
+    }
+
+    private static async Task<string?> TryReadKnownNativeToolchainFromBuildVersionAsync(
+        string engineRoot,
+        CancellationToken cancellationToken)
+    {
+        string path = Path.Combine(engineRoot, "Engine", "Build", "Build.version");
+        if (!File.Exists(path)) return null;
+        try
+        {
+            await using FileStream stream = File.OpenRead(path);
+            using JsonDocument document = await JsonDocument.ParseAsync(
+                stream,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            JsonElement root = document.RootElement;
+            if (!root.TryGetProperty("MajorVersion", out JsonElement majorNode)
+                || !root.TryGetProperty("MinorVersion", out JsonElement minorNode)
+                || !majorNode.TryGetInt32(out int major)
+                || !minorNode.TryGetInt32(out int minor)
+                || major != 4)
+            {
+                return null;
+            }
+
+            // Epic began publishing the native Linux sysroot/toolchain consumed by Setup.sh in
+            // UE4.20. These immutable archive names are the release-family fallback when an old
+            // setup script does not embed its own full vXX_clang-* identifier.
+            return minor switch
+            {
+                20 => "v11_clang-5.0.0-centos7",
+                21 => "v12_clang-6.0.1-centos7",
+                22 => "v13_clang-7.0.1-centos7",
+                23 or 24 => "v15_clang-8.0.1-centos7",
+                25 => "v16_clang-9.0.1-centos7",
+                26 => "v17_clang-10.0.1-centos7",
+                27 => "v19_clang-11.0.1-centos7",
+                _ => null,
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private static string? TryGetStringPropertyRecursive(JsonElement element, string propertyName)

@@ -3,7 +3,9 @@ namespace Ueci.Unreal;
 public sealed record UnrealBuildToolPaths(
     string EngineRoot,
     string AssemblyPath,
-    string RuntimeConfigPath);
+    string? RuntimeConfigPath,
+    UnrealBuildToolRuntimeKind RuntimeKind = UnrealBuildToolRuntimeKind.DotNet,
+    string? RuntimeHostPath = null);
 
 public static class UnrealBuildToolLocator
 {
@@ -11,8 +13,18 @@ public static class UnrealBuildToolLocator
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(engineRoot);
         string root = Path.GetFullPath(engineRoot);
-        string directory = Path.Combine(root, "Engine", "Binaries", "DotNET", "UnrealBuildTool");
-        return RequirePair(root, directory, "canonical Engine/Binaries/DotNET/UnrealBuildTool output");
+
+        UnrealBuildToolPaths? modern = TryPair(
+            root,
+            Path.Combine(root, "Engine", "Binaries", "DotNET", "UnrealBuildTool"));
+        if (modern is not null) return modern;
+
+        UnrealBuildToolPaths? legacy = TryLegacy(root, Path.Combine(root, "Engine", "Binaries", "DotNET"));
+        if (legacy is not null) return legacy;
+
+        throw new FileNotFoundException(
+            "UnrealBuildTool output is missing from Engine/Binaries/DotNET.",
+            Path.Combine(root, "Engine", "Binaries", "DotNET", "UnrealBuildTool.exe"));
     }
 
     public static UnrealBuildToolPaths LocateBuiltOutput(string engineRoot, string projectPath)
@@ -27,10 +39,10 @@ public static class UnrealBuildToolLocator
 
         string canonicalDirectory = Path.Combine(root, "Engine", "Binaries", "DotNET", "UnrealBuildTool");
         UnrealBuildToolPaths? canonical = TryPair(root, canonicalDirectory);
-        if (canonical is not null)
-        {
-            return canonical;
-        }
+        if (canonical is not null) return canonical;
+
+        UnrealBuildToolPaths? canonicalLegacy = TryLegacy(root, Path.Combine(root, "Engine", "Binaries", "DotNET"));
+        if (canonicalLegacy is not null) return canonicalLegacy;
 
         var searchRoots = new[]
         {
@@ -39,32 +51,35 @@ public static class UnrealBuildToolLocator
         };
 
         var valid = new List<UnrealBuildToolPaths>();
-        var dllCandidates = new List<string>();
+        var candidates = new List<string>();
 
         foreach (string searchRoot in searchRoots.Distinct(StringComparer.Ordinal))
         {
-            if (!Directory.Exists(searchRoot))
-            {
-                continue;
-            }
+            if (!Directory.Exists(searchRoot)) continue;
 
             foreach (string assembly in Directory.EnumerateFiles(
                          searchRoot,
                          "UnrealBuildTool.dll",
                          SearchOption.AllDirectories))
             {
-                if (IsReferenceAssemblyPath(assembly))
-                {
-                    continue;
-                }
+                if (IsReferenceAssemblyPath(assembly)) continue;
+                candidates.Add(assembly);
+                UnrealBuildToolPaths? pair = TryPair(root, Path.GetDirectoryName(assembly)!);
+                if (pair is not null) valid.Add(pair);
+            }
 
-                dllCandidates.Add(assembly);
-                string directory = Path.GetDirectoryName(assembly)!;
-                UnrealBuildToolPaths? pair = TryPair(root, directory);
-                if (pair is not null)
-                {
-                    valid.Add(pair);
-                }
+            foreach (string assembly in Directory.EnumerateFiles(
+                         searchRoot,
+                         "UnrealBuildTool.exe",
+                         SearchOption.AllDirectories))
+            {
+                if (IsReferenceAssemblyPath(assembly)) continue;
+                candidates.Add(assembly);
+                valid.Add(new UnrealBuildToolPaths(
+                    root,
+                    assembly,
+                    RuntimeConfigPath: null,
+                    RuntimeKind: UnrealBuildToolRuntimeKind.Mono));
             }
         }
 
@@ -76,27 +91,14 @@ public static class UnrealBuildToolLocator
                 .First();
         }
 
-        string candidateText = dllCandidates.Count == 0
-            ? "No UnrealBuildTool.dll candidate was found under the canonical output or project bin directory."
-            : "DLL candidates were found, but none had an adjacent UnrealBuildTool.runtimeconfig.json:" +
-              Environment.NewLine + string.Join(Environment.NewLine, dllCandidates.Select(path => "  - " + path));
+        string candidateText = candidates.Count == 0
+            ? "No UnrealBuildTool.dll/.exe candidate was found under the canonical output or project bin directory."
+            : "UBT candidates were found, but none were runnable:" +
+              Environment.NewLine + string.Join(Environment.NewLine, candidates.Select(path => "  - " + path));
 
         throw new FileNotFoundException(
-            "dotnet build completed, but UECI could not locate a runnable UnrealBuildTool output." +
+            "The UBT build completed, but UECI could not locate a runnable UnrealBuildTool output." +
             Environment.NewLine + candidateText);
-    }
-
-    private static UnrealBuildToolPaths RequirePair(string engineRoot, string directory, string description)
-    {
-        UnrealBuildToolPaths? result = TryPair(engineRoot, directory);
-        if (result is not null)
-        {
-            return result;
-        }
-
-        throw new FileNotFoundException(
-            $"UnrealBuildTool output is missing from the {description}.",
-            Path.Combine(directory, "UnrealBuildTool.dll"));
     }
 
     private static UnrealBuildToolPaths? TryPair(string engineRoot, string directory)
@@ -104,7 +106,23 @@ public static class UnrealBuildToolLocator
         string assembly = Path.Combine(directory, "UnrealBuildTool.dll");
         string runtimeConfig = Path.Combine(directory, "UnrealBuildTool.runtimeconfig.json");
         return File.Exists(assembly) && File.Exists(runtimeConfig)
-            ? new UnrealBuildToolPaths(engineRoot, assembly, runtimeConfig)
+            ? new UnrealBuildToolPaths(
+                engineRoot,
+                assembly,
+                runtimeConfig,
+                UnrealBuildToolRuntimeKind.DotNet)
+            : null;
+    }
+
+    private static UnrealBuildToolPaths? TryLegacy(string engineRoot, string directory)
+    {
+        string assembly = Path.Combine(directory, "UnrealBuildTool.exe");
+        return File.Exists(assembly)
+            ? new UnrealBuildToolPaths(
+                engineRoot,
+                assembly,
+                RuntimeConfigPath: null,
+                RuntimeKind: UnrealBuildToolRuntimeKind.Mono)
             : null;
     }
 

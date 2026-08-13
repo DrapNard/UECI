@@ -19,7 +19,8 @@ public sealed record UnrealPluginBuildOptions(
     int MaxDiscoveryPasses = 32,
     Action<string>? Progress = null,
     EnginePresentationMode PresentationMode = EnginePresentationMode.Auto,
-    bool VerboseVfs = false);
+    bool VerboseVfs = false,
+    string? ManifestPath = null);
 
 public sealed record UnrealPluginBuildPhaseResult(
     string Target,
@@ -48,7 +49,8 @@ public static class UnrealPluginBuildInvocation
         string platform,
         string configuration,
         IReadOnlyList<string> modules,
-        string runtimeIdentifier)
+        string runtimeIdentifier,
+        UnrealEngineCompatibility? compatibility = null)
     {
         var arguments = new List<string>
         {
@@ -56,27 +58,25 @@ public static class UnrealPluginBuildInvocation
             platform,
             configuration,
             $"-Project={host.ProjectPath}",
-            "-NoHotReloadFromIDE",
-            "-NoUBTMakefiles",
-            // UE 5.8 Linux can append Engine/Binaries/Linux/dump_syms to the link script.
-            // Synthetic CI validation does not consume runtime crash symbols, and the minimal
-            // Engine intentionally does not materialize that standalone helper. Keep the command
-            // line guard in addition to BuildConfiguration.bDisableDumpSyms so UBT cannot inherit
-            // a conflicting config scope.
-            "-NoDumpSyms",
-            "-Progress",
         };
 
+        // Keep legacy UE4 invocations deliberately small. UBT command-line parsers have accumulated
+        // flags over a decade; feature detection prevents a harmless modern optimization flag from
+        // becoming an unknown-option failure on an old branch.
+        if (compatibility is null || compatibility.SupportsNoHotReloadFromIdeFlag)
+            arguments.Add("-NoHotReloadFromIDE");
+        if (compatibility is null || compatibility.SupportsNoUbtMakefilesFlag)
+            arguments.Add("-NoUBTMakefiles");
+        if (compatibility is null || compatibility.SupportsNoDumpSymsFlag)
+            arguments.Add("-NoDumpSyms");
+        arguments.Add("-Progress");
+
         foreach (string module in modules)
-        {
             arguments.Add($"-Module={module}");
-        }
 
         string? architecture = GetArchitecture(runtimeIdentifier);
-        if (architecture is not null)
-        {
+        if (architecture is not null && (compatibility is null || compatibility.Version.Major >= 5))
             arguments.Add($"-Architecture={architecture}");
-        }
         return arguments;
     }
 
@@ -158,7 +158,8 @@ public sealed class UnrealPluginBuilder
                 options.FetchOptions,
                 options.RuntimeIdentifier,
                 ProbeUnrealBuildTool: false,
-                Progress: options.Progress),
+                Progress: options.Progress,
+                ManifestPath: options.ManifestPath),
             cancellationToken).ConfigureAwait(false);
 
         GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(
@@ -239,10 +240,19 @@ public sealed class UnrealPluginBuilder
             && options.RuntimeIdentifier.Equals("linux-x64", StringComparison.OrdinalIgnoreCase))
         {
             var linuxToolchain = new UnrealLinuxNativeToolchainInstaller();
-            await linuxToolchain.TryRestoreProjectionAsync(
-                bootstrap.EngineRoot,
-                options.Progress,
-                cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await linuxToolchain.TryRestoreProjectionAsync(
+                    bootstrap.EngineRoot,
+                    options.Progress,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (bootstrap.EngineVersion.Major == 4
+                && ex is FileNotFoundException or InvalidDataException)
+            {
+                options.Progress?.Invoke(
+                    $"[compat] UE {bootstrap.EngineVersion}: no restorable Epic Linux toolchain projection ({ex.Message}); using the runner toolchain until UBT requests a platform SDK.");
+            }
         }
 
         // Sparse checkout can displace GitDependencies-managed files when a dependency path also
@@ -276,7 +286,10 @@ public sealed class UnrealPluginBuilder
         long downloaded = bootstrap.Dependencies.DownloadedBytes
             + (repairedBootstrapOverlay?.DownloadedBytes ?? 0);
         int totalPasses = 0;
-        string dotNetRoot = bootstrap.BundledDotNetRoot;
+        UnrealEngineCompatibility compatibility = await UnrealEngineCompatibility.DetectAsync(
+            bootstrap.EngineRoot,
+            options.GitRef,
+            cancellationToken).ConfigureAwait(false);
         var runner = new UnrealBuildToolRunner();
 
         string logsDirectory = Path.Combine(host.Root, "Logs");
@@ -300,12 +313,13 @@ public sealed class UnrealPluginBuilder
                     options.Platform,
                     options.Configuration,
                     phase.Modules,
-                    options.RuntimeIdentifier);
+                    options.RuntimeIdentifier,
+                    compatibility);
                 last = await runner.RunAsync(
-                    bootstrap.EngineRoot,
-                    dotNetRoot,
+                    bootstrap.BuildToolPaths,
                     ubtArguments,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    compatibility).ConfigureAwait(false);
 
                 string diagnostics = CombineDiagnostics(last, bootstrap.EngineRoot);
                 string logPath = Path.Combine(logsDirectory, $"{phase.Target}-pass-{pass:D2}.log");
@@ -351,7 +365,8 @@ public sealed class UnrealPluginBuilder
                 // EpicGames.UBA is compiled into the managed UBT graph. If a legacy/incomplete
                 // bootstrap discovers the native UBA payload only after UBT was built, rebuild
                 // UBT before retrying so its managed wrapper can observe the host libraries.
-                if (fresh.Any(requirement =>
+                if (bootstrap.RuntimeKind == UnrealBuildToolRuntimeKind.DotNet
+                    && fresh.Any(requirement =>
                         requirement.Kind == UnrealBuildRequirementKind.BuildExecutor
                         && requirement.Value.Equals("UBA", StringComparison.OrdinalIgnoreCase))
                     && materialized.GitDependencyFiles != 0)
@@ -361,7 +376,7 @@ public sealed class UnrealPluginBuilder
                     var compiler = new UnrealBuildToolCompiler();
                     await compiler.CompileAsync(
                         bootstrap.EngineRoot,
-                        dotNetRoot,
+                        bootstrap.ManagedRuntimeRoot,
                         cancellationToken).ConfigureAwait(false);
                 }
 

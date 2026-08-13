@@ -9,7 +9,7 @@ public sealed class VirtualEngineArtifactCache
 {
     private static readonly string[] CachedRoots =
     [
-        "Engine/Binaries/DotNET/UnrealBuildTool",
+        "Engine/Binaries/DotNET",
         "Engine/Source/Programs/UnrealBuildTool/bin",
         "Engine/Source/Programs/UnrealBuildTool/obj",
         "Engine/Source/Programs/Shared",
@@ -60,7 +60,7 @@ public sealed class VirtualEngineArtifactCache
     {
         string[] roots =
         [
-            Combine(upperRoot, "Engine/Binaries/DotNET/UnrealBuildTool"),
+            Combine(upperRoot, "Engine/Binaries/DotNET"),
             Combine(upperRoot, "Engine/Source/Programs/UnrealBuildTool/bin"),
         ];
         foreach (string root in roots.Where(Directory.Exists))
@@ -77,6 +77,12 @@ public sealed class VirtualEngineArtifactCache
                 {
                     return true;
                 }
+            }
+
+            if (Directory.EnumerateFiles(root, "UnrealBuildTool.exe", SearchOption.AllDirectories)
+                .Any(path => new FileInfo(path).Length != 0))
+            {
+                return true;
             }
         }
         return false;

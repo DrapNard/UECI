@@ -11,16 +11,21 @@ public sealed record UnrealBuildToolBootstrapOptions(
     GitDependenciesFetchOptions FetchOptions,
     string RuntimeIdentifier,
     bool ProbeUnrealBuildTool = true,
-    Action<string>? Progress = null);
+    Action<string>? Progress = null,
+    string? ManifestPath = null);
 
 public sealed record UnrealBuildToolBootstrapResult(
     string EngineRoot,
     string EpicCommit,
     string ManifestPath,
     string RuntimeIdentifier,
-    string BundledDotNetRoot,
-    Version BundledDotNetSdkVersion,
+    UnrealEngineVersion EngineVersion,
+    UnrealBuildToolRuntimeKind RuntimeKind,
+    string ManagedRuntimeRoot,
+    string ManagedRuntimeDescription,
+    Version? BundledDotNetSdkVersion,
     string UnrealBuildToolAssembly,
+    UnrealBuildToolPaths BuildToolPaths,
     IReadOnlyList<DotNetFrameworkRequirement> Frameworks,
     GitDependenciesBatchResult Dependencies,
     ExternalProcessResult CompileResult,
@@ -30,12 +35,12 @@ public sealed class UnrealBuildToolBootstrapper
 {
     private static readonly string[] GitSeedDirectories =
     [
-        // Cone-mode sparse checkout keeps the Git source seed bounded while allowing backfill
-        // to batch the selected promisor blobs. Engine/Build is intentionally included as a
-        // directory because cone mode operates on directories, not individual files.
         "Engine/Build",
         "Engine/Source/Programs/UnrealBuildTool",
         "Engine/Source/Programs/Shared",
+        // Old UE4 releases may not have Engine/Build/Build.version. Materialize the
+        // historical version header before the Action replaces a release branch with its SHA.
+        "Engine/Source/Runtime/Launch",
     ];
 
     private static readonly string[] BuildSupportExactPaths =
@@ -46,7 +51,6 @@ public sealed class UnrealBuildToolBootstrapper
 
     private static readonly string[] BuildSupportPrefixes =
     [
-        // Binary/tool resources that Setup normally overlays on top of the source checkout.
         "Engine/Binaries/DotNET/",
         "Engine/Source/Programs/Shared/",
         "Engine/Source/Programs/UnrealBuildTool/",
@@ -86,28 +90,12 @@ public sealed class UnrealBuildToolBootstrapper
             cancellationToken).ConfigureAwait(false);
 
         options.Progress?.Invoke("Materializing UnrealBuildTool + shared managed source from Epic Git...");
-
-        // Preserve already-installed external SDKs before touching the sparse specification.
-        // Git sparse-checkout may remove ignored/untracked files outside the active cone; native
-        // Epic toolchains live under an ignored Engine/Extras subtree and must therefore be part
-        // of the sparse spec even though they are not Git-tracked files.
         IReadOnlyList<string> existingExternalSparsePaths =
             UnrealLinuxNativeToolchainInstaller.FindInstalledSparseProtectionPaths(root);
-        if (existingExternalSparsePaths.Count != 0)
-        {
-            options.Progress?.Invoke(
-                $"Protecting {existingExternalSparsePaths.Count:N0} existing external SDK path" +
-                $"{(existingExternalSparsePaths.Count == 1 ? string.Empty : "s")} from sparse checkout updates...");
-        }
-
         string[] sparseSeed = GitSeedDirectories
             .Concat(existingExternalSparsePaths)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
-
-        // A source checkout does not contain a precompiled UnrealBuildTool.dll. Materialize the
-        // C# project and its shared project references first; Git's blobless promisor remote only
-        // downloads the source blobs touched by these pathspecs.
         await _epicClient.MaterializeSparseDirectoriesAsync(
             root,
             sparseSeed,
@@ -115,55 +103,55 @@ public sealed class UnrealBuildToolBootstrapper
             cancellationToken,
             options.Progress).ConfigureAwait(false);
 
-        string manifestPath = Path.Combine(root, "Engine", "Build", "Commit.gitdeps.xml");
+        string manifestPath = string.IsNullOrWhiteSpace(options.ManifestPath)
+            ? Path.Combine(root, "Engine", "Build", "Commit.gitdeps.xml")
+            : Path.GetFullPath(options.ManifestPath);
         if (!File.Exists(manifestPath))
-        {
-            throw new FileNotFoundException("Epic Commit.gitdeps.xml was not materialized from Git.", manifestPath);
-        }
+            throw new FileNotFoundException(
+                string.IsNullOrWhiteSpace(options.ManifestPath)
+                    ? "Epic Commit.gitdeps.xml was not materialized from Git."
+                    : "The explicit Commit.gitdeps.xml override does not exist.",
+                manifestPath);
 
         string ubtProject = Path.Combine(
             root, "Engine", "Source", "Programs", "UnrealBuildTool", "UnrealBuildTool.csproj");
         if (!File.Exists(ubtProject))
-        {
-            throw new FileNotFoundException(
-                "UnrealBuildTool.csproj was not materialized from the Epic Git source tree.",
-                ubtProject);
-        }
+            throw new FileNotFoundException("UnrealBuildTool.csproj was not materialized from Epic Git.", ubtProject);
 
-        options.Progress?.Invoke("Loading Commit.gitdeps.xml and resolving Epic bundled .NET SDK...");
-        GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath, cancellationToken)
-            .ConfigureAwait(false);
-        EpicBundledDotNetSdkPlan sdkPlan = EpicBundledDotNetSdkResolver.Resolve(
+        GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(
+            manifestPath,
+            cancellationToken).ConfigureAwait(false);
+        UnrealEngineCompatibility compatibility = await UnrealEngineCompatibility.DetectAsync(
+            root,
+            options.GitRef,
+            cancellationToken).ConfigureAwait(false);
+        options.Progress?.Invoke(
+            $"Detected UE {compatibility.Version} with {compatibility.ProjectStyle} UnrealBuildTool project.");
+
+        UnrealBuildToolRuntimePlan managedRuntime = UnrealBuildToolRuntimeResolver.Resolve(
             manifest,
-            options.RuntimeIdentifier);
-        EpicBundledUbaPlan? ubaPlan = EpicBundledUbaResolver.TryResolve(
-            manifest,
-            options.RuntimeIdentifier);
+            root,
+            options.RuntimeIdentifier,
+            compatibility.ProjectStyle);
+        options.Progress?.Invoke($"Resolved {managedRuntime.Description} for {options.RuntimeIdentifier}.");
 
-        options.Progress?.Invoke($"Resolved Epic bundled .NET SDK {sdkPlan.SdkVersion} for {options.RuntimeIdentifier}.");
-        if (ubaPlan is not null)
-        {
-            options.Progress?.Invoke(
-                $"Preparing host UBA runtime before compiling UBT ({ubaPlan.NativePrefix.TrimEnd('/')}).");
-        }
-
+        EpicBundledUbaPlan? ubaPlan = compatibility.Version.Major >= 5
+            ? EpicBundledUbaResolver.TryResolve(manifest, options.RuntimeIdentifier)
+            : null;
         string[] prefixes = BuildSupportPrefixes
-            .Concat(sdkPlan.Prefixes)
+            .Concat(managedRuntime.Prefixes)
             .Concat(ubaPlan?.Prefixes ?? Array.Empty<string>())
             .Distinct(StringComparer.Ordinal)
             .ToArray();
         string[] exactPaths = BuildSupportExactPaths
-            .Concat(sdkPlan.ExactPaths)
+            .Concat(managedRuntime.ExactPaths)
             .Concat(ubaPlan?.ExactPaths ?? Array.Empty<string>())
             .Distinct(StringComparer.Ordinal)
             .ToArray();
-        GitDependenciesPlan dependencyPlan = GitDependenciesPlanner.CreatePlan(
-            manifest,
-            exactPaths,
-            prefixes);
+        GitDependenciesPlan dependencyPlan = GitDependenciesPlanner.CreatePlan(manifest, exactPaths, prefixes);
 
         options.Progress?.Invoke(
-            $"Materializing {dependencyPlan.FileCount:N0} GitDependencies files " +
+            $"Materializing {dependencyPlan.FileCount:N0} managed GitDependencies files " +
             $"({dependencyPlan.UniqueBlobCount:N0} blobs / {dependencyPlan.UniquePackCount:N0} packs, " +
             $"{FormatBytes(dependencyPlan.DownloadCompressedBytes)} compressed)...");
 
@@ -181,36 +169,40 @@ public sealed class UnrealBuildToolBootstrapper
         }
         finally
         {
-            if (packSource is IDisposable disposable)
-            {
-                disposable.Dispose();
-            }
+            if (packSource is IDisposable disposable) disposable.Dispose();
         }
 
-        string dotNetRoot = GitDependencyPath.CombineUnderRoot(root, sdkPlan.BundlePrefix);
-        options.Progress?.Invoke("Compiling UnrealBuildTool.csproj with Epic bundled dotnet SDK...");
+        // Resolve again after materialization so bundled runtime/build-tool paths now exist on disk.
+        managedRuntime = UnrealBuildToolRuntimeResolver.Resolve(
+            manifest,
+            root,
+            options.RuntimeIdentifier,
+            compatibility.ProjectStyle);
+        options.Progress?.Invoke($"Compiling UnrealBuildTool with {managedRuntime.Description}...");
         UnrealBuildToolCompileResult compile = await _compiler.CompileAsync(
             root,
-            dotNetRoot,
+            managedRuntime,
             cancellationToken).ConfigureAwait(false);
 
-        // The runtimeconfig is generated by the UBT build. Resolve it only after compilation;
-        // using it before this point was the alpha.1 bootstrap bug.
-        options.Progress?.Invoke(
-            $"UBT compilation completed at {Path.GetRelativePath(root, compile.Paths.AssemblyPath)}; " +
-            "validating generated runtimeconfig...");
-        DotNetRuntimeConfig runtimeConfig = await DotNetRuntimeConfig.ReadAsync(
-            compile.Paths.RuntimeConfigPath,
-            cancellationToken).ConfigureAwait(false);
-        EpicBundledDotNetPlan runtimePlan = EpicBundledDotNetResolver.Resolve(
-            manifest,
-            runtimeConfig,
-            options.RuntimeIdentifier);
-
-        if (!string.Equals(runtimePlan.BundlePrefix, sdkPlan.BundlePrefix, StringComparison.Ordinal))
+        IReadOnlyList<DotNetFrameworkRequirement> frameworks = Array.Empty<DotNetFrameworkRequirement>();
+        if (compile.Paths.RuntimeKind == UnrealBuildToolRuntimeKind.DotNet)
         {
-            throw new InvalidDataException(
-                $"UBT runtime resolved to '{runtimePlan.BundlePrefix}', but compilation used '{sdkPlan.BundlePrefix}'.");
+            if (string.IsNullOrWhiteSpace(compile.Paths.RuntimeConfigPath))
+                throw new InvalidDataException("Modern UBT output is missing UnrealBuildTool.runtimeconfig.json.");
+            DotNetRuntimeConfig runtimeConfig = await DotNetRuntimeConfig.ReadAsync(
+                compile.Paths.RuntimeConfigPath,
+                cancellationToken).ConfigureAwait(false);
+            EpicBundledDotNetPlan runtimePlan = EpicBundledDotNetResolver.Resolve(
+                manifest,
+                runtimeConfig,
+                options.RuntimeIdentifier);
+            frameworks = runtimePlan.ResolvedFrameworks;
+            if (!string.IsNullOrWhiteSpace(managedRuntime.BundlePrefix)
+                && !string.Equals(runtimePlan.BundlePrefix, managedRuntime.BundlePrefix, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    $"UBT runtime resolved to '{runtimePlan.BundlePrefix}', but compilation used '{managedRuntime.BundlePrefix}'.");
+            }
         }
 
         ExternalProcessResult? probe = null;
@@ -220,9 +212,9 @@ public sealed class UnrealBuildToolBootstrapper
             var runner = new UnrealBuildToolRunner();
             probe = await runner.RunAsync(
                 compile.Paths,
-                dotNetRoot,
                 ["-help"],
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                compatibility).ConfigureAwait(false);
         }
 
         return new UnrealBuildToolBootstrapResult(
@@ -230,10 +222,14 @@ public sealed class UnrealBuildToolBootstrapper
             commit,
             manifestPath,
             options.RuntimeIdentifier,
-            dotNetRoot,
-            sdkPlan.SdkVersion,
+            compatibility.Version,
+            compile.Paths.RuntimeKind,
+            managedRuntime.RuntimeRoot,
+            managedRuntime.Description,
+            managedRuntime.SdkVersion,
             compile.Paths.AssemblyPath,
-            runtimePlan.ResolvedFrameworks,
+            compile.Paths,
+            frameworks,
             dependencyResult,
             compile.Process,
             probe);
@@ -251,5 +247,4 @@ public sealed class UnrealBuildToolBootstrapper
         }
         return $"{number:0.##} {units[unit]}";
     }
-
 }

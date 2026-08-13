@@ -62,8 +62,9 @@
 - [ ] Security review of token handling and fork-PR workflow
 
 
-## Immediate next targets after alpha.17
+## Immediate next targets after alpha.18
 
+- Release matrix: run the 32 private Epic Linux jobs and fix branch-specific regressions until the supported release set is green.
 - Windows: native mounted Engine presentation via WinFsp while preserving the same `IEngineReadLayer`/COW contracts, exact-commit profiles, cache layout, timing model, and synthetic plugin build flow.
 - macOS: native mounted Engine presentation after Windows, with both Apple Silicon and x64 host RIDs considered by the shared cache/toolchain abstractions.
 - Linux remains the performance/reference backend; further optimization should be justified by cold-runner phase timings rather than by a large persistent native-object workspace.

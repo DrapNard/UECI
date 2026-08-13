@@ -2,7 +2,7 @@
 
 **UECI is an experimental, minimal Unreal Engine substrate for CI/CD.** Its goal is to build Unreal Engine code plugins without installing a full Unreal Engine tree on every runner.
 
-> Status: **v0.5 alpha / technical prototype (alpha.17).** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, the materialized lazy plugin-build fallback, and a real Linux/FUSE3 virtual Engine mount now exist. `build-plugin --backend fuse` can compile UBT and the plugin directly through that mounted Engine on Linux x64. Windows/macOS mounted backends remain roadmap items.
+> Status: **v0.5 alpha / technical prototype (alpha.18).** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, the materialized lazy plugin-build fallback, and a real Linux/FUSE3 virtual Engine mount now exist. `build-plugin --backend fuse` can compile UBT and the plugin directly through that mounted Engine on Linux x64. Windows/macOS mounted backends remain roadmap items.
 
 ## Why
 
@@ -47,7 +47,8 @@ The long-term design supports both **materialized mode** (portable, no special p
 - Restores executable bits from `IsExecutable` on Unix hosts.
 - Rejects output-root path traversal during batch materialization.
 - Resolves and materializes Epic's bundled .NET **SDK** for the current host directly from `Commit.gitdeps.xml`.
-- Materializes the UBT + shared C# source seed, compiles `UnrealBuildTool.csproj`, validates the generated runtime config, then probes UBT with the same Epic-bundled `dotnet`.
+- Detects the exact Engine/UBT capability surface per Epic commit and supports both modern .NET UBT and legacy UE4 Mono/MSBuild/precompiled `UnrealBuildTool.exe` bootstraps.
+- Materializes the UBT + shared C# source seed, then either reuses a release's precompiled legacy `UnrealBuildTool.exe` or compiles `UnrealBuildTool.csproj` with the Engine generation's bundled/runtime-compatible managed toolchain before probing UBT.
 - Provides `ubt run` to forward arbitrary arguments to the bootstrapped UBT.
 - Parses `.uplugin` module descriptors and keeps UBT as the authority for executable `.Build.cs` rules; a bounded parser only uses standard module dependency lists as optional prefetch hints.
 - Creates an ephemeral project with a lean modular Game target for Runtime modules and an Editor target when required, then copies the plugin without stale build outputs.
@@ -62,6 +63,20 @@ The long-term design supports both **materialized mode** (portable, no special p
 - Mounts a complete virtual Unreal Engine namespace on Linux through FUSE3 with metadata-only `stat`/`readdir`, lazy Git/GitDependencies content fetches, a shared CAS, and a persistent copy-on-write upper layer.
 - Embeds a small libfuse3 helper as source and compiles it once into the local UECI cache instead of shipping a prebuilt native binary.
 - Has dependency-free local tests: no GitHub runner and no Epic token are required.
+
+## Unreal release compatibility matrix
+
+Alpha.18 turns release compatibility into an executable CI contract rather than a version claim. `.github/workflows/unreal-version-matrix.yml` contains 32 independent Linux/FUSE jobs for the stable Epic release branches:
+
+- UE4: `4.5` through `4.27`
+- UE5: `5.0` through `5.8`
+
+Each row prepares the minimal fixture with the rule constructor expected by that release, resolves the exact Epic commit, runs the normal mounted `build-plugin` path, and fails unless `Binaries/Linux` contains a native `.so`. Diagnostics are uploaded per release so one legacy failure does not hide the rest of the matrix.
+For historical branches, the workflow also checks Epic release assets for a matching `Commit.gitdeps.xml`; when present it pins the matching release tag and passes that manifest explicitly, otherwise UECI pins the stable branch head and uses the manifest tracked by that exact commit.
+
+The compatibility layer prefers **source feature detection** over hard-coded minor-version behavior. The Engine version is still used for broad runtime generations and conservative fallbacks, while individual TargetRules/ModuleRules/XML/CLI features are emitted only when the pinned UBT source exposes them. Moving development branches such as `release`, `master`, `ue5-main`, `ue6-main`, `dev-*`, `plus`, and `chaos` remain valid explicit refs, but are intentionally not used as reproducible release-matrix evidence.
+
+A plugin must itself support the Engine release being tested; UECI adapts its synthetic host and bootstrap, not arbitrary plugin source APIs. The repository secret `UECI_EPIC_GITHUB_TOKEN` is required to execute the private Epic release matrix.
 
 ## Requirements
 
@@ -339,7 +354,7 @@ The composite Action persists this cold-start cache under an exact Epic-commit k
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the lazy plugin build and package the result. Alpha.17 resolves the exact Epic ref object id first and keys the GitHub Actions cold-start cache with it, so moving refs such as `release` cannot accidentally reuse a cache as if the Engine commit were unchanged.
 
 ```yaml
-- uses: your-org/ueci@v0.5.0-alpha.17
+- uses: your-org/ueci@v0.5.0-alpha.18
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release
@@ -377,6 +392,7 @@ The Action currently uses `actions/setup-dotnet@v6` and `actions/cache@v5`; self
 5. **v0.5 — mounted engine view**
    - Linux FUSE backend ✅
    - cold-runner bootstrap/cache/timing pass ✅ alpha.17
+   - multi-release UE4/UE5 compatibility foundation + 32-release Linux matrix ✅ alpha.18
    - Windows native mounted backend (WinFsp) ← next
    - macOS native mounted backend ← next after Windows
    - writable copy-on-write overlay ✅ Linux

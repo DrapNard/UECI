@@ -10,7 +10,7 @@ namespace Ueci.Cli;
 
 internal static class Program
 {
-    private const string CliVersion = "0.5.0-alpha.17";
+    private const string CliVersion = "0.5.0-alpha.18";
 
     public static async Task<int> Main(string[] args)
     {
@@ -304,6 +304,7 @@ internal static class Program
         string repo = GetOption(args, "--repo") ?? EpicGitClient.DefaultRepository;
         string reference = GetOption(args, "--ref") ?? EpicGitClient.DefaultRef;
         string? tokenEnv = GetOption(args, "--token-env");
+        string? manifestOverride = GetOption(args, "--manifest");
         string runtimeIdentifier = GetOption(args, "--host-rid") ?? UnrealHostRuntime.DetectRuntimeIdentifier();
 
         switch (command)
@@ -319,15 +320,20 @@ internal static class Program
                     GetFetchOptions(args),
                     runtimeIdentifier,
                     ProbeUnrealBuildTool: !HasFlag(args, "--no-probe"),
-                    Progress: message => Console.Error.WriteLine($"[ueci] {message}"));
+                    Progress: message => Console.Error.WriteLine($"[ueci] {message}"),
+                    ManifestPath: manifestOverride);
                 UnrealBuildToolBootstrapResult result = await bootstrapper.BootstrapAsync(options)
                     .ConfigureAwait(false);
 
                 Console.WriteLine($"Engine root:        {result.EngineRoot}");
                 Console.WriteLine($"Epic commit:        {result.EpicCommit}");
+                Console.WriteLine($"Engine version:     {result.EngineVersion}");
                 Console.WriteLine($"Host RID:           {result.RuntimeIdentifier}");
-                Console.WriteLine($"Bundled .NET:       {result.BundledDotNetRoot}");
-                Console.WriteLine($"Bundled SDK:        {result.BundledDotNetSdkVersion}");
+                Console.WriteLine($"Managed runtime:    {result.ManagedRuntimeDescription}");
+                Console.WriteLine($"Runtime root:       {result.ManagedRuntimeRoot}");
+                if (result.BundledDotNetSdkVersion is not null)
+                    Console.WriteLine($"Bundled SDK:        {result.BundledDotNetSdkVersion}");
+                Console.WriteLine($"UBT runtime:        {result.RuntimeKind}");
                 Console.WriteLine($"UBT assembly:       {result.UnrealBuildToolAssembly}");
                 Console.WriteLine($"UBT compile:        {(result.CompileResult.Succeeded ? "OK" : $"FAILED ({result.CompileResult.ExitCode})")}");
                 Console.WriteLine($"GitDeps files:      {result.Dependencies.FileCount:N0}");
@@ -364,12 +370,35 @@ internal static class Program
                     return Fail("Usage: ueci ubt run --dir PATH [--dotnet-root PATH] -- <UBT arguments...>");
                 }
 
-                string dotNetRoot = GetOption(args, "--dotnet-root")
-                    ?? FindBundledDotNetRoot(root, runtimeIdentifier);
                 string[] ubtArguments = args[(separator + 1)..];
                 var runner = new UnrealBuildToolRunner();
-                ExternalProcessResult result = await runner.RunAsync(root, dotNetRoot, ubtArguments)
-                    .ConfigureAwait(false);
+                ExternalProcessResult result;
+                string? explicitDotNetRoot = GetOption(args, "--dotnet-root");
+                if (!string.IsNullOrWhiteSpace(explicitDotNetRoot))
+                {
+                    result = await runner.RunAsync(root, explicitDotNetRoot, ubtArguments).ConfigureAwait(false);
+                }
+                else
+                {
+                    UnrealEngineCompatibility compatibility = await UnrealEngineCompatibility.DetectAsync(
+                        root,
+                        reference).ConfigureAwait(false);
+                    string manifestPath = Path.Combine(Path.GetFullPath(root), "Engine", "Build", "Commit.gitdeps.xml");
+                    GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath)
+                        .ConfigureAwait(false);
+                    UnrealBuildToolRuntimePlan runtime = UnrealBuildToolRuntimeResolver.Resolve(
+                        manifest,
+                        root,
+                        runtimeIdentifier,
+                        compatibility.ProjectStyle);
+                    string project = Path.Combine(Path.GetFullPath(root), "Engine", "Source", "Programs", "UnrealBuildTool", "UnrealBuildTool.csproj");
+                    UnrealBuildToolPaths paths = UnrealBuildToolLocator.LocateBuiltOutput(root, project) with
+                    {
+                        RuntimeKind = runtime.Kind,
+                        RuntimeHostPath = runtime.HostPath,
+                    };
+                    result = await runner.RunAsync(paths, ubtArguments, compatibility: compatibility).ConfigureAwait(false);
+                }
                 if (!string.IsNullOrEmpty(result.StandardOutput))
                 {
                     Console.Write(result.StandardOutput);
@@ -475,6 +504,7 @@ internal static class Program
         string pluginPath = args[0];
         string engineRoot = GetOption(args, "--engine-dir") ?? Path.Combine(".ueci", "engine");
         string output = GetOption(args, "--out") ?? Path.Combine(".ueci", "package");
+        string? manifestPath = GetOption(args, "--manifest");
         string repo = GetOption(args, "--repo") ?? EpicGitClient.DefaultRepository;
         string reference = GetOption(args, "--ref") ?? EpicGitClient.DefaultRef;
         string? tokenEnv = GetOption(args, "--token-env");
@@ -513,7 +543,8 @@ internal static class Program
                 maxPasses,
                 Progress: message => Console.Error.WriteLine($"[ueci] {message}"),
                 PresentationMode: presentationMode,
-                VerboseVfs: verboseVfs))
+                VerboseVfs: verboseVfs,
+                ManifestPath: manifestPath))
             .ConfigureAwait(false);
 
         Console.WriteLine($"Plugin:             {result.PluginName}");
@@ -776,6 +807,7 @@ internal static class Program
               --engine-dir PATH          Lazy/materialized engine root (default: .ueci/engine).
               --out PATH                 Package output root (default: .ueci/package).
               --ref REF                  Epic Unreal Engine ref (default: release).
+              --manifest PATH            Optional Commit.gitdeps.xml override (release assets/tests).
               --repo URL                 Epic source repository override.
               --token-env NAME           Environment variable containing the read-only GitHub token.
               --host-rid RID             Host runtime override.
@@ -800,12 +832,12 @@ internal static class Program
     {
         Console.WriteLine("""
             UnrealBuildTool commands:
-              ueci ubt bootstrap --dir PATH [--repo URL] [--ref REF] [--host-rid RID] [--token-env NAME] [fetch options]
+              ueci ubt bootstrap --dir PATH [--repo URL] [--ref REF] [--manifest PATH] [--host-rid RID] [--token-env NAME] [fetch options]
               ueci ubt run --dir PATH [--host-rid RID] [--dotnet-root PATH] -- <UBT arguments...>
 
-            bootstrap creates/updates a blobless Epic source store, checks out the UBT + shared C# source seed,
-            overlays the matching GitDependencies build support, materializes Epic's bundled .NET SDK, compiles
-            UnrealBuildTool, then runs -help as a probe. Use --no-probe to compile without probing.
+            bootstrap creates/updates a blobless Epic source store, checks out the UBT + shared managed source seed,
+            overlays the matching GitDependencies build support, resolves the Engine generation's bundled .NET or
+            Mono runtime, reuses/prepares UnrealBuildTool, then runs -help as a probe. Use --no-probe to skip probing.
 
             Host RIDs: win-x64, win-arm64, linux-x64, linux-arm64, mac-x64, mac-arm64.
             Fetch options are the same as 'ueci gitdeps materialize'.

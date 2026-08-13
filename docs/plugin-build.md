@@ -88,7 +88,7 @@ By default it builds `fixtures/MinimalPlugin/UECIMinimal.uplugin`, a single Runt
 
 - The retry parser is intentionally conservative. A new UBT diagnostic shape can stop discovery instead of guessing a huge subtree; Build.cs prefetch hints are capped and never replace UBT evaluation.
 - Program-only plugin modules are rejected for now.
-- Runtime and editor phases are implemented, but the first real validation target is the minimal Runtime fixture on Linux. Native Linux toolchain installation is implemented lazily; the end-to-end plugin compile still needs real-Epic smoke validation.
+- Runtime and editor phases are implemented. UE 5.8 Linux/FUSE has passed the real minimal Runtime smoke; historical UE4/UE5 releases are exercised by the private 32-row compatibility workflow and are not considered verified until their matrix row is green.
 - UAT `BuildPlugin` is not used yet because it pulls a much broader automation surface. Once the minimal UBT path is proven, UECI can add an optional UAT-compatible packaging mode.
 - Cross-compiling to a platform different from the host is not the v0.4 goal; Windows and macOS are expected to use their native hosted/self-hosted environments.
 ## Executor diagnostics
@@ -96,9 +96,9 @@ By default it builds `fixtures/MinimalPlugin/UECIMinimal.uplugin`, a single Runt
 Some UE 5.8 source builds pre-create Unreal Build Accelerator before platform/toolchain validation even when CI-oriented XML configuration asks for local executors. UECI therefore resolves `Engine/Source/Programs/Shared/EpicGames.UBA/Library.props` together with the host-specific `Engine/Binaries/*/UnrealBuildAccelerator` payload during the UBT bootstrap, before `UnrealBuildTool.csproj` is compiled. This matters on a warm cache because adding the native UBA payload after UBT was already built may leave the managed UBA integration unavailable. Missing-UBA diagnostics are still handled as a compatibility fallback; that fallback recompiles UBT after materializing UBA. The full UBT log at `Engine/Programs/UnrealBuildTool/Log.txt` is merged with stdout/stderr before requirement parsing, because that log can contain the Linux SDK requirement that the short console error omits.
 
 
-## Mounted backend (v0.5 alpha.17)
+## Mounted backend (v0.5 alpha.18)
 
-On Linux x64, `--backend fuse` bypasses the materialized discovery loop. Build mode first exposes a commit-scoped minimal Engine profile (or the embedded alpha.6 working-set seed); if that working set proves incomplete, UECI retries once with the complete virtual namespace and learns the additional lower paths for the next run. The generic `ueci mount` command still exposes every tracked Epic Git/GitDependencies path. UBT itself is compiled inside the mount with Epic's bundled .NET SDK. The synthetic project and plugin copy remain outside the mount, while Engine-generated outputs use the persistent COW upper.
+On Linux x64, `--backend fuse` bypasses the materialized discovery loop. Build mode first exposes a commit-scoped minimal Engine profile (or the embedded alpha.6 working-set seed); if that working set proves incomplete, UECI retries once with the complete virtual namespace and learns the additional lower paths for the next run. The generic `ueci mount` command still exposes every tracked Epic Git/GitDependencies path. UBT is prepared inside the mount with the managed runtime appropriate to that Engine generation (modern Epic-bundled .NET or legacy Mono/MSBuild/precompiled UBT). The synthetic project and plugin copy remain outside the mount, while Engine-generated outputs use the persistent COW upper.
 
 
 Alpha.6 keeps the FUSE protocol connection persistent per worker, enables kernel/readdir metadata caching, precomputes immutable lower directory listings, reuses `git cat-file --batch` for lazy source content and safely batch-prefetches the known UBT managed-source seed only when the Epic metadata repository is verified as a one-commit shallow snapshot.
@@ -121,5 +121,7 @@ The Linux native toolchain is not part of Git/GitDependencies. Alpha.17 installs
 
 
 Alpha.17 is the cold-runner pass. Blobless Epic metadata and `Commit.gitdeps.xml` are cached outside the Engine workspace, content-only plugins skip UBT/toolchain bootstrap, and the CLI defaults to `--backend auto` (FUSE for native Linux x64). Mounted builds emit phase timings for metadata, cache restore/save, mount startup, UBT compile/build, toolchain download/extract, host generation, product collection, and packaging. Raw UBT filesystem probes are reported separately from candidate immutable Engine profile misses.
+
+Alpha.18 adds the multi-release compatibility layer. UECI reads `Build.version`, inspects the pinned UBT source for rule/configuration/CLI capabilities, selects modern .NET or legacy Mono/MSBuild execution, prefers a prebuilt legacy `UnrealBuildTool.exe` when Epic supplies one, and generates classic `SetupBinaries`/`TargetInfo` host rules for old UE4. The release workflow exercises 4.5–4.27 and 5.0–5.8 independently and requires a native plugin `.so` from every successful row.
 
 Use `./scripts/smoke-plugin-vfs.sh` for the first real build gate. The smoke enables aggregated VFS verbosity by default; set `UECI_VFS_VERBOSE=0` to silence those summaries. The materialized backend remains available as `--backend materialized`.

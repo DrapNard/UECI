@@ -19,6 +19,15 @@ public static class EpicBundledDotNetSdkResolver
         GitDependenciesManifest manifest,
         string runtimeIdentifier)
     {
+        return TryResolve(manifest, runtimeIdentifier)
+            ?? throw new InvalidDataException(
+                $"No Epic bundled .NET SDK was found for '{runtimeIdentifier}' in Commit.gitdeps.xml.");
+    }
+
+    public static EpicBundledDotNetSdkPlan? TryResolve(
+        GitDependenciesManifest manifest,
+        string runtimeIdentifier)
+    {
         ArgumentNullException.ThrowIfNull(manifest);
         ArgumentException.ThrowIfNullOrWhiteSpace(runtimeIdentifier);
 
@@ -50,8 +59,7 @@ public static class EpicBundledDotNetSdkResolver
 
         if (candidates.Count == 0)
         {
-            throw new InvalidDataException(
-                $"No Epic bundled .NET SDK was found for '{runtimeIdentifier}' in Commit.gitdeps.xml.");
+            return null;
         }
 
         (string bundlePrefix, Version sdkVersion) = candidates.Keys
