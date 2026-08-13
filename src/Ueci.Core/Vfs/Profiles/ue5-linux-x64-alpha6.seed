@@ -1,4 +1,4 @@
-# UECI alpha.7 bootstrap seed learned from the alpha.6 mounted smoke run.
+# UECI alpha.7 bootstrap seed learned from alpha.6, with cold-path inputs learned through alpha.16.
 # P <path> = recursive Git pathspec; F <path> = exact/leaf-oriented pathspec.
 P Engine/Build
 P Engine/Source/Programs/UnrealBuildTool
@@ -1069,6 +1069,7 @@ F Engine/Source/Runtime/Core/Public/HAL/PThreadSemaphore.h
 F Engine/Source/Runtime/Core/Public/HAL/PThreadsRecursiveMutex.h
 F Engine/Source/Runtime/Core/Public/HAL/PThreadsSharedMutex.h
 F Engine/Source/Runtime/Core/Public/HAL/PageCache.h
+F Engine/Source/Runtime/Core/Public/HAL/PerModuleInline.inl
 F Engine/Source/Runtime/Core/Public/HAL/Platform.h
 F Engine/Source/Runtime/Core/Public/HAL/PlatformAffinity.h
 F Engine/Source/Runtime/Core/Public/HAL/PlatformAtomics.h

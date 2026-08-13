@@ -89,39 +89,70 @@ public static class VirtualEngineMountFactory
             options.TokenEnvironmentVariable,
             cancellationToken).ConfigureAwait(false);
 
+        // The learned profile is independent from Commit.gitdeps.xml parsing. Start that tiny cache
+        // lookup as soon as the exact commit is known so it overlaps manifest acquisition on a
+        // completely fresh runner.
+        Task<VirtualEngineProfileDocument?> persistedTask = !options.EnableEngineProfiles || options.ForceDynamicProfile
+            ? Task.FromResult<VirtualEngineProfileDocument?>(null)
+            : VirtualEngineProfileStore.TryLoadAsync(
+                profileStoreRoot,
+                commit,
+                options.Progress,
+                cancellationToken);
+
+        bool autoManifest = string.IsNullOrWhiteSpace(options.ManifestPath);
         string manifestPath;
-        if (!string.IsNullOrWhiteSpace(options.ManifestPath))
+        if (!autoManifest)
         {
-            manifestPath = Path.GetFullPath(options.ManifestPath);
+            manifestPath = Path.GetFullPath(options.ManifestPath!);
         }
         else
         {
-            manifestPath = Path.Combine(stateRoot, "Commit.gitdeps.xml");
-            options.Progress?.Invoke("Materializing Commit.gitdeps.xml metadata...");
-            await git.MaterializeFileAsync(
-                metadataRoot,
-                "Engine/Build/Commit.gitdeps.xml",
-                manifestPath,
-                options.TokenEnvironmentVariable,
-                cancellationToken).ConfigureAwait(false);
+            string manifestCacheRoot = Path.Combine(
+                Path.GetFullPath(options.FetchOptions.CacheDirectory),
+                "engine-manifests");
+            Directory.CreateDirectory(manifestCacheRoot);
+            manifestPath = Path.Combine(manifestCacheRoot, commit.ToLowerInvariant() + ".gitdeps.xml");
+            if (!File.Exists(manifestPath) || new FileInfo(manifestPath).Length < 1024)
+            {
+                await MaterializeCommitManifestAsync(
+                    git, metadataRoot, manifestPath, options.TokenEnvironmentVariable, options.Progress, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                options.Progress?.Invoke($"[vfs/manifest] Reusing commit-cached Commit.gitdeps.xml for {commit[..Math.Min(12, commit.Length)]}.");
+            }
         }
 
-        GitDependenciesManifest fullManifest = await GitDependenciesManifestReader.LoadAsync(
-            manifestPath,
-            cancellationToken,
-            options.Progress).ConfigureAwait(false);
+        GitDependenciesManifest fullManifest;
+        try
+        {
+            fullManifest = await GitDependenciesManifestReader.LoadAsync(
+                manifestPath,
+                cancellationToken,
+                options.Progress).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (autoManifest
+            && ex is InvalidDataException or System.Xml.XmlException or FormatException)
+        {
+            options.Progress?.Invoke(
+                $"[vfs/manifest] Cached Commit.gitdeps.xml is invalid ({ex.GetType().Name}); refreshing it from Epic Git.");
+            try { File.Delete(manifestPath); } catch (FileNotFoundException) { }
+            await MaterializeCommitManifestAsync(
+                git, metadataRoot, manifestPath, options.TokenEnvironmentVariable, options.Progress, cancellationToken)
+                .ConfigureAwait(false);
+            fullManifest = await GitDependenciesManifestReader.LoadAsync(
+                manifestPath,
+                cancellationToken,
+                options.Progress).ConfigureAwait(false);
+        }
 
         EpicGitTreeIndex gitIndex;
         GitDependenciesManifest visibleManifest;
         VirtualEngineProfileSource profileSource;
 
-        VirtualEngineProfileDocument? persisted = !options.EnableEngineProfiles || options.ForceDynamicProfile
-            ? null
-            : await VirtualEngineProfileStore.TryLoadAsync(
-                profileStoreRoot,
-                commit,
-                options.Progress,
-                cancellationToken).ConfigureAwait(false);
+        VirtualEngineProfileDocument? persisted = await persistedTask.ConfigureAwait(false);
 
         if (persisted is not null)
         {
@@ -172,11 +203,14 @@ public static class VirtualEngineMountFactory
                 options.TokenEnvironmentVariable,
                 options.Progress,
                 cancellationToken);
+            string gitIndexCacheRoot = Path.Combine(
+                Path.GetFullPath(options.FetchOptions.CacheDirectory),
+                "engine-indexes");
             Task<GitHubGitTreeSizeIndex?> gitSizeTask = GitHubGitTreeSizeIndex.TryLoadAsync(
                 metadataRoot,
                 options.Repository,
                 commit,
-                stateRoot,
+                gitIndexCacheRoot,
                 options.TokenEnvironmentVariable,
                 options.Progress,
                 cancellationToken);
@@ -232,5 +266,31 @@ public static class VirtualEngineMountFactory
             profileStoreRoot,
             options.Progress,
             source);
+    }
+
+    private static async Task MaterializeCommitManifestAsync(
+        EpicGitClient git,
+        string metadataRoot,
+        string manifestPath,
+        string? tokenEnvironmentVariable,
+        Action<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        progress?.Invoke("Materializing Commit.gitdeps.xml metadata...");
+        string temporaryManifest = manifestPath + $".{Guid.NewGuid():N}.tmp";
+        try
+        {
+            await git.MaterializeFileAsync(
+                metadataRoot,
+                "Engine/Build/Commit.gitdeps.xml",
+                temporaryManifest,
+                tokenEnvironmentVariable,
+                cancellationToken).ConfigureAwait(false);
+            File.Move(temporaryManifest, manifestPath, overwrite: true);
+        }
+        finally
+        {
+            try { if (File.Exists(temporaryManifest)) File.Delete(temporaryManifest); } catch { }
+        }
     }
 }

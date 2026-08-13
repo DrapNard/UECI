@@ -25,6 +25,7 @@ internal static class Program
         ("materialization path cannot escape root", MaterializationPathSafetyAsync),
         ("git credential is process-only config", GitCredentialEnvironmentAsync),
         ("Epic sparse source seed materializes from a local partial clone", EpicSparseSourceMaterializationAsync),
+        ("Epic ref resolver returns an exact object id without checkout", EpicRefResolveAsync),
         ("GitHub tree size metadata splits truncated subtrees without blob content", GitHubTreeSizeMetadataAsync),
         ("virtual Engine view overlays GitDependencies over Git and performs lazy COW", VirtualEngineViewCowAsync),
         ("virtual Engine profile persists an accessed commit working set", VirtualEngineProfileRoundTripAsync),
@@ -301,6 +302,55 @@ internal static class Program
         }
     }
 
+    private static async Task EpicRefResolveAsync()
+    {
+        const string tokenVariable = "UECI_TEST_RESOLVE_TOKEN";
+        string root = CreateTempDirectory();
+        string? previousToken = Environment.GetEnvironmentVariable(tokenVariable);
+        try
+        {
+            string source = Path.Combine(root, "source");
+            string bare = Path.Combine(root, "remote.git");
+            Directory.CreateDirectory(source);
+            await RunGitAsync(source, ["init", "--quiet", "--initial-branch=main"]);
+            await RunGitAsync(source, ["config", "user.name", "UECI Tests"]);
+            await RunGitAsync(source, ["config", "user.email", "ueci@example.invalid"]);
+            WriteFixtureFile(source, "README.md", "fixture\n");
+            await RunGitAsync(source, ["add", "."]);
+            await RunGitAsync(source, ["commit", "--quiet", "-m", "fixture"]);
+            string expected = (await RunGitCaptureAsync(source, ["rev-parse", "HEAD"])).Trim();
+            await RunGitAsync(source, ["tag", "-a", "v-test", "-m", "fixture tag"]);
+            await RunGitAsync(root, ["clone", "--quiet", "--bare", source, bare]);
+
+            Environment.SetEnvironmentVariable(tokenVariable, "test-token");
+            var client = new EpicGitClient();
+            string remoteUri = new Uri(bare).AbsoluteUri;
+            string resolved = await client.ResolveRefAsync(
+                remoteUri,
+                "main",
+                tokenVariable);
+            Assert.Equal(expected, resolved);
+            string resolvedTag = await client.ResolveRefAsync(
+                remoteUri,
+                "v-test",
+                tokenVariable);
+            Assert.Equal(expected, resolvedTag);
+
+            string exactSnapshot = Path.Combine(root, "exact-snapshot");
+            string fetched = await client.InitializePartialRepositoryAsync(
+                exactSnapshot,
+                remoteUri,
+                resolved,
+                tokenVariable);
+            Assert.Equal(expected, fetched);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(tokenVariable, previousToken);
+            DeleteDirectory(root);
+        }
+    }
+
     private static async Task VirtualEngineViewCowAsync()
     {
         string root = CreateTempDirectory();
@@ -426,6 +476,15 @@ internal static class Program
                 create: true);
             await File.WriteAllTextAsync(recreated, "recreated\n");
             Assert.True(await fileSystem.GetMetadataAsync("Engine/Source/Runtime/Core/Public/Core.h") is not null);
+
+            int candidateMissesBeforeProbe = fileSystem.CandidateProfileMissCount;
+            Assert.True(await fileSystem.GetMetadataAsync(".ueci/ubt-home/optional-probe") is null);
+            Assert.True(await fileSystem.GetMetadataAsync("Engine/Source/Runtime/Core/Public/MissingProfileInput.h") is null);
+            Assert.True(fileSystem.ProfileMissCount >= 2);
+            Assert.Equal(candidateMissesBeforeProbe + 1, fileSystem.CandidateProfileMissCount);
+            Assert.True(fileSystem.CandidateMissingLowerPaths.Contains(
+                "Engine/Source/Runtime/Core/Public/MissingProfileInput.h",
+                StringComparer.Ordinal));
         }
         finally
         {
@@ -1489,7 +1548,12 @@ internal static class Program
             var source = new FakeToolchainArchiveSource(archive);
             var installer = new UnrealLinuxNativeToolchainInstaller(source);
             string cache = Path.Combine(cacheRoot, "cache");
-            UnrealLinuxNativeToolchainResult first = await installer.EnsureAsync(root, cache, cacheArchive: true);
+            string persistentStore = Path.Combine(cache, "toolchains", "installed", "linux-x64");
+            UnrealLinuxNativeToolchainResult first = await installer.EnsureAsync(
+                root,
+                cache,
+                cacheArchive: true,
+                persistentStoreRoot: persistentStore);
 
             Assert.True(first.Installed);
             Assert.False(first.ArchiveCacheHit);
@@ -1498,14 +1562,27 @@ internal static class Program
             Assert.True(File.Exists(Path.Combine(first.ToolchainDirectory, "ToolchainVersion.txt")));
             Assert.True(File.Exists(Path.Combine(
                 first.ToolchainDirectory, "x86_64-unknown-linux-gnu", "bin", "clang++")));
+            Assert.True(File.Exists(Path.Combine(
+                persistentStore, version, "x86_64-unknown-linux-gnu", "bin", "clang++")));
+            Assert.True(File.Exists(Path.Combine(
+                cache, "toolchains", "archives", $"native-linux-{version}.tar.gz")));
+            Assert.True(first.ExtractionBackend is "managed" or "tar+gzip" or "tar+pigz");
 
-            UnrealLinuxNativeToolchainResult second = await installer.EnsureAsync(root, cache, cacheArchive: true);
+            UnrealLinuxNativeToolchainResult second = await installer.EnsureAsync(
+                root,
+                cache,
+                cacheArchive: true,
+                persistentStoreRoot: persistentStore);
             Assert.False(second.Installed);
             Assert.Equal(0L, second.DownloadedBytes);
             Assert.Equal(1, source.DownloadCount);
 
             DeleteDirectoryEntry(first.ToolchainDirectory);
-            UnrealLinuxNativeToolchainResult third = await installer.EnsureAsync(root, cache, cacheArchive: false);
+            UnrealLinuxNativeToolchainResult third = await installer.EnsureAsync(
+                root,
+                cache,
+                cacheArchive: false,
+                persistentStoreRoot: persistentStore);
             Assert.True(third.Installed);
             Assert.False(third.ArchiveCacheHit);
             Assert.Equal(0L, third.DownloadedBytes);

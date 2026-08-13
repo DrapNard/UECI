@@ -10,7 +10,7 @@ namespace Ueci.Cli;
 
 internal static class Program
 {
-    private const string CliVersion = "0.5.0-alpha.16";
+    private const string CliVersion = "0.5.0-alpha.17";
 
     public static async Task<int> Main(string[] args)
     {
@@ -246,6 +246,12 @@ internal static class Program
                 await client.ProbeAsync(repo, reference, tokenEnv).ConfigureAwait(false);
                 Console.WriteLine($"Epic repository access OK: {reference}");
                 return 0;
+            case "resolve":
+            {
+                string commit = await client.ResolveRefAsync(repo, reference, tokenEnv).ConfigureAwait(false);
+                Console.WriteLine(commit);
+                return 0;
+            }
             case "init":
             {
                 string directory = RequireOption(args, "--dir");
@@ -475,7 +481,7 @@ internal static class Program
         string runtimeIdentifier = GetOption(args, "--host-rid") ?? UnrealHostRuntime.DetectRuntimeIdentifier();
         string platform = GetOption(args, "--platform") ?? UnrealPluginBuilder.PlatformForHostRuntime(runtimeIdentifier);
         string configuration = GetOption(args, "--configuration") ?? "Development";
-        string backend = (GetOption(args, "--backend") ?? "materialized").ToLowerInvariant();
+        string backend = (GetOption(args, "--backend") ?? "auto").ToLowerInvariant();
         EnginePresentationMode presentationMode = backend switch
         {
             "auto" => EnginePresentationMode.Auto,
@@ -521,6 +527,14 @@ internal static class Program
         foreach (UnrealPluginBuildPhaseResult phase in result.Phases)
         {
             Console.WriteLine($"Built target:       {phase.Target} [{string.Join(", ", phase.Modules)}] in {phase.Passes} pass(es)");
+        }
+        if (result.Timings is { Count: > 0 })
+        {
+            Console.WriteLine("Timing breakdown:");
+            foreach (UnrealPluginBuildTiming timing in result.Timings)
+            {
+                Console.WriteLine($"  {timing.Phase,-24} {FormatDuration(timing.Duration)}");
+            }
         }
         return 0;
     }
@@ -627,6 +641,13 @@ internal static class Program
     private static void WriteJson<T>(T value)
     {
         Console.WriteLine(JsonSerializer.Serialize(value, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        if (duration.TotalSeconds < 1) return $"{duration.TotalMilliseconds:0} ms";
+        if (duration.TotalMinutes < 1) return $"{duration.TotalSeconds:0.00} s";
+        return $"{duration.TotalMinutes:0.00} min";
     }
 
     private static string FormatBytes(long bytes)
@@ -760,15 +781,16 @@ internal static class Program
               --host-rid RID             Host runtime override.
               --platform PLATFORM        UBT platform override (default: derived from host RID).
               --configuration CONFIG     UBT configuration (default: Development).
-              --backend MODE             materialized (default), fuse, or auto.
+              --backend MODE             auto (default), materialized, or fuse.
               --vfs-verbose              Log FUSE request summaries plus cold CAS fills/mutations.
               --max-discovery-passes N   Materialized-backend retry cap (default: 32; unused by FUSE).
               --cache-dir PATH           Override the GitDependencies cache.
               --no-pack-cache            Discard compressed GitDependencies packs after extraction.
               --max-concurrent-packs N   Download/extract up to N packs concurrently.
 
-            The materialized backend keeps the v0.4 sparse discovery/retry loop. The experimental FUSE
-            backend mounts the complete pinned Engine namespace, compiles UBT inside that virtual Engine,
+            Auto selects the FUSE backend for native linux-x64 -> Linux builds and materialized elsewhere.
+            The materialized backend keeps the v0.4 sparse discovery/retry loop. The FUSE backend mounts
+            the pinned Engine working set, compiles UBT inside that virtual Engine,
             installs the host toolchain outside the mount, then runs each UBT target once while Git/GitDeps
             content hydrates into CAS only on real open/read requests.
             """);
@@ -795,6 +817,7 @@ internal static class Program
         Console.WriteLine("""
             Epic source commands:
               ueci epic probe [--repo URL] [--ref REF] [--token-env NAME]
+              ueci epic resolve [--repo URL] [--ref REF] [--token-env NAME]
               ueci epic init --dir PATH [--repo URL] [--ref REF] [--token-env NAME]
               ueci epic bootstrap --dir PATH [--manifest-out PATH] [--repo URL] [--ref REF] [--token-env NAME]
               ueci epic materialize --dir PATH --path ENGINE_PATH --out PATH [--token-env NAME]

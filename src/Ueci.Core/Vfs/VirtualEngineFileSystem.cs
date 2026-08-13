@@ -48,9 +48,17 @@ public sealed class VirtualEngineFileSystem : IDisposable
     public string StateDirectory { get; }
     public int LowerEntryCount => _index.EntryCount;
     internal VirtualEngineIndex LowerIndex => _index;
+    // UBT performs thousands of harmless existence probes against generated HOME/Intermediate/SDK
+    // paths. Keep the raw probe count for diagnostics, but expose a second count limited to immutable
+    // Engine roots that can actually indicate an incomplete commit profile.
     public int ProfileMissCount => _missingLowerPaths.Count;
+    public int CandidateProfileMissCount => _missingLowerPaths.Keys.Count(IsCandidateProfileInput);
     public IReadOnlyCollection<string> AccessedLowerPaths => _accessedLowerPaths.Keys.ToArray();
     public IReadOnlyCollection<string> MissingLowerPaths => _missingLowerPaths.Keys.ToArray();
+    public IReadOnlyCollection<string> CandidateMissingLowerPaths => _missingLowerPaths.Keys
+        .Where(IsCandidateProfileInput)
+        .OrderBy(path => path, StringComparer.Ordinal)
+        .ToArray();
     public VirtualEngineIoMetrics Metrics => new(
         Interlocked.Read(ref _gitHydratedFiles),
         Interlocked.Read(ref _gitHydratedBytes),
@@ -534,6 +542,16 @@ public sealed class VirtualEngineFileSystem : IDisposable
         {
             return fallback;
         }
+    }
+
+    private static bool IsCandidateProfileInput(string path)
+    {
+        string normalized = VirtualEnginePath.Normalize(path);
+        return normalized.StartsWith("Engine/Source/", StringComparison.Ordinal)
+            || normalized.StartsWith("Engine/Build/", StringComparison.Ordinal)
+            || normalized.StartsWith("Engine/Config/", StringComparison.Ordinal)
+            || normalized.StartsWith("Engine/Plugins/", StringComparison.Ordinal)
+            || normalized.StartsWith("Engine/Shaders/", StringComparison.Ordinal);
     }
 
     public void Dispose() => _gitBlobs.Dispose();

@@ -12,14 +12,36 @@ public sealed class EpicGitClient
         string? tokenEnvironmentVariable = null,
         CancellationToken cancellationToken = default)
     {
+        _ = await ResolveRefAsync(
+            repository,
+            gitRef,
+            tokenEnvironmentVariable,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Resolves a public ref name through git ls-remote without creating a local repository. This is
+    /// intentionally tiny so CI can derive an immutable cache key before bootstrapping the Engine.
+    /// </summary>
+    public async Task<string> ResolveRefAsync(
+        string? repository = null,
+        string? gitRef = null,
+        string? tokenEnvironmentVariable = null,
+        CancellationToken cancellationToken = default)
+    {
         string token = GitHubReadOnlyCredential.GetRequiredToken(tokenEnvironmentVariable);
         IReadOnlyDictionary<string, string> environment = GitHubReadOnlyCredential.CreateGitEnvironment(token);
         string repo = repository ?? DefaultRepository;
         string reference = gitRef ?? DefaultRef;
 
+        if (reference.Length == 40 && reference.All(Uri.IsHexDigit))
+        {
+            return reference.ToLowerInvariant();
+        }
+
         GitProcessResult result = await GitProcess.RunAsync(
             Environment.CurrentDirectory,
-            ["ls-remote", "--exit-code", repo, reference],
+            ["ls-remote", "--exit-code", repo, reference, reference + "^{}"],
             environment,
             cancellationToken).ConfigureAwait(false);
 
@@ -30,6 +52,23 @@ public sealed class EpicGitClient
                 "Verify that the GitHub account behind the token is linked to Epic and has repository access. " +
                 $"git: {result.StandardError.Trim()}");
         }
+
+        string[] lines = result.StandardOutput
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        string? peeled = lines.FirstOrDefault(line => line.EndsWith("^{}", StringComparison.Ordinal));
+        string? selected = peeled ?? lines.FirstOrDefault();
+        if (selected is null)
+        {
+            throw new InvalidDataException($"git ls-remote returned no object id for Epic ref '{reference}'.");
+        }
+
+        string objectId = selected.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries)[0];
+        if (objectId.Length != 40 || objectId.Any(character => !Uri.IsHexDigit(character)))
+        {
+            throw new InvalidDataException(
+                $"git ls-remote returned invalid object id '{objectId}' for Epic ref '{reference}'.");
+        }
+        return objectId.ToLowerInvariant();
     }
 
     public async Task<string> InitializePartialRepositoryAsync(

@@ -17,11 +17,15 @@ inputs:
     required: false
     default: .ueci/engine
   cache-dir:
-    description: UECI GitDependencies cache directory.
+    description: Stable UECI content/toolchain/UBT cache directory.
     required: false
     default: .ueci/cache
+  cache-enabled:
+    description: Restore/save the cold-start cache on trusted runs using the exact Epic commit. Fork PRs and pull_request_target are always uncached.
+    required: false
+    default: "true"
   cache-compressed-packs:
-    description: Keep downloaded .gz packs after verified blobs are extracted.
+    description: Keep downloaded GitDependencies .gz packs after verified blobs are extracted.
     required: false
     default: "false"
   plugin-path:
@@ -40,6 +44,20 @@ inputs:
     description: UBT configuration used by build-plugin.
     required: false
     default: Development
+  backend:
+    description: Engine presentation backend. auto selects FUSE for native Linux and materialized elsewhere.
+    required: false
+    default: auto
+outputs:
+  engine-commit:
+    description: Exact Epic object id resolved from engine-ref and used for the CI cache key.
+    value: ${{ steps.engine.outputs.commit }}
+  cache-hit:
+    description: Whether the exact UECI cold-start cache was restored.
+    value: ${{ steps.cache.outputs.cache-hit }}
+  package-dir:
+    description: Package output directory requested by the action.
+    value: ${{ inputs.package-dir }}
 runs:
   using: composite
   steps:
@@ -47,6 +65,43 @@ runs:
       uses: actions/setup-dotnet@v6
       with:
         dotnet-version: 8.0.x
+
+    - name: Build UECI once
+      shell: bash
+      run: dotnet build "$GITHUB_ACTION_PATH/Ueci.sln" -c Release --nologo
+
+    - name: Resolve exact Epic Engine commit
+      id: engine
+      shell: bash
+      env:
+        UECI_EPIC_GITHUB_TOKEN: ${{ inputs.epic-token }}
+        UECI_ACTION_ENGINE_REF: ${{ inputs.engine-ref }}
+      run: |
+        set -euo pipefail
+        commit="$(dotnet run --project "$GITHUB_ACTION_PATH/src/Ueci.Cli/Ueci.Cli.csproj" \
+          -c Release --no-build -- \
+          epic resolve --ref "$UECI_ACTION_ENGINE_REF")"
+        printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+
+    - name: Restore UECI cold-start cache
+      id: cache
+      if: ${{ inputs.cache-enabled == 'true' && github.event_name != 'pull_request_target' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+      uses: actions/cache@v5
+      with:
+        path: |
+          ${{ inputs.cache-dir }}/engine-profiles
+          ${{ inputs.cache-dir }}/engine-artifacts
+          ${{ inputs.cache-dir }}/engine-manifests
+          ${{ inputs.cache-dir }}/engine-indexes
+          ${{ inputs.cache-dir }}/epic-metadata
+          ${{ inputs.cache-dir }}/native
+          ${{ inputs.cache-dir }}/blobs
+          ${{ inputs.cache-dir }}/git-blobs
+          ${{ inputs.cache-dir }}/toolchains/installed
+        key: ueci-cold-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.engine.outputs.commit }}
+        restore-keys: |
+          ueci-cold-v2-${{ runner.os }}-${{ runner.arch }}-
+
     - name: Bootstrap UnrealBuildTool
       if: ${{ inputs.plugin-path == '' }}
       shell: bash
@@ -54,7 +109,7 @@ runs:
         UECI_EPIC_GITHUB_TOKEN: ${{ inputs.epic-token }}
         UECI_ACTION_ENGINE_DIR: ${{ inputs.engine-dir }}
         UECI_ACTION_CACHE_DIR: ${{ inputs.cache-dir }}
-        UECI_ACTION_ENGINE_REF: ${{ inputs.engine-ref }}
+        UECI_ACTION_ENGINE_REF: ${{ steps.engine.outputs.commit }}
         UECI_ACTION_CACHE_PACKS: ${{ inputs.cache-compressed-packs }}
       run: |
         set -euo pipefail
@@ -63,12 +118,13 @@ runs:
           extra+=(--no-pack-cache)
         fi
         dotnet run --project "$GITHUB_ACTION_PATH/src/Ueci.Cli/Ueci.Cli.csproj" \
-          -c Release -- \
+          -c Release --no-build -- \
           ubt bootstrap \
           --dir "$UECI_ACTION_ENGINE_DIR" \
           --cache-dir "$UECI_ACTION_CACHE_DIR" \
           --ref "$UECI_ACTION_ENGINE_REF" \
           "${extra[@]}"
+
     - name: Build Unreal plugin
       if: ${{ inputs.plugin-path != '' }}
       shell: bash
@@ -79,12 +135,13 @@ runs:
         UECI_ACTION_CACHE_DIR: ${{ inputs.cache-dir }}
         UECI_ACTION_PACKAGE_DIR: ${{ inputs.package-dir }}
         UECI_ACTION_CONFIGURATION: ${{ inputs.configuration }}
-        UECI_ACTION_ENGINE_REF: ${{ inputs.engine-ref }}
+        UECI_ACTION_ENGINE_REF: ${{ steps.engine.outputs.commit }}
         UECI_ACTION_PLATFORM: ${{ inputs.platform }}
         UECI_ACTION_CACHE_PACKS: ${{ inputs.cache-compressed-packs }}
+        UECI_ACTION_BACKEND: ${{ inputs.backend }}
       run: |
         set -euo pipefail
-        extra=()
+        extra=(--backend "$UECI_ACTION_BACKEND")
         if [[ "$UECI_ACTION_CACHE_PACKS" != "true" ]]; then
           extra+=(--no-pack-cache)
         fi
@@ -92,7 +149,7 @@ runs:
           extra+=(--platform "$UECI_ACTION_PLATFORM")
         fi
         dotnet run --project "$GITHUB_ACTION_PATH/src/Ueci.Cli/Ueci.Cli.csproj" \
-          -c Release -- \
+          -c Release --no-build -- \
           build-plugin "$UECI_ACTION_PLUGIN_PATH" \
           --engine-dir "$UECI_ACTION_ENGINE_DIR" \
           --cache-dir "$UECI_ACTION_CACHE_DIR" \
@@ -100,3 +157,32 @@ runs:
           --configuration "$UECI_ACTION_CONFIGURATION" \
           --ref "$UECI_ACTION_ENGINE_REF" \
           "${extra[@]}"
+
+    - name: Prune commit-scoped UECI cache
+      if: ${{ success() && inputs.cache-enabled == 'true' && github.event_name != 'pull_request_target' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+      shell: bash
+      env:
+        UECI_ACTION_CACHE_DIR: ${{ inputs.cache-dir }}
+        UECI_ACTION_ENGINE_COMMIT: ${{ steps.engine.outputs.commit }}
+      run: |
+        set -euo pipefail
+        cache="$UECI_ACTION_CACHE_DIR"
+        commit="$UECI_ACTION_ENGINE_COMMIT"
+
+        # Keep shared CAS/toolchains, but do not let a restore-key fallback make each new cache
+        # accumulate commit-specific profiles/UBT artifacts/manifests/indexes forever.
+        if [[ -d "$cache/engine-profiles" ]]; then
+          find "$cache/engine-profiles" -maxdepth 1 -type f -name '*.json.gz' ! -name "$commit.json.gz" -delete
+        fi
+        if [[ -d "$cache/engine-artifacts" ]]; then
+          find "$cache/engine-artifacts" -mindepth 1 -maxdepth 1 -type d ! -name "$commit" -exec rm -rf -- {} +
+        fi
+        if [[ -d "$cache/engine-manifests" ]]; then
+          find "$cache/engine-manifests" -maxdepth 1 -type f -name '*.gitdeps.xml' ! -name "$commit.gitdeps.xml" -delete
+        fi
+        if [[ -d "$cache/engine-indexes/git-tree-sizes" ]]; then
+          find "$cache/engine-indexes/git-tree-sizes" -maxdepth 1 -type f -name '*.tsv' ! -name "$commit.tsv" -delete
+        fi
+        if [[ -d "$cache/epic-metadata" ]]; then
+          find "$cache/epic-metadata" -mindepth 1 -maxdepth 1 -type d ! -name "$commit" -exec rm -rf -- {} +
+        fi

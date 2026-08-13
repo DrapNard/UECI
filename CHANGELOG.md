@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.5.0-alpha.17] - 2026-08-13
+
+### Performance
+
+- Optimizes the mounted backend specifically for ephemeral/cold CI runners instead of introducing a workspace-native object cache. Cold UBT Git backfill overlaps FUSE startup; once the view is live, UBT compilation, synthetic host generation, and Epic Linux toolchain acquisition run concurrently so independent bootstrap work overlaps on a fresh machine.
+- Moves the authoritative extracted Linux toolchain from the disposable mounted workspace into the shared UECI cache at `toolchains/installed/linux-x64/<version>`. The Engine SDK path remains a lightweight projection, so deleting the Engine workspace no longer forces a local re-extraction when the shared cache survives or is restored by CI.
+- Adds a native Linux archive extraction fast path (`tar`, with `pigz` when already installed) with a fully managed fallback, and increases sequential toolchain download/read buffers to 1 MiB. Mounted builds discard the redundant compressed toolchain archive after a verified persistent install.
+- Stores `Commit.gitdeps.xml` and exact Git blob-size indexes by Epic commit, moves the blobless Epic metadata repository/lazy Git CAS into the shared cache, and begins profile lookup concurrently with manifest acquisition.
+- Validates cached `Commit.gitdeps.xml` on load and automatically rematerializes it from the pinned Epic commit when persistent cache content is malformed.
+- Extends the embedded Linux seed with the `HAL/PerModuleInline.inl` input learned by the successful alpha.14/alpha.16 modular smoke, reducing first-run dynamic fallback risk before an exact commit profile exists.
+- Content-only plugins now bypass UBT compilation and native toolchain installation entirely on the mounted backend.
+- `EnginePresentationMode.Auto` now selects the FUSE backend automatically for native `linux-x64 -> Linux` builds; the CLI default `--backend` is now `auto`.
+
+### CI
+
+- The composite GitHub Action builds UECI once, resolves the exact Epic object id with the new `ueci epic resolve` command, uses that immutable id in an `actions/cache` key, and passes the same object id to the actual bootstrap/build so a moving branch cannot race the cache key. A same-OS/architecture restore-key can seed a new Engine commit with shared CAS/toolchain state; a final prune keeps only the active commit's profiles/manifests/indexes/UBT artifacts/metadata before the new exact-key cache is saved. The cache contains cold-start state, never the disposable Engine workspace.
+- Adds Action inputs for `backend` and `cache-enabled`, plus `engine-commit`, `cache-hit`, and `package-dir` outputs.
+- Guards the Epic-derived cold cache from untrusted workflow contexts: fork pull requests and `pull_request_target` always skip cache restore/save.
+
+### Observability
+
+- Mounted plugin builds now report a phase timing breakdown for Engine metadata, artifact restore/save, UBT prefetch/compile/native build, FUSE mount startup, host generation, toolchain download/extraction/projection, native-product collection, packaging, and total wall-clock time. Overlapped phases remain visible individually.
+- Splits raw missing-path probes from candidate immutable Engine profile misses. UBT's thousands of expected `.ueci`, HOME, generated-output and optional-SDK probes remain measurable without being presented as profile defects.
+
+### Changed
+
+- CLI version advanced to `0.5.0-alpha.17`.
+- Linux cold-runner work is now the optimization baseline; the next mounted-backend targets are Windows and macOS.
+
 ## [0.5.0-alpha.16] - 2026-08-13
 
 ### Fixed

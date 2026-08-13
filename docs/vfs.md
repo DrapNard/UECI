@@ -151,7 +151,7 @@ Git tree objects contain path/mode/object-id but not blob length. On the Epic/Gi
 3. locate Epic's bundled .NET SDK from `Commit.gitdeps.xml`;
 4. execute that `dotnet` binary **through FUSE** and compile `UnrealBuildTool.csproj` in the virtual Engine;
 5. create the synthetic plugin host outside the mount;
-6. install the Linux clang/sysroot toolchain into persistent UECI state and project it into `Engine/Extras/...`;
+6. install the Linux clang/sysroot toolchain into the shared UECI cache and project it into `Engine/Extras/...`;
 7. invoke each UBT target once; UBT/clang resolve Engine sources and native libraries through normal filesystem calls;
 8. package the plugin and unmount in a `finally`/async-dispose path.
 
@@ -169,7 +169,7 @@ The generic FUSE mount still builds the complete Git + GitDependencies namespace
 
 A profile stores Git path/OID/mode/size metadata, so the warm path does not need the global local `ls-tree` or GitHub tree-size crawl. GitDependencies are reduced to the selected Epic .NET SDK plus files actually used by the build. Directory parents are synthesized from retained files; unrelated directory-listing siblings are intentionally dropped.
 
-The same shared cache has a commit-scoped generated-artifact area for UBT, shared managed projects and Engine Rules assemblies. These files are restored into the writable upper layer before UBT starts and are discarded if the Engine commit changes. If a fast profile must expand through the dynamic fallback, the cached UBT binary is kept but Engine Rules assemblies are invalidated so `UE5Rules.dll` is regenerated while the complete namespace is visible.
+The same shared cache has a commit-scoped generated-artifact area for UBT and shared managed projects. These files are restored into the writable upper layer before UBT starts and are discarded if the Engine commit changes. If a fast profile must expand through the dynamic fallback, the cached UBT binary is kept but Engine Rules assemblies are invalidated so `UE5Rules.dll` is regenerated while the complete namespace is visible.
 
 ### Mounted hot-path performance
 
@@ -184,3 +184,14 @@ Alpha.6 removes several per-syscall/per-blob costs exposed by real UBT scans:
 ```bash
 ./scripts/smoke-plugin-vfs.sh
 ```
+
+
+### Cold-runner cache layout (alpha.17)
+
+Mounted plugin builds keep reusable immutable/bootstrap data outside the disposable Engine workspace. The cache contains exact-commit profiles, manifests and Git-size indexes, blobless Epic metadata, verified Git/GitDependencies CAS blobs, managed UBT artifacts, the compiled FUSE helper, and installed native toolchains. Engine-generated COW state and plugin build intermediates remain per-workspace. This separation lets hosted CI restore the expensive bootstrap substrate without requiring native object files from a previous plugin build.
+
+`VirtualEngineFileSystem` now distinguishes raw missing-path probes from candidate immutable Engine-input misses. UBT probes many intentionally absent HOME, `.ueci`, `Saved`, `Intermediate`, and optional SDK paths; those probes are still counted for diagnostics but are not treated as evidence that a learned Engine profile is incomplete.
+
+### CI cache rollover
+
+The composite Action keys saves by exact Epic commit, but may restore the latest cache from the same runner OS/architecture when a new commit has no exact hit. Shared CAS/toolchain entries survive that rollover. Before the new cache is saved, UECI removes commit-scoped profile, manifest, tree-size, managed-UBT, and blobless-metadata entries that do not belong to the active commit, avoiding monotonic cache growth.

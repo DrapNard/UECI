@@ -37,7 +37,8 @@ public sealed record UnrealPluginBuildResult(
     int BuildPasses,
     long DownloadedBytes,
     IReadOnlyList<UnrealPluginBuildPhaseResult> Phases,
-    IReadOnlyList<string> MaterializedRequirements);
+    IReadOnlyList<string> MaterializedRequirements,
+    IReadOnlyList<UnrealPluginBuildTiming>? Timings = null);
 
 public static class UnrealPluginBuildInvocation
 {
@@ -119,7 +120,18 @@ public sealed class UnrealPluginBuilder
         CancellationToken cancellationToken = default)
     {
         ValidateOptions(options);
-        if (options.PresentationMode == EnginePresentationMode.Mounted)
+        EnginePresentationMode presentationMode = options.PresentationMode;
+        if (presentationMode == EnginePresentationMode.Auto)
+        {
+            // Prefer the lazy mounted backend where it is production-ready today. Other hosts keep
+            // the materialized path until their native mount backends land (WinFsp/macFUSE next).
+            presentationMode = OperatingSystem.IsLinux()
+                && options.RuntimeIdentifier.Equals("linux-x64", StringComparison.OrdinalIgnoreCase)
+                && options.Platform.Equals("Linux", StringComparison.OrdinalIgnoreCase)
+                    ? EnginePresentationMode.Mounted
+                    : EnginePresentationMode.Materialized;
+        }
+        if (presentationMode == EnginePresentationMode.Mounted)
         {
             var mounted = new UnrealMountedPluginBuilder();
             return await mounted.BuildAsync(options, cancellationToken).ConfigureAwait(false);

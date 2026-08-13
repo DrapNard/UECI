@@ -1,5 +1,6 @@
 using System.Formats.Tar;
 using System.IO.Compression;
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -142,7 +143,7 @@ public sealed class HttpUnrealToolchainArchiveSource : IUnrealToolchainArchiveSo
 
         await using Stream source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         long before = destination.CanSeek ? destination.Position : 0;
-        await source.CopyToAsync(destination, 256 * 1024, cancellationToken).ConfigureAwait(false);
+        await source.CopyToAsync(destination, 1024 * 1024, cancellationToken).ConfigureAwait(false);
         if (destination.CanSeek)
         {
             return destination.Position - before;
@@ -166,7 +167,11 @@ public sealed record UnrealLinuxNativeToolchainResult(
     string ToolchainDirectory,
     bool Installed,
     bool ArchiveCacheHit,
-    long DownloadedBytes);
+    long DownloadedBytes,
+    TimeSpan DownloadDuration = default,
+    TimeSpan ExtractionDuration = default,
+    TimeSpan ProjectionDuration = default,
+    string ExtractionBackend = "none");
 
 public sealed class UnrealLinuxNativeToolchainInstaller
 {
@@ -303,21 +308,40 @@ public sealed class UnrealLinuxNativeToolchainInstaller
 
         if (IsUsable(paths.Store, descriptor.Version))
         {
+            long projectionStarted = Stopwatch.GetTimestamp();
             bool projectionChanged = EnsureProjection(paths.Store, paths.Projection, descriptor.Version);
             return new UnrealLinuxNativeToolchainResult(
                 descriptor.Version,
                 paths.Projection,
                 projectionChanged,
                 false,
-                0);
+                0,
+                ProjectionDuration: Stopwatch.GetElapsedTime(projectionStarted));
         }
 
-        string cacheRoot = Path.Combine(Path.GetFullPath(cacheDirectory), "toolchains");
-        Directory.CreateDirectory(cacheRoot);
+        string toolchainCacheRoot = Path.Combine(Path.GetFullPath(cacheDirectory), "toolchains");
+        string archiveRoot = Path.Combine(toolchainCacheRoot, "archives");
+        Directory.CreateDirectory(archiveRoot);
         string archiveName = $"native-linux-{descriptor.Version}.tar.gz";
-        string archive = Path.Combine(cacheRoot, archiveName);
+        string archive = Path.Combine(archiveRoot, archiveName);
+        string legacyArchive = Path.Combine(toolchainCacheRoot, archiveName);
+        if (!File.Exists(archive) && File.Exists(legacyArchive))
+        {
+            try
+            {
+                File.Move(legacyArchive, archive);
+            }
+            catch (IOException)
+            {
+                File.Copy(legacyArchive, archive, overwrite: true);
+            }
+        }
         bool cacheHit = File.Exists(archive) && new FileInfo(archive).Length > 2;
         long downloaded = 0;
+        TimeSpan downloadDuration = TimeSpan.Zero;
+        TimeSpan extractionDuration = TimeSpan.Zero;
+        TimeSpan projectionDuration = TimeSpan.Zero;
+        string extractionBackend = "none";
 
         if (cacheHit)
         {
@@ -336,6 +360,7 @@ public sealed class UnrealLinuxNativeToolchainInstaller
         if (!cacheHit)
         {
             progress?.Invoke($"Downloading Epic Linux native toolchain {descriptor.Version}...");
+            long downloadStarted = Stopwatch.GetTimestamp();
             string temp = archive + $".{Guid.NewGuid():N}.tmp";
             try
             {
@@ -344,7 +369,7 @@ public sealed class UnrealLinuxNativeToolchainInstaller
                     FileMode.CreateNew,
                     FileAccess.Write,
                     FileShare.None,
-                    256 * 1024,
+                    1024 * 1024,
                     FileOptions.Asynchronous | FileOptions.SequentialScan))
                 {
                     downloaded = await _source.DownloadAsync(
@@ -361,6 +386,10 @@ public sealed class UnrealLinuxNativeToolchainInstaller
                 TryDelete(temp);
                 throw;
             }
+            finally
+            {
+                downloadDuration = Stopwatch.GetElapsedTime(downloadStarted);
+            }
         }
 
         progress?.Invoke($"Extracting Epic Linux native toolchain {descriptor.Version} into persistent UECI storage...");
@@ -369,15 +398,14 @@ public sealed class UnrealLinuxNativeToolchainInstaller
         Directory.CreateDirectory(storeParent);
         string extraction = Path.Combine(storeParent, $".ueci-extract-{Guid.NewGuid():N}");
         Directory.CreateDirectory(extraction);
+        long extractionStarted = Stopwatch.GetTimestamp();
         try
         {
-            await using FileStream compressed = File.OpenRead(archive);
-            await using var gzip = new GZipStream(compressed, CompressionMode.Decompress, leaveOpen: false);
-            await TarFile.ExtractToDirectoryAsync(
-                gzip,
+            extractionBackend = await ExtractArchiveAsync(
+                archive,
                 extraction,
-                overwriteFiles: true,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                progress,
+                cancellationToken).ConfigureAwait(false);
 
             string extracted = LocateExtractedToolchain(extraction, descriptor.Version);
             DeleteDirectoryOrLink(paths.Store);
@@ -392,6 +420,7 @@ public sealed class UnrealLinuxNativeToolchainInstaller
         }
         finally
         {
+            extractionDuration = Stopwatch.GetElapsedTime(extractionStarted);
             TryDeleteDirectory(extraction);
         }
 
@@ -401,7 +430,9 @@ public sealed class UnrealLinuxNativeToolchainInstaller
                 $"Epic Linux toolchain '{descriptor.Version}' was extracted but does not contain the expected x86_64 compiler layout.");
         }
 
+        long projectionStartedFinal = Stopwatch.GetTimestamp();
         EnsureProjection(paths.Store, paths.Projection, descriptor.Version);
+        projectionDuration = Stopwatch.GetElapsedTime(projectionStartedFinal);
 
         if (!cacheArchive)
         {
@@ -413,7 +444,104 @@ public sealed class UnrealLinuxNativeToolchainInstaller
             paths.Projection,
             true,
             cacheHit,
-            downloaded);
+            downloaded,
+            downloadDuration,
+            extractionDuration,
+            projectionDuration,
+            extractionBackend);
+    }
+
+    private static async Task<string> ExtractArchiveAsync(
+        string archive,
+        string extractionDirectory,
+        Action<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (OperatingSystem.IsLinux() && TryFindExecutable("tar", out string? tar))
+        {
+            // Native tar/gzip is substantially cheaper than driving millions of archive entries
+            // through managed Stream/TarFile layers on ephemeral CI runners. Prefer pigz when it is
+            // already installed, but never require it. If pigz or native tar fails, retry with plain
+            // gzip before falling back to the fully managed extractor.
+            if (TryFindExecutable("pigz", out string? pigz))
+            {
+                ExternalProcessResult pigzResult = await ExternalProcess.RunAsync(
+                    tar!,
+                    extractionDirectory,
+                    [
+                        $"--use-compress-program={pigz}",
+                        "-xf",
+                        archive,
+                        "-C",
+                        extractionDirectory,
+                    ],
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (pigzResult.Succeeded)
+                {
+                    progress?.Invoke("[toolchain] Extracted with tar+pigz.");
+                    return "tar+pigz";
+                }
+
+                progress?.Invoke(
+                    $"[toolchain] tar+pigz extraction failed ({pigzResult.ExitCode}); retrying with tar+gzip.");
+                ResetExtractionDirectory(extractionDirectory);
+            }
+
+            ExternalProcessResult gzipResult = await ExternalProcess.RunAsync(
+                tar!,
+                extractionDirectory,
+                ["-xzf", archive, "-C", extractionDirectory],
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (gzipResult.Succeeded)
+            {
+                progress?.Invoke("[toolchain] Extracted with tar+gzip.");
+                return "tar+gzip";
+            }
+
+            progress?.Invoke(
+                $"[toolchain] Native tar extraction failed ({gzipResult.ExitCode}); falling back to managed extraction.");
+            ResetExtractionDirectory(extractionDirectory);
+        }
+
+        await using FileStream compressed = new(
+            archive,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            1024 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await using var gzip = new GZipStream(compressed, CompressionMode.Decompress, leaveOpen: false);
+        await TarFile.ExtractToDirectoryAsync(
+            gzip,
+            extractionDirectory,
+            overwriteFiles: true,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        return "managed";
+    }
+
+    private static void ResetExtractionDirectory(string extractionDirectory)
+    {
+        TryDeleteDirectory(extractionDirectory);
+        Directory.CreateDirectory(extractionDirectory);
+    }
+
+    private static bool TryFindExecutable(string executable, out string? fullPath)
+    {
+        string? path = Environment.GetEnvironmentVariable("PATH");
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            foreach (string directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string candidate = Path.Combine(directory, executable);
+                if (File.Exists(candidate))
+                {
+                    fullPath = candidate;
+                    return true;
+                }
+            }
+        }
+        fullPath = null;
+        return false;
     }
 
     private static ToolchainPaths GetPaths(string engineRoot, string version, string? persistentStoreRoot = null)

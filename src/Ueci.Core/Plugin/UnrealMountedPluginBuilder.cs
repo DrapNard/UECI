@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using Ueci.Epic;
 using Ueci.GitDeps;
 using Ueci.Unreal;
@@ -28,9 +31,11 @@ internal sealed class UnrealMountedPluginBuilder
                 "The first mounted plugin build backend currently supports linux-x64 -> Linux only.");
         }
 
-        UnrealPluginDescriptor plugin = await UnrealPluginDescriptor.ReadAsync(
-            options.PluginPath,
-            cancellationToken).ConfigureAwait(false);
+        var timings = new UnrealPluginBuildTimingCollector();
+        Stopwatch total = Stopwatch.StartNew();
+        UnrealPluginDescriptor plugin = await timings.MeasureAsync(
+            "plugin.descriptor",
+            () => UnrealPluginDescriptor.ReadAsync(options.PluginPath, cancellationToken)).ConfigureAwait(false);
         if (plugin.Modules.Any(module => module.IsProgramOnly))
         {
             string names = string.Join(", ", plugin.Modules.Where(module => module.IsProgramOnly).Select(module => module.Name));
@@ -38,9 +43,10 @@ internal sealed class UnrealMountedPluginBuilder
                 $"Program-only plugin modules are not supported by the synthetic project target yet: {names}.");
         }
 
+        UnrealPluginBuildResult result;
         try
         {
-            return await BuildOnceAsync(options, plugin, forceDynamicProfile: false, cancellationToken)
+            result = await BuildOnceAsync(options, plugin, timings, forceDynamicProfile: false, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (FastProfileIncompleteException ex)
@@ -57,24 +63,37 @@ internal sealed class UnrealMountedPluginBuilder
                 options.Progress?.Invoke($"[vfs/profile] ... and {ex.MissingPaths.Count - 12:N0} more miss(es).");
             }
 
-            return await BuildOnceAsync(options, plugin, forceDynamicProfile: true, cancellationToken)
+            result = await BuildOnceAsync(options, plugin, timings, forceDynamicProfile: true, cancellationToken)
                 .ConfigureAwait(false);
         }
+
+        total.Stop();
+        IReadOnlyList<UnrealPluginBuildTiming> snapshot = timings.Snapshot(total.Elapsed);
+        options.Progress?.Invoke(FormatTimingSummary(snapshot));
+        return result with { Timings = snapshot };
     }
 
     private static async Task<UnrealPluginBuildResult> BuildOnceAsync(
         UnrealPluginBuildOptions options,
         UnrealPluginDescriptor plugin,
+        UnrealPluginBuildTimingCollector timings,
         bool forceDynamicProfile,
         CancellationToken cancellationToken)
     {
         string workspaceRoot = Path.GetFullPath(options.EngineRoot);
         string mountedStateRoot = Path.Combine(workspaceRoot, ".ueci", "mounted-build");
-        string metadataRoot = Path.Combine(mountedStateRoot, "metadata");
+        string sharedCacheRoot = Path.GetFullPath(options.FetchOptions.CacheDirectory);
+        string metadataCacheKey = CreateMetadataCacheKey(options.Repository, options.GitRef);
+        string metadataRoot = Path.Combine(sharedCacheRoot, "epic-metadata", metadataCacheKey);
         string stateRoot = Path.Combine(mountedStateRoot, "state");
         string mountPoint = Path.Combine(mountedStateRoot, "engine-view");
         string hostWorkspaceRoot = Path.Combine(mountedStateRoot, "plugin-work");
-        string toolchainStore = Path.Combine(mountedStateRoot, "toolchains", "linux-x64");
+        // Native toolchains are immutable for an Epic SDK version. Keep the installed tree in the
+        // shared UECI cache rather than the disposable Engine workspace so ephemeral CI jobs can
+        // restore it directly without re-extracting the 1+ GiB archive.
+        string toolchainStore = Path.Combine(
+            sharedCacheRoot,
+            "toolchains", "installed", "linux-x64");
 
         Directory.CreateDirectory(mountedStateRoot);
         Directory.CreateDirectory(mountPoint);
@@ -83,7 +102,9 @@ internal sealed class UnrealMountedPluginBuilder
         options.Progress?.Invoke(
             $"Preparing virtual Unreal Engine for Epic ref '{options.GitRef}' " +
             $"(mounted backend; {(forceDynamicProfile ? "dynamic fallback" : "profile fast path")})...");
-        using VirtualEngineMountContext context = await VirtualEngineMountFactory.PrepareAsync(
+        using VirtualEngineMountContext context = await timings.MeasureAsync(
+            "engine.metadata",
+            () => VirtualEngineMountFactory.PrepareAsync(
             new VirtualEngineMountPreparationOptions(
                 MetadataRepositoryDirectory: metadataRoot,
                 StateDirectory: stateRoot,
@@ -97,25 +118,35 @@ internal sealed class UnrealMountedPluginBuilder
                 RuntimeIdentifier: options.RuntimeIdentifier,
                 EnableEngineProfiles: true,
                 ForceDynamicProfile: forceDynamicProfile),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken)).ConfigureAwait(false);
 
         var artifactCache = new VirtualEngineArtifactCache(options.FetchOptions.CacheDirectory, options.Progress);
-        await artifactCache.PrepareUpperForCommitAsync(
-            context.FileSystem.UpperRoot,
-            stateRoot,
-            context.Commit,
-            cancellationToken).ConfigureAwait(false);
-        bool restoredArtifacts = await artifactCache.RestoreAsync(
-            context.FileSystem.UpperRoot,
-            context.Commit,
-            cancellationToken).ConfigureAwait(false);
-        // Rules assemblies are profile-sensitive: the same Epic commit can legitimately be mounted
-        // with the embedded seed, a learned minimal profile, or the complete dynamic namespace. Keep
-        // the commit-scoped UBT binary hot, but always rebuild UE5Rules/UE5ProgramRules against the
-        // namespace that is actually visible for this build (only a few seconds on the optimized VFS).
-        artifactCache.ClearRuleArtifacts(context.FileSystem.UpperRoot);
-        bool reusableUbt = restoredArtifacts
-            && artifactCache.HasReusableUnrealBuildTool(context.FileSystem.UpperRoot);
+        bool restoredArtifacts = false;
+        bool reusableUbt = false;
+        if (plugin.HasCode)
+        {
+            restoredArtifacts = await timings.MeasureAsync(
+                "artifact.restore",
+                async () =>
+                {
+                    await artifactCache.PrepareUpperForCommitAsync(
+                        context.FileSystem.UpperRoot,
+                        stateRoot,
+                        context.Commit,
+                        cancellationToken).ConfigureAwait(false);
+                    return await artifactCache.RestoreAsync(
+                        context.FileSystem.UpperRoot,
+                        context.Commit,
+                        cancellationToken).ConfigureAwait(false);
+                }).ConfigureAwait(false);
+            // Rules assemblies are profile-sensitive: the same Epic commit can legitimately be mounted
+            // with the embedded seed, a learned minimal profile, or the complete dynamic namespace. Keep
+            // the commit-scoped UBT binary hot, but always rebuild UE5Rules/UE5ProgramRules against the
+            // namespace that is actually visible for this build (only a few seconds on the optimized VFS).
+            artifactCache.ClearRuleArtifacts(context.FileSystem.UpperRoot);
+            reusableUbt = restoredArtifacts
+                && artifactCache.HasReusableUnrealBuildTool(context.FileSystem.UpperRoot);
+        }
 
         Exception? failure = null;
         try
@@ -126,54 +157,161 @@ internal sealed class UnrealMountedPluginBuilder
 
             // A warm commit cache already contains UBT managed outputs, so there is no reason to
             // hydrate their managed source trees again. On a cold cache, batch-prefetching these
-            // stable bootstrap roots avoids thousands of individual promisor round-trips.
-            if (!reusableUbt)
+            // stable bootstrap roots avoids thousands of individual promisor round-trips. The
+            // backfill only writes Git objects, while mount startup only brings up the FUSE helper,
+            // so both can safely overlap before any UBT process is allowed to read the view.
+            Task prefetchTask = Task.CompletedTask;
+            if (plugin.HasCode && !reusableUbt)
             {
                 var epicGit = new EpicGitClient();
-                await epicGit.TryBackfillCurrentSnapshotPathsAsync(
-                    metadataRoot,
-                    [
-                        "Engine/Build",
-                        "Engine/Source/Programs/UnrealBuildTool",
-                        "Engine/Source/Programs/Shared",
-                    ],
-                    options.TokenEnvironmentVariable,
-                    minimumBatchSize: 256,
-                    progress: options.Progress,
-                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                prefetchTask = timings.MeasureAsync(
+                    "ubt.prefetch",
+                    async () =>
+                    {
+                        _ = await epicGit.TryBackfillCurrentSnapshotPathsAsync(
+                            metadataRoot,
+                            [
+                                "Engine/Build",
+                                "Engine/Source/Programs/UnrealBuildTool",
+                                "Engine/Source/Programs/Shared",
+                            ],
+                            options.TokenEnvironmentVariable,
+                            minimumBatchSize: 256,
+                            progress: options.Progress,
+                            cancellationToken: cancellationToken).ConfigureAwait(false);
+                    });
             }
-            else
+            else if (plugin.HasCode)
             {
                 options.Progress?.Invoke("[vfs/artifacts] Warm UBT cache: skipping managed bootstrap source prefetch.");
             }
 
             var fuse = new LinuxFuseMount();
-            await using LinuxFuseMountSession mount = await fuse.StartAsync(
-                context.FileSystem,
-                new LinuxFuseMountOptions(
-                    mountPoint,
-                    options.FetchOptions.CacheDirectory,
-                    Verbose: options.VerboseVfs,
-                    StartupTimeout: TimeSpan.FromMinutes(2),
-                    Progress: options.Progress),
-                cancellationToken).ConfigureAwait(false);
+            Task<LinuxFuseMountSession> mountTask = timings.MeasureAsync(
+                "fuse.mount",
+                () => fuse.StartAsync(
+                    context.FileSystem,
+                    new LinuxFuseMountOptions(
+                        mountPoint,
+                        options.FetchOptions.CacheDirectory,
+                        Verbose: options.VerboseVfs,
+                        StartupTimeout: TimeSpan.FromMinutes(2),
+                        Progress: options.Progress),
+                    cancellationToken));
+            await Task.WhenAll(prefetchTask, mountTask).ConfigureAwait(false);
+            LinuxFuseMountSession mountSession = await mountTask.ConfigureAwait(false);
+            await using LinuxFuseMountSession mount = mountSession;
 
             string virtualEngineRoot = mount.MountPoint;
             string dotNetRoot = GitDependencyPath.CombineUnderRoot(virtualEngineRoot, sdkPlan.BundlePrefix);
 
-            options.Progress?.Invoke(
-                $"Preparing UnrealBuildTool with Epic bundled .NET SDK {sdkPlan.SdkVersion}...");
-            var compiler = new UnrealBuildToolCompiler();
-            UnrealBuildToolCompileResult compile = await compiler.CompileAsync(
-                virtualEngineRoot,
-                dotNetRoot,
-                cancellationToken,
-                reuseExistingOutput: true,
-                progress: options.Progress).ConfigureAwait(false);
+            // Content-only plugins never need UBT or a native toolchain. This matters on cold CI
+            // runners: package them immediately instead of paying the managed/native bootstrap cost.
+            if (!plugin.HasCode)
+            {
+                options.Progress?.Invoke("Preparing synthetic content-only plugin host...");
+                UnrealPluginHostLayout contentHost = await timings.MeasureAsync(
+                    "host.prepare",
+                    () => UnrealPluginHostProject.PrepareAsync(
+                        virtualEngineRoot,
+                        plugin,
+                        hostWorkspaceRoot,
+                        cancellationToken)).ConfigureAwait(false);
 
-            DotNetRuntimeConfig runtimeConfig = await DotNetRuntimeConfig.ReadAsync(
-                compile.Paths.RuntimeConfigPath,
-                cancellationToken).ConfigureAwait(false);
+                VirtualEngineIoMetrics contentMetrics = context.FileSystem.Metrics;
+                long contentDownloaded = contentMetrics.GitDependenciesDownloadedBytes;
+                string contentPackage = await timings.MeasureAsync(
+                    "package",
+                    () => UnrealPluginPackager.PackageAsync(
+                        contentHost,
+                        plugin,
+                        options.OutputDirectory,
+                        new UnrealPluginPackageReport(
+                            plugin.Name,
+                            context.Commit,
+                            options.Platform,
+                            options.Configuration,
+                            Array.Empty<string>(),
+                            0,
+                            contentDownloaded,
+                            DateTimeOffset.UtcNow),
+                        cancellationToken)).ConfigureAwait(false);
+                return new UnrealPluginBuildResult(
+                    plugin.Name,
+                    contentPackage,
+                    workspaceRoot,
+                    context.Commit,
+                    options.Platform,
+                    options.Configuration,
+                    0,
+                    contentDownloaded,
+                    Array.Empty<UnrealPluginBuildPhaseResult>(),
+                    [
+                        "MountedBackend:FUSE3",
+                        $"EngineProfile:{context.ProfileSource}",
+                        $"GitHydratedFiles:{contentMetrics.GitHydratedFiles:N0}",
+                        $"GitHydratedBytes:{contentMetrics.GitHydratedBytes:N0}",
+                        $"GitDepsHydratedFiles:{contentMetrics.GitDependenciesHydratedFiles:N0}",
+                    ]);
+            }
+
+            // These three cold-start jobs are independent once the FUSE view exists. Run them
+            // concurrently so toolchain download/extraction overlaps UBT compilation and host
+            // generation instead of serially extending every fresh runner.
+            options.Progress?.Invoke(
+                $"Cold bootstrap: preparing UBT, synthetic host, and Epic Linux toolchain concurrently...");
+
+            var compiler = new UnrealBuildToolCompiler();
+            Task<UnrealBuildToolCompileResult> compileTask = timings.MeasureAsync(
+                "ubt.compile",
+                () => compiler.CompileAsync(
+                    virtualEngineRoot,
+                    dotNetRoot,
+                    cancellationToken,
+                    reuseExistingOutput: true,
+                    progress: options.Progress));
+
+            Task<UnrealPluginHostLayout> hostTask = timings.MeasureAsync(
+                "host.prepare",
+                () => UnrealPluginHostProject.PrepareAsync(
+                    virtualEngineRoot,
+                    plugin,
+                    hostWorkspaceRoot,
+                    cancellationToken));
+
+            options.Progress?.Invoke("Ensuring Epic Linux native toolchain for the mounted build...");
+            var linuxToolchain = new UnrealLinuxNativeToolchainInstaller();
+            Task<UnrealLinuxNativeToolchainResult> toolchainTask = timings.MeasureAsync(
+                "toolchain.ensure",
+                () => linuxToolchain.EnsureAsync(
+                    virtualEngineRoot,
+                    options.FetchOptions.CacheDirectory,
+                    // The installed toolchain itself now lives in the shared cache. Keeping the
+                    // 1+ GiB gzip as well only duplicates CI cache payload, so discard it after a
+                    // verified install. Direct installer callers can still opt into archive caching.
+                    cacheArchive: false,
+                    progress: options.Progress,
+                    cancellationToken: cancellationToken,
+                    persistentStoreRoot: toolchainStore));
+
+            await Task.WhenAll(compileTask, hostTask, toolchainTask).ConfigureAwait(false);
+            UnrealBuildToolCompileResult compile = await compileTask.ConfigureAwait(false);
+            UnrealPluginHostLayout host = await hostTask.ConfigureAwait(false);
+            UnrealLinuxNativeToolchainResult toolchain = await toolchainTask.ConfigureAwait(false);
+            timings.Add("toolchain.download", toolchain.DownloadDuration);
+            timings.Add("toolchain.extract", toolchain.ExtractionDuration);
+            timings.Add("toolchain.project", toolchain.ProjectionDuration);
+            options.Progress?.Invoke(
+                $"[toolchain] {toolchain.Version}: " +
+                $"download={FormatDuration(toolchain.DownloadDuration)}, " +
+                $"extract={FormatDuration(toolchain.ExtractionDuration)} ({toolchain.ExtractionBackend}), " +
+                $"projection={FormatDuration(toolchain.ProjectionDuration)}.");
+
+            DotNetRuntimeConfig runtimeConfig = await timings.MeasureAsync(
+                "ubt.runtime-config",
+                () => DotNetRuntimeConfig.ReadAsync(
+                    compile.Paths.RuntimeConfigPath,
+                    cancellationToken)).ConfigureAwait(false);
             EpicBundledDotNetPlan runtimePlan = EpicBundledDotNetResolver.Resolve(
                 context.Manifest,
                 runtimeConfig,
@@ -184,66 +322,10 @@ internal sealed class UnrealMountedPluginBuilder
                     $"UBT runtime resolved to '{runtimePlan.BundlePrefix}', but compilation used '{sdkPlan.BundlePrefix}'.");
             }
 
-            options.Progress?.Invoke("Preparing synthetic plugin host outside the FUSE mount...");
-            UnrealPluginHostLayout host = await UnrealPluginHostProject.PrepareAsync(
-                virtualEngineRoot,
-                plugin,
-                hostWorkspaceRoot,
-                cancellationToken).ConfigureAwait(false);
             options.Progress?.Invoke(
                 "Using hermetic local UBT executor configuration (UBA/XGE/FASTBuild/SN-DBS disabled).");
 
-            long downloaded = 0;
-            if (plugin.HasCode)
-            {
-                options.Progress?.Invoke("Ensuring Epic Linux native toolchain for the mounted build...");
-                var linuxToolchain = new UnrealLinuxNativeToolchainInstaller();
-                UnrealLinuxNativeToolchainResult toolchain = await linuxToolchain.EnsureAsync(
-                    virtualEngineRoot,
-                    options.FetchOptions.CacheDirectory,
-                    cacheArchive: options.FetchOptions.CacheCompressedPacks,
-                    progress: options.Progress,
-                    cancellationToken: cancellationToken,
-                    persistentStoreRoot: toolchainStore).ConfigureAwait(false);
-                downloaded += toolchain.DownloadedBytes;
-            }
-
-            if (!plugin.HasCode)
-            {
-                VirtualEngineIoMetrics contentMetrics = context.FileSystem.Metrics;
-                downloaded += contentMetrics.GitDependenciesDownloadedBytes;
-                string contentPackage = await UnrealPluginPackager.PackageAsync(
-                    host,
-                    plugin,
-                    options.OutputDirectory,
-                    new UnrealPluginPackageReport(
-                        plugin.Name,
-                        context.Commit,
-                        options.Platform,
-                        options.Configuration,
-                        Array.Empty<string>(),
-                        0,
-                        downloaded,
-                        DateTimeOffset.UtcNow),
-                    cancellationToken).ConfigureAwait(false);
-                return new UnrealPluginBuildResult(
-                    plugin.Name,
-                    contentPackage,
-                    workspaceRoot,
-                    context.Commit,
-                    options.Platform,
-                    options.Configuration,
-                    0,
-                    downloaded,
-                    Array.Empty<UnrealPluginBuildPhaseResult>(),
-                    [
-                        "MountedBackend:FUSE3",
-                        $"EngineProfile:{context.ProfileSource}",
-                        $"GitHydratedFiles:{contentMetrics.GitHydratedFiles:N0}",
-                        $"GitHydratedBytes:{contentMetrics.GitHydratedBytes:N0}",
-                        $"GitDepsHydratedFiles:{contentMetrics.GitDependenciesHydratedFiles:N0}",
-                    ]);
-            }
+            long downloaded = toolchain.DownloadedBytes;
 
             IReadOnlyList<MountedBuildPhase> phases = CreatePhases(plugin, host);
             var phaseResults = new List<UnrealPluginBuildPhaseResult>();
@@ -269,11 +351,13 @@ internal sealed class UnrealMountedPluginBuilder
                     options.Configuration,
                     phase.Modules,
                     options.RuntimeIdentifier);
-                ExternalProcessResult result = await runner.RunAsync(
-                    compile.Paths,
-                    dotNetRoot,
-                    arguments,
-                    cancellationToken).ConfigureAwait(false);
+                ExternalProcessResult result = await timings.MeasureAsync(
+                    $"ubt.build.{phase.Target}",
+                    () => runner.RunAsync(
+                        compile.Paths,
+                        dotNetRoot,
+                        arguments,
+                        cancellationToken)).ConfigureAwait(false);
 
                 string diagnostics = CombineDiagnostics(result, virtualEngineRoot);
                 string logPath = Path.Combine(logsDirectory, $"{phase.Target}-mounted.log");
@@ -298,34 +382,39 @@ internal sealed class UnrealMountedPluginBuilder
             // TargetBuildEnvironment.Unique can place modular products beside the synthetic target
             // instead of directly in Plugins/<Name>/Binaries. Harvest only files whose binary/module
             // metadata names resolve to the plugin modules, then package from the canonical plugin tree.
-            UnrealPluginBuildProductCollection collectedProducts = UnrealPluginBuildProductCollector.Collect(
-                host,
-                builtModules,
-                options.Platform,
-                virtualEngineRoot,
-                options.Progress);
+            UnrealPluginBuildProductCollection collectedProducts = timings.Measure(
+                "products.collect",
+                () => UnrealPluginBuildProductCollector.Collect(
+                    host,
+                    builtModules,
+                    options.Platform,
+                    virtualEngineRoot,
+                    options.Progress));
 
             VirtualEngineIoMetrics metrics = context.FileSystem.Metrics;
             downloaded += metrics.GitDependenciesDownloadedBytes;
             options.Progress?.Invoke(
                 $"Mounted Engine I/O: {metrics.GitHydratedFiles:N0} Git blobs / {FormatBytes(metrics.GitHydratedBytes)} hydrated; " +
                 $"{metrics.GitDependenciesHydratedFiles:N0} GitDependencies blobs; {FormatBytes(metrics.GitDependenciesDownloadedBytes)} GitDeps network; " +
-                $"profile={context.ProfileSource}, misses={context.FileSystem.ProfileMissCount:N0}.");
+                $"profile={context.ProfileSource}, probes={context.FileSystem.ProfileMissCount:N0}, " +
+                $"candidate-input-misses={context.FileSystem.CandidateProfileMissCount:N0}.");
 
-            string packaged = await UnrealPluginPackager.PackageAsync(
-                host,
-                plugin,
-                options.OutputDirectory,
-                new UnrealPluginPackageReport(
-                    plugin.Name,
-                    context.Commit,
-                    options.Platform,
-                    options.Configuration,
-                    builtModules,
-                    totalPasses,
-                    downloaded,
-                    DateTimeOffset.UtcNow),
-                cancellationToken).ConfigureAwait(false);
+            string packaged = await timings.MeasureAsync(
+                "package",
+                () => UnrealPluginPackager.PackageAsync(
+                    host,
+                    plugin,
+                    options.OutputDirectory,
+                    new UnrealPluginPackageReport(
+                        plugin.Name,
+                        context.Commit,
+                        options.Platform,
+                        options.Configuration,
+                        builtModules,
+                        totalPasses,
+                        downloaded,
+                        DateTimeOffset.UtcNow),
+                    cancellationToken)).ConfigureAwait(false);
 
             return new UnrealPluginBuildResult(
                 plugin.Name,
@@ -342,7 +431,8 @@ internal sealed class UnrealMountedPluginBuilder
                     $"EngineProfile:{context.ProfileSource}",
                     $"VirtualEngine:{virtualEngineRoot}",
                     $"VirtualEntries:{context.FileSystem.LowerEntryCount:N0}",
-                    $"ProfileMisses:{context.FileSystem.ProfileMissCount:N0}",
+                    $"ProfileProbeMisses:{context.FileSystem.ProfileMissCount:N0}",
+                    $"ProfileCandidateMisses:{context.FileSystem.CandidateProfileMissCount:N0}",
                     $"GitHydratedFiles:{metrics.GitHydratedFiles:N0}",
                     $"GitHydratedBytes:{metrics.GitHydratedBytes:N0}",
                     $"GitDepsHydratedFiles:{metrics.GitDependenciesHydratedFiles:N0}",
@@ -355,30 +445,37 @@ internal sealed class UnrealMountedPluginBuilder
             if (context.IsFastProfile && ShouldRetryWithDynamicProfile(ex))
             {
                 throw new FastProfileIncompleteException(
-                    SelectActionableMissingPaths(ex, context.FileSystem.MissingLowerPaths),
+                    SelectActionableMissingPaths(ex, context.FileSystem.CandidateMissingLowerPaths),
                     ex);
             }
             throw;
         }
         finally
         {
-            try
-            {
-                await context.SaveLearnedProfileAsync(CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                options.Progress?.Invoke($"[vfs/profile] Unable to save learned profile: {ex.Message}");
-            }
-
-            if (failure is null)
+            if (plugin.HasCode)
             {
                 try
                 {
-                    await artifactCache.SaveAsync(
-                        context.FileSystem.UpperRoot,
-                        context.Commit,
-                        CancellationToken.None).ConfigureAwait(false);
+                    await timings.MeasureAsync(
+                        "profile.save",
+                        () => context.SaveLearnedProfileAsync(CancellationToken.None)).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    options.Progress?.Invoke($"[vfs/profile] Unable to save learned profile: {ex.Message}");
+                }
+            }
+
+            if (failure is null && plugin.HasCode)
+            {
+                try
+                {
+                    await timings.MeasureAsync(
+                        "artifact.save",
+                        () => artifactCache.SaveAsync(
+                            context.FileSystem.UpperRoot,
+                            context.Commit,
+                            CancellationToken.None)).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -533,6 +630,55 @@ internal sealed class UnrealMountedPluginBuilder
             catch (UnauthorizedAccessException) { }
         }
         return string.Join(Environment.NewLine, parts.Where(value => value.Length != 0));
+    }
+
+    private static string CreateMetadataCacheKey(string repository, string gitRef)
+    {
+        // The GitHub Action pins moving refs before entering the builder. Preserve that exact object
+        // id in the on-disk path so CI can prune/restore commit-scoped metadata without recomputing a
+        // private hash. Non-pinned direct CLI callers still get a stable repository/ref hash.
+        if (gitRef.Length == 40 && gitRef.All(Uri.IsHexDigit))
+        {
+            return gitRef.ToLowerInvariant();
+        }
+
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(repository + "\n" + gitRef));
+        return Convert.ToHexString(hash).ToLowerInvariant()[..20];
+    }
+
+    private static string FormatTimingSummary(IReadOnlyList<UnrealPluginBuildTiming> timings)
+    {
+        string[] preferred =
+        [
+            "engine.metadata",
+            "artifact.restore",
+            "ubt.prefetch",
+            "fuse.mount",
+            "ubt.compile",
+            "host.prepare",
+            "toolchain.ensure",
+            "toolchain.download",
+            "toolchain.extract",
+            "ubt.build.UECIHost",
+            "ubt.build.UECIHostEditor",
+            "products.collect",
+            "package",
+            "total",
+        ];
+        var map = timings.ToDictionary(item => item.Phase, item => item.Duration, StringComparer.Ordinal);
+        string[] values = preferred
+            .Where(map.ContainsKey)
+            .Select(phase => $"{phase}={FormatDuration(map[phase])}")
+            .ToArray();
+        return "[timing] " + string.Join(" | ", values);
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        if (duration <= TimeSpan.Zero) return "0ms";
+        if (duration.TotalSeconds < 1) return $"{duration.TotalMilliseconds:0}ms";
+        if (duration.TotalMinutes < 1) return $"{duration.TotalSeconds:0.00}s";
+        return $"{(int)duration.TotalMinutes}m{duration.Seconds:00}.{duration.Milliseconds / 10:00}s";
     }
 
     private static string FormatBytes(long value)

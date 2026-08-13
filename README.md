@@ -2,7 +2,7 @@
 
 **UECI is an experimental, minimal Unreal Engine substrate for CI/CD.** Its goal is to build Unreal Engine code plugins without installing a full Unreal Engine tree on every runner.
 
-> Status: **v0.5 alpha / technical prototype.** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, the materialized lazy plugin-build fallback, and a real Linux/FUSE3 virtual Engine mount now exist. `build-plugin --backend fuse` can compile UBT and the plugin directly through that mounted Engine on Linux x64. Windows/macOS mounted backends remain roadmap items.
+> Status: **v0.5 alpha / technical prototype (alpha.17).** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, the materialized lazy plugin-build fallback, and a real Linux/FUSE3 virtual Engine mount now exist. `build-plugin --backend fuse` can compile UBT and the plugin directly through that mounted Engine on Linux x64. Windows/macOS mounted backends remain roadmap items.
 
 ## Why
 
@@ -246,11 +246,11 @@ UECI itself still targets .NET 8 for easy development. UBT is compiled with the 
 
 For the Epic Git source seed, Git 2.49+ is strongly recommended. UECI creates a cone-mode sparse checkout for the UBT source seed and uses `git backfill --sparse` when available to batch missing blobs from the `--filter=blob:none` repository before populating the worktree. Older Git versions still fall back to lazy checkout, but that path can be dramatically slower on Unreal's source tree.
 
-Sparse worktree updates, GitDependencies overlays, and externally installed SDKs are treated as separate layers. If a sparse checkout update displaces a file previously overlaid by GitDependencies (for example Epic's bundled `dotnet` host), UECI restores only the missing overlay paths from its content-addressed blob cache. Native Linux toolchains use a persistent store under `.ueci/toolchains/linux-x64/<version>` and a lightweight projection at `Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/<version>`. Sparse updates may remove the projection, but never the authoritative payload; UECI recreates it before the next UBT pass.
+Sparse worktree updates, GitDependencies overlays, and externally installed SDKs are treated as separate layers. If a sparse checkout update displaces a file previously overlaid by GitDependencies (for example Epic's bundled `dotnet` host), UECI restores only the missing overlay paths from its content-addressed blob cache. Native Linux toolchains use a persistent store under the shared UECI cache at `toolchains/installed/linux-x64/<version>` and a lightweight projection at `Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/Linux_x64/<version>`. Sparse updates may remove the projection, but never the authoritative payload; UECI recreates it before the next UBT pass.
 
 ## Build a plugin (experimental)
 
-Two backends now coexist. `materialized` keeps the v0.4 sparse discovery/retry loop as the portable fallback. `fuse` (Linux x64) mounts the complete pinned Engine namespace, compiles UBT **inside the virtual Engine**, installs the Epic native toolchain in persistent state outside the mount, and invokes each UBT target once while Git/GitDependencies files hydrate into CAS on normal filesystem access.
+Two backends now coexist. `auto` is the default and selects `fuse` for native Linux x64 builds while keeping `materialized` as the portable fallback elsewhere. `fuse` (Linux x64) mounts the exact learned/seeded pinned Engine working set (with one dynamic fallback when required), compiles UBT **inside the virtual Engine**, installs the Epic native toolchain in persistent state outside the mount, and invokes each UBT target once while Git/GitDependencies files hydrate into CAS on normal filesystem access.
 
 ```bash
 export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
@@ -264,7 +264,7 @@ dotnet run --project src/Ueci.Cli -- \
   --no-pack-cache
 ```
 
-The mounted build keeps the host project and the extracted Linux toolchain outside the FUSE worktree. Engine-generated `Intermediate`, `Saved`, UBT `bin/obj`, and other writes land in the persistent COW upper. At the end UECI reports Git blobs/bytes hydrated and GitDependencies network bytes so the real working set can be measured.
+The mounted build keeps the host project outside the FUSE worktree and stores the authoritative extracted Linux toolchain in the shared UECI cache, projecting it into the mounted Engine only for UBT. Engine-generated `Intermediate`, `Saved`, UBT `bin/obj`, and other writes land in the persistent COW upper. At the end UECI reports Git blobs/bytes hydrated and GitDependencies network bytes so the real working set can be measured.
 
 Real-host smokes:
 
@@ -310,20 +310,48 @@ The credential field stores only the **environment variable name**, never a secr
 
 > **Executor bootstrap:** UE 5.8 can pre-create UBA before platform validation. UECI therefore materializes the tiny managed `EpicGames.UBA/Library.props` plus the host-specific native UBA payload **before compiling UBT**. Missing-UBA diagnostics remain supported as a lazy fallback, and the full UBT log is merged into discovery so the same failed pass can reveal the native platform SDK requirement.
 
+## Cold-runner optimization (alpha.17)
+
+The Linux mounted path is optimized for an ephemeral runner rather than assuming a previous native build workspace. After the virtual Engine is mounted, UECI starts three independent operations together: managed UBT preparation, synthetic host generation, and Linux toolchain acquisition. On a truly empty cache this overlaps the largest bootstrap stages; on a restored cache each stage independently collapses to a local hit.
+
+The shared cache is intentionally separate from `--engine-dir`:
+
+```text
+<cache-dir>/
+├── blobs/                       # verified GitDependencies CAS blobs
+├── engine-artifacts/<commit>/   # managed UBT/shared outputs
+├── engine-manifests/            # Commit.gitdeps.xml by exact commit
+├── engine-indexes/              # exact Git blob-size metadata by commit
+├── engine-profiles/             # minimal Engine working sets
+├── epic-metadata/               # blobless Git metadata stores
+├── git-blobs/                   # content-addressed lazy Epic Git blobs
+├── native/fuse3/                # compiled tiny FUSE helper
+└── toolchains/installed/
+    └── linux-x64/<version>/      # extracted Epic native clang/sysroot
+```
+
+The disposable Engine workspace still contains COW/generated state for the current job only. UECI deliberately does **not** require a previous job's native Core/plugin object files for this optimization pass. Every mounted build also prints a timing table so cold-runner regressions can be attributed to metadata, toolchain, UBT, native compilation, collection, or packaging instead of being inferred from total wall time.
+
+The composite Action persists this cold-start cache under an exact Epic-commit key on trusted jobs. On a new commit it may restore the latest same-OS/architecture cache as a seed, reusing shared CAS/toolchain content; after the build it prunes old commit-scoped profiles, manifests, indexes, UBT artifacts, and metadata before the new exact-key cache is saved. Because the cache can contain Epic-derived metadata, lazy Git blobs, and managed UBT outputs, UECI never restores or saves it for fork pull requests or `pull_request_target`; those jobs run uncached. Do not treat an Actions cache as a secret store.
+
 ## GitHub Action (prototype)
 
-The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the experimental v0.4 lazy plugin build and package the result.
+The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the lazy plugin build and package the result. Alpha.17 resolves the exact Epic ref object id first and keys the GitHub Actions cold-start cache with it, so moving refs such as `release` cannot accidentally reuse a cache as if the Engine commit were unchanged.
 
 ```yaml
-- uses: your-org/ueci@v0.5.0-alpha.16
+- uses: your-org/ueci@v0.5.0-alpha.17
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release
     plugin-path: MyPlugin/MyPlugin.uplugin
     package-dir: .ueci/package
+    backend: auto
+    cache-enabled: true
 ```
 
 For pull requests from untrusted forks, do not expose an Epic token to checked-out untrusted code. Keep credentialed Unreal builds on trusted events/branches.
+
+The Action currently uses `actions/setup-dotnet@v6` and `actions/cache@v5`; self-hosted runners therefore need a GitHub Actions runner recent enough for the Node 24 action runtime (2.327.1 or newer). GitHub-hosted runners already satisfy this requirement.
 
 ## Roadmap
 
@@ -342,15 +370,16 @@ For pull requests from untrusted forks, do not expose an Epic token to checked-o
    - real UBT remains the rules authority ✅
 4. **v0.4 — plugin build** 🚧
    - UBT bootstrap includes host UBA support before managed compilation; hermetic executor config remains in place ✅
-   - synthetic project + lean Program/Editor targets ✅
+   - synthetic project + lean modular Game/Editor targets ✅
    - bounded diagnostic-driven materialization/retry loop with conservative Build.cs prefetch hints ✅ experimental
    - package plugin + build report ✅
    - validate minimal Linux fixture, then Windows/macOS
 5. **v0.5 — mounted engine view**
-   - Linux FUSE backend
-   - WinFsp backend
-   - macOS backend investigation
-   - writable copy-on-write overlay
+   - Linux FUSE backend ✅
+   - cold-runner bootstrap/cache/timing pass ✅ alpha.17
+   - Windows native mounted backend (WinFsp) ← next
+   - macOS native mounted backend ← next after Windows
+   - writable copy-on-write overlay ✅ Linux
 6. **v1.0 — production GitHub Action**
    - stable config schema
    - cache keys/locks
