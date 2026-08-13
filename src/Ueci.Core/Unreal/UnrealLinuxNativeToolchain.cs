@@ -25,7 +25,12 @@ public sealed record UnrealLinuxNativeToolchainDescriptor(string Version, Uri Do
             await using FileStream stream = File.OpenRead(sdkJson);
             using JsonDocument document = await JsonDocument.ParseAsync(
                 stream,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                new JsonDocumentOptions
+                {
+                    AllowTrailingCommas = true,
+                    CommentHandling = JsonCommentHandling.Skip,
+                },
+                cancellationToken).ConfigureAwait(false);
             mainVersion = TryGetStringPropertyRecursive(document.RootElement, "MainVersion")
                 ?? FindToolchainVersionRecursive(document.RootElement);
         }
@@ -88,7 +93,12 @@ public sealed record UnrealLinuxNativeToolchainDescriptor(string Version, Uri Do
             await using FileStream stream = File.OpenRead(path);
             using JsonDocument document = await JsonDocument.ParseAsync(
                 stream,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                new JsonDocumentOptions
+                {
+                    AllowTrailingCommas = true,
+                    CommentHandling = JsonCommentHandling.Skip,
+                },
+                cancellationToken).ConfigureAwait(false);
             JsonElement root = document.RootElement;
             if (!root.TryGetProperty("MajorVersion", out JsonElement majorNode)
                 || !root.TryGetProperty("MinorVersion", out JsonElement minorNode)

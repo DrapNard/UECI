@@ -12,8 +12,14 @@ public sealed record DotNetRuntimeConfig(IReadOnlyList<DotNetFrameworkRequiremen
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         await using FileStream stream = File.OpenRead(path);
-        using JsonDocument document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
+        using JsonDocument document = await JsonDocument.ParseAsync(
+            stream,
+            new JsonDocumentOptions
+            {
+                AllowTrailingCommas = true,
+                CommentHandling = JsonCommentHandling.Skip,
+            },
+            cancellationToken).ConfigureAwait(false);
 
         if (!document.RootElement.TryGetProperty("runtimeOptions", out JsonElement runtimeOptions))
         {

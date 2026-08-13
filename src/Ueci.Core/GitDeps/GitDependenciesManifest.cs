@@ -42,7 +42,25 @@ public sealed class GitDependenciesManifest
 
     public Uri GetPackUri(GitDependencyPack pack)
     {
-        string url = $"{BaseUrl}/{pack.RemotePath.Trim('/')}/{pack.Hash}";
+        ArgumentNullException.ThrowIfNull(pack);
+        string remote = pack.RemotePath.Trim();
+        if (Uri.TryCreate(remote, UriKind.Absolute, out Uri? absolute)
+            && (absolute.Scheme == Uri.UriSchemeHttp || absolute.Scheme == Uri.UriSchemeHttps))
+        {
+            string absoluteText = absolute.ToString().TrimEnd('/');
+            string lastSegment = absolute.Segments.LastOrDefault()?.Trim('/') ?? string.Empty;
+            return lastSegment.Equals(pack.Hash, StringComparison.OrdinalIgnoreCase)
+                ? absolute
+                : new Uri($"{absoluteText}/{pack.Hash}", UriKind.Absolute);
+        }
+
+        if (string.IsNullOrWhiteSpace(BaseUrl))
+        {
+            throw new InvalidDataException(
+                $"Pack '{pack.Hash}' has relative RemotePath '{pack.RemotePath}', but this legacy DependencyManifest has no BaseUrl.");
+        }
+
+        string url = $"{BaseUrl}/{remote.Trim('/')}/{pack.Hash}";
         return new Uri(url, UriKind.Absolute);
     }
 

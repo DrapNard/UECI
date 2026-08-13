@@ -51,7 +51,7 @@ public static class EpicBundledDotNetResolver
             throw new InvalidDataException("No shared framework requirements were supplied.");
         }
 
-        string dotNetName = runtimeIdentifier.StartsWith("win-", StringComparison.Ordinal)
+        string dotNetName = runtimeIdentifier.StartsWith("win-", StringComparison.OrdinalIgnoreCase)
             ? "dotnet.exe"
             : "dotnet";
         string dotNetPath = selectedBundlePrefix + dotNetName;
@@ -85,38 +85,33 @@ public static class EpicBundledDotNetResolver
         var candidates = new List<FrameworkCandidate>();
         foreach (string path in manifest.Files.Keys)
         {
-            if (!path.StartsWith(DotNetBasePrefix, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
+            if (!path.StartsWith(DotNetBasePrefix, StringComparison.Ordinal)) continue;
             string[] parts = path.Split('/');
-            // Engine/Binaries/ThirdParty/DotNet/<bundle>/<rid>/shared/<framework>/<version>/...
-            if (parts.Length < 10
-                || parts[0] != "Engine"
-                || parts[1] != "Binaries"
-                || parts[2] != "ThirdParty"
-                || parts[3] != "DotNet"
-                || parts[5] != runtimeIdentifier
-                || parts[6] != "shared"
-                || parts[7] != requirement.Name
-                || !Version.TryParse(parts[8], out Version? candidateVersion))
+            for (int sharedIndex = 4; sharedIndex + 2 < parts.Length; sharedIndex++)
             {
-                continue;
-            }
+                if (!parts[sharedIndex].Equals("shared", StringComparison.OrdinalIgnoreCase)
+                    || !parts[sharedIndex + 1].Equals(requirement.Name, StringComparison.Ordinal)
+                    || !Version.TryParse(parts[sharedIndex + 2], out Version? candidateVersion))
+                {
+                    continue;
+                }
+                if (candidateVersion.Major != requirement.Version.Major
+                    || candidateVersion.Minor != requirement.Version.Minor)
+                {
+                    continue;
+                }
 
-            if (candidateVersion.Major != requirement.Version.Major
-                || candidateVersion.Minor != requirement.Version.Minor)
-            {
-                continue;
+                string bundlePrefix = string.Join("/", parts.Take(sharedIndex)) + "/";
+                int score = EpicBundledDotNetSdkResolver.PlatformScore(bundlePrefix, runtimeIdentifier);
+                if (score < 0) continue;
+                candidates.Add(new FrameworkCandidate(bundlePrefix, candidateVersion, score));
+                break;
             }
-
-            string bundlePrefix = string.Join("/", parts.Take(6)) + "/";
-            candidates.Add(new FrameworkCandidate(bundlePrefix, candidateVersion));
         }
 
         FrameworkCandidate? best = candidates
-            .OrderByDescending(candidate => candidate.Version)
+            .OrderByDescending(candidate => candidate.PlatformScore)
+            .ThenByDescending(candidate => candidate.Version)
             .FirstOrDefault();
         if (best is null)
         {
@@ -128,5 +123,5 @@ public static class EpicBundledDotNetResolver
         return best;
     }
 
-    private sealed record FrameworkCandidate(string BundlePrefix, Version Version);
+    private sealed record FrameworkCandidate(string BundlePrefix, Version Version, int PlatformScore);
 }

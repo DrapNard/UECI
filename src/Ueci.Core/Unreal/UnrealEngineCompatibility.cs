@@ -184,10 +184,19 @@ public sealed class UnrealEngineCompatibility
     }
 
     private bool HasTargetToken(string token)
-        => _targetRulesSource.Contains(token, StringComparison.Ordinal);
+        => ContainsIdentifier(_targetRulesSource, token);
 
     private bool HasModuleToken(string token)
-        => _moduleRulesSource.Contains(token, StringComparison.Ordinal);
+        => ContainsIdentifier(_moduleRulesSource, token);
+
+    private static bool ContainsIdentifier(string source, string token)
+    {
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(token)) return false;
+        return Regex.IsMatch(
+            source,
+            $@"(?<![A-Za-z0-9_]){Regex.Escape(token)}(?![A-Za-z0-9_])",
+            RegexOptions.CultureInvariant);
+    }
 
     private bool HasUbtToken(string token)
         => _ubtSource.Contains(token, StringComparison.Ordinal) || _projectSource.Contains(token, StringComparison.Ordinal);
@@ -203,8 +212,14 @@ public sealed class UnrealEngineCompatibility
             try
             {
                 await using FileStream stream = File.OpenRead(buildVersionPath);
-                using JsonDocument json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken)
-                    .ConfigureAwait(false);
+                using JsonDocument json = await JsonDocument.ParseAsync(
+                    stream,
+                    new JsonDocumentOptions
+                    {
+                        AllowTrailingCommas = true,
+                        CommentHandling = JsonCommentHandling.Skip,
+                    },
+                    cancellationToken).ConfigureAwait(false);
                 JsonElement root = json.RootElement;
                 if (TryGetInt(root, "MajorVersion", out int major)
                     && TryGetInt(root, "MinorVersion", out int minor))

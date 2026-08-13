@@ -170,6 +170,8 @@ internal sealed class UnrealMountedPluginBuilder
                                 "Engine/Build",
                                 "Engine/Source/Programs/UnrealBuildTool",
                                 "Engine/Source/Programs/Shared",
+                                "Engine/Source/Programs/DotNETCommon",
+                                "Engine/Source/Programs/EnvVarsToXML",
                             ],
                             options.TokenEnvironmentVariable,
                             minimumBatchSize: 256,

@@ -101,6 +101,7 @@ public static class VirtualEngineMountFactory
                 cancellationToken);
 
         bool autoManifest = string.IsNullOrWhiteSpace(options.ManifestPath);
+        bool manifestAbsent = false;
         string manifestPath;
         if (!autoManifest)
         {
@@ -113,11 +114,25 @@ public static class VirtualEngineMountFactory
                 "engine-manifests");
             Directory.CreateDirectory(manifestCacheRoot);
             manifestPath = Path.Combine(manifestCacheRoot, commit.ToLowerInvariant() + ".gitdeps.xml");
-            if (!File.Exists(manifestPath) || new FileInfo(manifestPath).Length < 1024)
+            string absentMarker = manifestPath + ".absent";
+            if (File.Exists(absentMarker))
             {
-                await MaterializeCommitManifestAsync(
+                manifestAbsent = true;
+                options.Progress?.Invoke(
+                    $"[vfs/manifest] Commit {commit[..Math.Min(12, commit.Length)]} predates Commit.gitdeps.xml; using a Git-only legacy Engine view.");
+            }
+            else if (!File.Exists(manifestPath) || new FileInfo(manifestPath).Length < 128)
+            {
+                manifestAbsent = !await TryMaterializeCommitManifestAsync(
                     git, metadataRoot, manifestPath, options.TokenEnvironmentVariable, options.Progress, cancellationToken)
                     .ConfigureAwait(false);
+                if (manifestAbsent)
+                {
+                    await File.WriteAllTextAsync(absentMarker, commit + Environment.NewLine, cancellationToken)
+                        .ConfigureAwait(false);
+                    options.Progress?.Invoke(
+                        "[vfs/manifest] This Engine commit has no Engine/Build/Commit.gitdeps.xml; continuing with Git-only legacy inputs.");
+                }
             }
             else
             {
@@ -126,26 +141,43 @@ public static class VirtualEngineMountFactory
         }
 
         GitDependenciesManifest fullManifest;
-        try
+        if (manifestAbsent)
         {
-            fullManifest = await GitDependenciesManifestReader.LoadAsync(
-                manifestPath,
-                cancellationToken,
-                options.Progress).ConfigureAwait(false);
+            fullManifest = new GitDependenciesManifest(
+                string.Empty,
+                new Dictionary<string, GitDependencyFile>(StringComparer.Ordinal),
+                new Dictionary<string, GitDependencyBlob>(StringComparer.OrdinalIgnoreCase),
+                new Dictionary<string, GitDependencyPack>(StringComparer.OrdinalIgnoreCase));
         }
-        catch (Exception ex) when (autoManifest
-            && ex is InvalidDataException or System.Xml.XmlException or FormatException)
+        else
         {
-            options.Progress?.Invoke(
-                $"[vfs/manifest] Cached Commit.gitdeps.xml is invalid ({ex.GetType().Name}); refreshing it from Epic Git.");
-            try { File.Delete(manifestPath); } catch (FileNotFoundException) { }
-            await MaterializeCommitManifestAsync(
-                git, metadataRoot, manifestPath, options.TokenEnvironmentVariable, options.Progress, cancellationToken)
-                .ConfigureAwait(false);
-            fullManifest = await GitDependenciesManifestReader.LoadAsync(
-                manifestPath,
-                cancellationToken,
-                options.Progress).ConfigureAwait(false);
+            try
+            {
+                fullManifest = await GitDependenciesManifestReader.LoadAsync(
+                    manifestPath,
+                    cancellationToken,
+                    options.Progress).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (autoManifest
+                && ex is InvalidDataException or System.Xml.XmlException or FormatException)
+            {
+                options.Progress?.Invoke(
+                    $"[vfs/manifest] Cached Commit.gitdeps.xml is invalid ({ex.GetType().Name}); refreshing it from Epic Git.");
+                try { File.Delete(manifestPath); } catch (FileNotFoundException) { }
+                bool restored = await TryMaterializeCommitManifestAsync(
+                    git, metadataRoot, manifestPath, options.TokenEnvironmentVariable, options.Progress, cancellationToken)
+                    .ConfigureAwait(false);
+                if (!restored)
+                {
+                    throw new InvalidDataException(
+                        "The cached GitDependencies manifest was invalid and the pinned Engine commit has no replacement Commit.gitdeps.xml.",
+                        ex);
+                }
+                fullManifest = await GitDependenciesManifestReader.LoadAsync(
+                    manifestPath,
+                    cancellationToken,
+                    options.Progress).ConfigureAwait(false);
+            }
         }
 
         EpicGitTreeIndex gitIndex;
@@ -268,7 +300,7 @@ public static class VirtualEngineMountFactory
             source);
     }
 
-    private static async Task MaterializeCommitManifestAsync(
+    private static async Task<bool> TryMaterializeCommitManifestAsync(
         EpicGitClient git,
         string metadataRoot,
         string manifestPath,
@@ -280,13 +312,16 @@ public static class VirtualEngineMountFactory
         string temporaryManifest = manifestPath + $".{Guid.NewGuid():N}.tmp";
         try
         {
-            await git.MaterializeFileAsync(
+            bool exists = await git.TryMaterializeFileAsync(
                 metadataRoot,
                 "Engine/Build/Commit.gitdeps.xml",
                 temporaryManifest,
                 tokenEnvironmentVariable,
                 cancellationToken).ConfigureAwait(false);
+            if (!exists) return false;
             File.Move(temporaryManifest, manifestPath, overwrite: true);
+            try { File.Delete(manifestPath + ".absent"); } catch (FileNotFoundException) { }
+            return true;
         }
         finally
         {

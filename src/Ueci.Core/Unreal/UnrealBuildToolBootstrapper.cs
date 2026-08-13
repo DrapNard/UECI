@@ -38,6 +38,8 @@ public sealed class UnrealBuildToolBootstrapper
         "Engine/Build",
         "Engine/Source/Programs/UnrealBuildTool",
         "Engine/Source/Programs/Shared",
+        "Engine/Source/Programs/DotNETCommon",
+        "Engine/Source/Programs/EnvVarsToXML",
         // Old UE4 releases may not have Engine/Build/Build.version. Materialize the
         // historical version header before the Action replaces a release branch with its SHA.
         "Engine/Source/Runtime/Launch",
@@ -53,6 +55,8 @@ public sealed class UnrealBuildToolBootstrapper
     [
         "Engine/Binaries/DotNET/",
         "Engine/Source/Programs/Shared/",
+        "Engine/Source/Programs/DotNETCommon/",
+        "Engine/Source/Programs/EnvVarsToXML/",
         "Engine/Source/Programs/UnrealBuildTool/",
     ];
 
@@ -103,24 +107,42 @@ public sealed class UnrealBuildToolBootstrapper
             cancellationToken,
             options.Progress).ConfigureAwait(false);
 
-        string manifestPath = string.IsNullOrWhiteSpace(options.ManifestPath)
-            ? Path.Combine(root, "Engine", "Build", "Commit.gitdeps.xml")
-            : Path.GetFullPath(options.ManifestPath);
-        if (!File.Exists(manifestPath))
+        bool explicitManifest = !string.IsNullOrWhiteSpace(options.ManifestPath);
+        string manifestPath = explicitManifest
+            ? Path.GetFullPath(options.ManifestPath!)
+            : Path.Combine(root, "Engine", "Build", "Commit.gitdeps.xml");
+        if (explicitManifest && !File.Exists(manifestPath))
+        {
             throw new FileNotFoundException(
-                string.IsNullOrWhiteSpace(options.ManifestPath)
-                    ? "Epic Commit.gitdeps.xml was not materialized from Git."
-                    : "The explicit Commit.gitdeps.xml override does not exist.",
+                "The explicit Commit.gitdeps.xml override does not exist.",
                 manifestPath);
+        }
 
         string ubtProject = Path.Combine(
             root, "Engine", "Source", "Programs", "UnrealBuildTool", "UnrealBuildTool.csproj");
         if (!File.Exists(ubtProject))
             throw new FileNotFoundException("UnrealBuildTool.csproj was not materialized from Epic Git.", ubtProject);
 
-        GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(
-            manifestPath,
-            cancellationToken).ConfigureAwait(false);
+        GitDependenciesManifest manifest;
+        if (File.Exists(manifestPath))
+        {
+            manifest = await GitDependenciesManifestReader.LoadAsync(
+                manifestPath,
+                cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            // UE4.5 and earlier GitHub releases predate Commit.gitdeps.xml. Their historical
+            // Required/Optional release archives can be overlaid by the caller, while UECI keeps
+            // the source side Git-only and falls back to the runner's Mono/MSBuild toolchain.
+            options.Progress?.Invoke(
+                "This Engine predates Commit.gitdeps.xml; continuing with a Git-only legacy dependency manifest.");
+            manifest = new GitDependenciesManifest(
+                string.Empty,
+                new Dictionary<string, GitDependencyFile>(StringComparer.Ordinal),
+                new Dictionary<string, GitDependencyBlob>(StringComparer.OrdinalIgnoreCase),
+                new Dictionary<string, GitDependencyPack>(StringComparer.OrdinalIgnoreCase));
+        }
         UnrealEngineCompatibility compatibility = await UnrealEngineCompatibility.DetectAsync(
             root,
             options.GitRef,

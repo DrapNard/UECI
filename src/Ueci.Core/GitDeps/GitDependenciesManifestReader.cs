@@ -29,10 +29,10 @@ public static class GitDependenciesManifestReader
                 continue;
             }
 
+            baseUrl = ReadBaseUrlIfPresent(reader, baseUrl);
             switch (reader.LocalName)
             {
                 case "DependencyManifest":
-                    baseUrl = Required(reader, "BaseUrl");
                     break;
                 case "File":
                     fileCount++;
@@ -53,10 +53,7 @@ public static class GitDependenciesManifestReader
             }
         }
 
-        if (string.IsNullOrWhiteSpace(baseUrl))
-        {
-            throw new InvalidDataException("DependencyManifest is missing BaseUrl.");
-        }
+        ValidatePackLocations(baseUrl, Array.Empty<GitDependencyPack>());
 
         return new GitDependenciesSummary(
             baseUrl,
@@ -93,10 +90,10 @@ public static class GitDependenciesManifestReader
                 continue;
             }
 
+            baseUrl = ReadBaseUrlIfPresent(reader, baseUrl);
             switch (reader.LocalName)
             {
                 case "DependencyManifest":
-                    baseUrl = Required(reader, "BaseUrl");
                     break;
                 case "File":
                 {
@@ -123,7 +120,7 @@ public static class GitDependenciesManifestReader
                         hash,
                         ParseInt64(reader, "Size"),
                         ParseInt64(reader, "CompressedSize"),
-                        Required(reader, "RemotePath"));
+                        RequiredAny(reader, "RemotePath", "Url", "URL"));
                     break;
                 }
             }
@@ -139,10 +136,8 @@ public static class GitDependenciesManifestReader
             }
         }
 
-        if (string.IsNullOrWhiteSpace(baseUrl))
-        {
-            throw new InvalidDataException("DependencyManifest is missing BaseUrl.");
-        }
+        baseUrl = ResolveLegacyBaseUrl(baseUrl, packs.Values);
+        ValidatePackLocations(baseUrl, packs.Values);
 
         progress?.Invoke(
             $"[vfs/gitdeps] Complete: {files.Count:N0} files / {blobs.Count:N0} blobs / {packs.Count:N0} packs; " +
@@ -160,6 +155,66 @@ public static class GitDependenciesManifestReader
             IgnoreWhitespace = true,
             XmlResolver = null,
         });
+    }
+
+
+    private static string ReadBaseUrlIfPresent(XmlReader reader, string current)
+    {
+        if (!string.IsNullOrWhiteSpace(current)) return current;
+        foreach (string name in new[] { "BaseUrl", "BaseURL", "BaseUri", "BaseURI", "RootUrl", "RootURL" })
+        {
+            string? value = reader.GetAttribute(name);
+            if (!string.IsNullOrWhiteSpace(value)) return value;
+        }
+        return current;
+    }
+
+
+    private static string ResolveLegacyBaseUrl(string baseUrl, IEnumerable<GitDependencyPack> packs)
+    {
+        if (!string.IsNullOrWhiteSpace(baseUrl)) return baseUrl;
+        GitDependencyPack[] all = packs.ToArray();
+        if (all.Length == 0) return string.Empty;
+        if (all.All(pack => Uri.TryCreate(pack.RemotePath, UriKind.Absolute, out Uri? uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)))
+        {
+            return string.Empty;
+        }
+
+        // Early UE4 Commit.gitdeps.xml generations omitted BaseUrl because Epic's GitDependencies
+        // client supplied the CDN root. Only recognize the historical Epic pack naming convention;
+        // an explicit/custom manifest with some other relative layout must fail closed instead of
+        // silently redirecting its packs to Epic's CDN.
+        if (all.All(pack => pack.RemotePath.Trim('/').StartsWith("UnrealEngine-", StringComparison.OrdinalIgnoreCase)))
+        {
+            return "https://cdn.unrealengine.com/dependencies";
+        }
+        return string.Empty;
+    }
+
+    private static void ValidatePackLocations(string baseUrl, IEnumerable<GitDependencyPack> packs)
+    {
+        if (!string.IsNullOrWhiteSpace(baseUrl)) return;
+        GitDependencyPack? unresolved = packs.FirstOrDefault(pack =>
+            !Uri.TryCreate(pack.RemotePath, UriKind.Absolute, out Uri? uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps));
+        if (unresolved is not null)
+        {
+            throw new InvalidDataException(
+                "DependencyManifest has no BaseUrl and at least one Pack uses a relative RemotePath. " +
+                $"Cannot resolve pack '{unresolved.Hash}' at '{unresolved.RemotePath}'.");
+        }
+    }
+
+    private static string RequiredAny(XmlReader reader, params string[] names)
+    {
+        foreach (string name in names)
+        {
+            string? value = reader.GetAttribute(name);
+            if (value is not null) return value;
+        }
+        throw new InvalidDataException(
+            $"<{reader.LocalName}> is missing required attribute '{string.Join("' or '", names)}'.");
     }
 
     private static string Required(XmlReader reader, string name)

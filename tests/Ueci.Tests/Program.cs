@@ -18,6 +18,8 @@ internal static class Program
     private static readonly List<(string Name, Func<Task> Run)> Tests =
     [
         ("summary parses streaming manifest", SummaryParsesAsync),
+        ("legacy manifest resolves UE4 packs without BaseUrl", LegacyManifestAbsolutePackUrlAsync),
+        ("legacy manifest without Epic pack naming fails closed", LegacyManifestUnknownRelativePackFailsAsync),
         ("lookup resolves file -> blob -> pack", LookupResolvesAsync),
         ("planner deduplicates shared blobs and packs", PlannerDeduplicatesAsync),
         ("integrity validator accepts fixture", IntegrityValidAsync),
@@ -40,6 +42,7 @@ internal static class Program
         ("runtimeconfig parser reads shared framework", RuntimeConfigParsesAsync),
         ("Epic bundled dotnet resolver selects host runtime", BundledDotNetResolverAsync),
         ("Epic bundled dotnet SDK resolver selects latest SDK", BundledDotNetSdkResolverAsync),
+        ("Epic bundled dotnet resolver accepts historical Linux bundle layouts", BundledDotNetHistoricalLayoutAsync),
         ("Epic bundled Mono resolver selects legacy host runtime", BundledMonoResolverAsync),
         ("Engine compatibility feature-detects UE4 legacy and UE5 modern rules", EngineCompatibilityDetectsAsync),
         ("Epic bundled UBA resolver selects managed + native host payload", BundledUbaResolverAsync),
@@ -117,6 +120,82 @@ internal static class Program
         Assert.Equal(300L, summary.UniqueBlobBytes);
         Assert.Equal(300L, summary.ExpandedPackBytes);
         Assert.Equal(150L, summary.CompressedPackBytes);
+    }
+
+    private static async Task LegacyManifestAbsolutePackUrlAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string manifestPath = Path.Combine(root, "Commit.gitdeps.xml");
+            await File.WriteAllTextAsync(
+                manifestPath,
+                """
+                <?xml version="1.0" encoding="utf-8"?>
+                <DependencyManifest>
+                  <Files>
+                    <File Name="Engine/Binaries/Test.bin" Hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" />
+                  </Files>
+                  <Blobs>
+                    <Blob Hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" Size="1" PackHash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" PackOffset="0" />
+                  </Blobs>
+                  <Packs>
+                    <Pack Hash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" Size="1" CompressedSize="1" RemotePath="UnrealEngine-42" />
+                  </Packs>
+                </DependencyManifest>
+                """);
+            GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath);
+            Assert.Equal("https://cdn.unrealengine.com/dependencies", manifest.BaseUrl);
+            GitDependencyResolution resolution = manifest.Resolve("Engine/Binaries/Test.bin")
+                ?? throw new Exception("legacy resolution missing");
+            Assert.Equal(
+                "https://cdn.unrealengine.com/dependencies/UnrealEngine-42/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                resolution.PackUri.ToString());
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task LegacyManifestUnknownRelativePackFailsAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string manifestPath = Path.Combine(root, "Commit.gitdeps.xml");
+            await File.WriteAllTextAsync(
+                manifestPath,
+                """
+                <?xml version="1.0" encoding="utf-8"?>
+                <DependencyManifest>
+                  <Files>
+                    <File Name="Engine/Binaries/Test.bin" Hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" />
+                  </Files>
+                  <Blobs>
+                    <Blob Hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" Size="1" PackHash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" PackOffset="0" />
+                  </Blobs>
+                  <Packs>
+                    <Pack Hash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" Size="1" CompressedSize="1" RemotePath="custom-private-layout" />
+                  </Packs>
+                </DependencyManifest>
+                """);
+
+            bool failedClosed = false;
+            try
+            {
+                _ = await GitDependenciesManifestReader.LoadAsync(manifestPath);
+            }
+            catch (InvalidDataException)
+            {
+                failedClosed = true;
+            }
+            Assert.True(failedClosed);
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
     }
 
     private static async Task LookupResolvesAsync()
@@ -218,6 +297,21 @@ internal static class Program
                 new Uri(bare).AbsoluteUri,
                 "main",
                 tokenVariable);
+
+            string directBuildVersion = Path.Combine(root, "direct-Build.version");
+            bool directExists = await client.TryMaterializeFileAsync(
+                clientRoot,
+                "Engine/Build/Build.version",
+                directBuildVersion,
+                tokenVariable);
+            bool absentExists = await client.TryMaterializeFileAsync(
+                clientRoot,
+                "Engine/Build/DoesNotExist.gitdeps.xml",
+                Path.Combine(root, "absent.xml"),
+                tokenVariable);
+            Assert.True(directExists);
+            Assert.True(File.Exists(directBuildVersion));
+            Assert.False(absentExists);
 
             var progress = new List<string>();
             await client.MaterializeSparseDirectoriesAsync(
@@ -907,13 +1001,14 @@ internal static class Program
             string path = Path.Combine(root, "UnrealBuildTool.runtimeconfig.json");
             await File.WriteAllTextAsync(path, """
                 {
+                  // Historical Epic-generated JSON can contain comments/trailing commas.
                   "runtimeOptions": {
                     "tfm": "net10.0",
                     "framework": {
                       "name": "Microsoft.NETCore.App",
-                      "version": "10.0.0"
-                    }
-                  }
+                      "version": "10.0.0",
+                    },
+                  },
                 }
                 """);
 
@@ -991,6 +1086,43 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static Task BundledDotNetHistoricalLayoutAsync()
+    {
+        var files = new Dictionary<string, GitDependencyFile>(StringComparer.Ordinal)
+        {
+            ["Engine/Binaries/ThirdParty/DotNet/Linux/dotnet"] =
+                new("Engine/Binaries/ThirdParty/DotNet/Linux/dotnet", "a", true),
+            ["Engine/Binaries/ThirdParty/DotNet/Linux/sdk/6.0.302/MSBuild.dll"] =
+                new("Engine/Binaries/ThirdParty/DotNet/Linux/sdk/6.0.302/MSBuild.dll", "b", false),
+            ["Engine/Binaries/ThirdParty/DotNet/Linux/shared/Microsoft.NETCore.App/6.0.7/System.Private.CoreLib.dll"] =
+                new("Engine/Binaries/ThirdParty/DotNet/Linux/shared/Microsoft.NETCore.App/6.0.7/System.Private.CoreLib.dll", "c", false),
+            ["Engine/Binaries/ThirdParty/DotNet/Linux/host/fxr/6.0.7/libhostfxr.so"] =
+                new("Engine/Binaries/ThirdParty/DotNet/Linux/host/fxr/6.0.7/libhostfxr.so", "d", false),
+            ["Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/dotnet"] =
+                new("Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/dotnet", "e", true),
+            ["Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/sdk/6.0.302/MSBuild.dll"] =
+                new("Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/sdk/6.0.302/MSBuild.dll", "f", false),
+            ["Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/shared/Microsoft.NETCore.App/6.0.8/System.Private.CoreLib.dll"] =
+                new("Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/shared/Microsoft.NETCore.App/6.0.8/System.Private.CoreLib.dll", "g", false),
+        };
+        var manifest = new GitDependenciesManifest(
+            "https://cdn.example.test/dependencies",
+            files,
+            new Dictionary<string, GitDependencyBlob>(),
+            new Dictionary<string, GitDependencyPack>());
+
+        EpicBundledDotNetSdkPlan sdk = EpicBundledDotNetSdkResolver.Resolve(manifest, "linux-x64");
+        Assert.Equal("Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/", sdk.BundlePrefix);
+        Assert.Equal(new Version(6, 0, 302), sdk.SdkVersion);
+
+        var config = new DotNetRuntimeConfig(
+            [new DotNetFrameworkRequirement("Microsoft.NETCore.App", new Version(6, 0, 0))]);
+        EpicBundledDotNetPlan runtime = EpicBundledDotNetResolver.Resolve(manifest, config, "linux-x64");
+        Assert.Equal("Engine/Binaries/ThirdParty/DotNet/6.0.302/linux/", runtime.BundlePrefix);
+        Assert.Equal(new Version(6, 0, 8), runtime.ResolvedFrameworks[0].Version);
+        return Task.CompletedTask;
+    }
+
     private static Task BundledMonoResolverAsync()
     {
         var files = new Dictionary<string, GitDependencyFile>(StringComparer.Ordinal)
@@ -1017,6 +1149,8 @@ internal static class Program
         VirtualEngineSeed seed = VirtualEngineEmbeddedSeed.Create(manifest, "linux-x64");
         Assert.True(seed.GitDependencyPaths.Contains("Engine/Binaries/DotNET/UnrealBuildTool.exe", StringComparer.Ordinal));
         Assert.True(seed.GitPathspecs.Contains("Engine/Source/Runtime/Core", StringComparer.Ordinal));
+        Assert.True(seed.GitPathspecs.Contains("Engine/Source/Programs/DotNETCommon", StringComparer.Ordinal));
+        Assert.True(seed.GitPathspecs.Contains("Engine/Source/Programs/EnvVarsToXML", StringComparer.Ordinal));
 
         var ubtOnlyManifest = new GitDependenciesManifest(
             "https://cdn.example.test/dependencies",
@@ -1719,7 +1853,7 @@ internal static class Program
             Directory.CreateDirectory(Path.GetDirectoryName(config)!);
             await File.WriteAllTextAsync(
                 config,
-                "{ \"MainVersion\": \"v26_clang-20.1.8-rockylinux8\" }\n");
+                "{ // Epic config\n  \"MainVersion\": \"v26_clang-20.1.8-rockylinux8\",\n}\n");
 
             UnrealLinuxNativeToolchainDescriptor descriptor = await UnrealLinuxNativeToolchainDescriptor.ReadAsync(root);
             Assert.Equal("v26_clang-20.1.8-rockylinux8", descriptor.Version);
@@ -1937,7 +2071,7 @@ internal static class Program
         Directory.CreateDirectory(modes);
         await File.WriteAllTextAsync(
             Path.Combine(build, "Build.version"),
-            $"{{ \"MajorVersion\": {major}, \"MinorVersion\": {minor}, \"PatchVersion\": 0, \"BranchName\": \"UE{major}.{minor}\" }}");
+            $"{{ \"MajorVersion\": {major}, \"MinorVersion\": {minor}, \"PatchVersion\": 0, \"BranchName\": \"UE{major}.{minor}\", }}");
 
         if (modern)
         {

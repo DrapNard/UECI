@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.5.0-alpha.19] - 2026-08-13
+
+### Fixed
+
+- Hardens the first complete 32-release Linux matrix run. Exact identifier detection no longer mistakes classic UE4 `OutExtraModuleNames` for modern `ExtraModuleNames`, fixing both alpha.18 compatibility preflight failures and classic synthetic-host emission.
+- Supports historical GitDependencies layouts without a root `BaseUrl`, and lets commits that predate `Engine/Build/Commit.gitdeps.xml` continue with a Git-only virtual Engine view. UE4.5 matrix jobs can overlay Epic's historical Required/Optional release ZIP assets before mounting.
+- Broadens bundled .NET SDK/runtime discovery to historical Linux directory layouts instead of assuming the UE5.8 `<bundle>/<rid>` shape.
+- Adds the legacy `Engine/Source/Programs/DotNETCommon` and early `EnvVarsToXML` sibling trees, the required `Engine/Binaries/DotNET` managed payload, and shared MSBuild props such as `UnrealEngine.csproj.props` to cold bootstrap seeds.
+- Accepts comments/trailing commas in Engine-generated JSON metadata/runtimeconfig files and hardens FUSE unmount recovery after disk-full or interrupted builds.
+
+### Added
+
+- Adds `scripts/test-unreal-matrix-local.sh`: a bounded-disk local UE4.5-4.27 + UE5.0-5.8 sweep with a shared cache, per-version logs, subset selection, stale-mount recovery, and automatic workspace cleanup. It defaults outside `/tmp` and redirects `TMPDIR` to avoid tmpfs/quota exhaustion.
+- Adds regression tests for legacy GitDependencies URL resolution, missing tracked Epic files, historical bundled-.NET layouts, tolerant runtime metadata, and the expanded UE4 managed seed.
+
+### Changed
+
+- Historical release resolution now pins the highest available patch tag even when that release has no standalone `Commit.gitdeps.xml` asset, preventing moving branch heads from changing a compatibility job.
+- CLI version advanced to `0.5.0-alpha.19`.
+
 ## [0.5.0-alpha.18] - 2026-08-13
 
 ### Added

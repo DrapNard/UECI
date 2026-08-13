@@ -87,7 +87,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends fuse3 libfuse3-dev pkg-config build-essential mono-devel pigz clang
+          sudo apt-get install -y --no-install-recommends fuse3 libfuse3-dev pkg-config build-essential mono-devel pigz clang unzip
           if [[ -e /dev/fuse ]]; then sudo chmod a+rw /dev/fuse; fi
 
       - name: Resolve historical release GitDependencies manifest
@@ -100,11 +100,14 @@ jobs:
           ref_file="$RUNNER_TEMP/Commit-${{ matrix.version }}.release-ref"
           manifest="$(./scripts/resolve-release-gitdeps.sh '${{ matrix.version }}' "$RUNNER_TEMP/Commit-${{ matrix.version }}.gitdeps.xml" "$ref_file")"
           engine_ref='${{ matrix.version }}'
-          if [[ -n "$manifest" && -s "$ref_file" ]]; then
+          if [[ -s "$ref_file" ]]; then
             engine_ref="$(cat "$ref_file")"
-            echo "Using Epic release GitDependencies asset: $manifest (release tag: $engine_ref)"
+            echo "Pinned Epic patch release: $engine_ref"
+          fi
+          if [[ -n "$manifest" ]]; then
+            echo "Using Epic release GitDependencies asset: $manifest"
           else
-            echo "No release GitDependencies asset found; using the manifest tracked by the $engine_ref branch."
+            echo "No release GitDependencies asset found; using the dependency layout associated with $engine_ref."
           fi
           printf 'path=%s\n' "$manifest" >> "$GITHUB_OUTPUT"
           printf 'engine-ref=%s\n' "$engine_ref" >> "$GITHUB_OUTPUT"
@@ -116,6 +119,18 @@ jobs:
           set -euo pipefail
           plugin="$(./scripts/prepare-compat-fixture.sh '${{ matrix.version }}' "$RUNNER_TEMP/ueci-plugin-${{ matrix.version }}")"
           printf 'plugin=%s\n' "$plugin" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare pre-GitDependencies release assets
+        if: ${{ matrix.version == '4.5' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.UECI_EPIC_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ./scripts/prepare-legacy-release-deps.sh \
+            '${{ matrix.version }}' \
+            '${{ steps.release_manifest.outputs.engine-ref }}' \
+            '${{ runner.temp }}/ueci-engine-${{ matrix.version }}'
 
       - name: Build plugin against Epic UE ${{ matrix.version }}
         uses: ./

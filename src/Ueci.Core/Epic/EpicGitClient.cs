@@ -422,6 +422,44 @@ public sealed class EpicGitClient
         return commit;
     }
 
+    public async Task<bool> TryMaterializeFileAsync(
+        string repositoryDirectory,
+        string enginePath,
+        string outputPath,
+        string? tokenEnvironmentVariable = null,
+        CancellationToken cancellationToken = default)
+    {
+        string token = GitHubReadOnlyCredential.GetRequiredToken(tokenEnvironmentVariable);
+        IReadOnlyDictionary<string, string> environment = GitHubReadOnlyCredential.CreateGitEnvironment(token);
+        string root = Path.GetFullPath(repositoryDirectory);
+        string commit = await GetPinnedCommitAsync(root, cancellationToken).ConfigureAwait(false);
+        string normalized = NormalizeGitPathspec(enginePath);
+
+        GitProcessResult exists = await GitProcess.RunAsync(
+            root,
+            ["ls-tree", "--name-only", commit, "--", normalized],
+            environment,
+            cancellationToken).ConfigureAwait(false);
+        if (exists.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git ls-tree failed while probing '{normalized}': {exists.StandardError.Trim()}");
+        }
+        bool tracked = exists.StandardOutput
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(path => string.Equals(path, normalized, StringComparison.Ordinal));
+        if (!tracked) return false;
+
+        string objectSpec = $"{commit}:{normalized}";
+        await GitProcess.RunBinaryToFileAsync(
+            root,
+            ["cat-file", "blob", objectSpec],
+            Path.GetFullPath(outputPath),
+            environment,
+            cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
     public async Task MaterializeFileAsync(
         string repositoryDirectory,
         string enginePath,

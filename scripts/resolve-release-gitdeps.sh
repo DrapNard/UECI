@@ -5,11 +5,10 @@ VERSION="${1:?usage: resolve-release-gitdeps.sh VERSION DESTINATION [REF_DESTINA
 DEST="${2:?usage: resolve-release-gitdeps.sh VERSION DESTINATION [REF_DESTINATION]}"
 REF_DEST="${3:-}"
 
-# Historical Epic releases can carry a corrected Commit.gitdeps.xml as a release asset.
-# This helper is intentionally best-effort: if no matching asset exists, print an empty line and
-# let UECI use the manifest tracked by the requested Engine branch. When REF_DEST is supplied, the
-# matching release tag is written there as well so callers never mix an asset with a different
-# branch-tip commit.
+# Resolve the highest patch release belonging to VERSION. If that release carries a corrected
+# Commit.gitdeps.xml asset, download it; otherwise return an empty manifest path but still write the
+# exact release tag to REF_DEST. This keeps the matrix immutable even for releases that rely on the
+# manifest tracked in Git (and for UE4.5, which predates Commit.gitdeps.xml entirely).
 if [[ -n "$REF_DEST" ]]; then rm -f -- "$REF_DEST"; fi
 if ! command -v gh >/dev/null 2>&1 || [[ -z "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]]; then
   printf '\n'
@@ -37,16 +36,19 @@ while pos < len(raw):
     pages.extend(obj if isinstance(obj, list) else [obj])
 def key(tag):
     nums=[int(x) for x in re.findall(r"\d+", tag)]
-    return nums + [0] * (4-len(nums))
+    return tuple(nums + [0] * (4-len(nums)))
 candidates=[]
 for release in pages:
     tag=str(release.get("tag_name") or "")
     normalized=tag.lower().removesuffix("-release")
     if not (normalized == version or normalized.startswith(version + ".") or normalized.startswith(version + "-")):
         continue
+    commit_url=""
     for asset in release.get("assets") or []:
         if str(asset.get("name") or "").lower() == "commit.gitdeps.xml":
-            candidates.append((key(normalized), tag, str(asset.get("url") or "")))
+            commit_url=str(asset.get("url") or "")
+            break
+    candidates.append((key(normalized), tag, commit_url))
 if candidates:
     _, tag, url=sorted(candidates, reverse=True)[0]
     print(tag + "\t" + url)
@@ -58,7 +60,13 @@ if [[ -z "$selection" ]]; then
 fi
 release_tag="${selection%%$'\t'*}"
 asset_url="${selection#*$'\t'}"
-if [[ -z "$release_tag" || -z "$asset_url" || "$asset_url" == "$selection" ]]; then
+
+if [[ -n "$REF_DEST" && -n "$release_tag" ]]; then
+  mkdir -p "$(dirname "$REF_DEST")"
+  printf '%s\n' "$release_tag" > "$REF_DEST"
+fi
+
+if [[ -z "$asset_url" || "$asset_url" == "$selection" ]]; then
   printf '\n'
   exit 0
 fi
@@ -73,8 +81,4 @@ if [[ ! -s "$tmp" ]] || ! grep -q '<' "$tmp"; then
 fi
 mv -f -- "$tmp" "$DEST"
 trap - EXIT
-if [[ -n "$REF_DEST" ]]; then
-  mkdir -p "$(dirname "$REF_DEST")"
-  printf '%s\n' "$release_tag" > "$REF_DEST"
-fi
 printf '%s\n' "$DEST"

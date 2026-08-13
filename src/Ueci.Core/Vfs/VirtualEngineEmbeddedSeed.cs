@@ -53,13 +53,26 @@ public static class VirtualEngineEmbeddedSeed
                 }
             }
         }
-        else if (EpicBundledMonoResolver.TryResolve(manifest, runtimeIdentifier) is { } mono)
+        else
         {
-            foreach (string path in manifest.Files.Keys)
+            // Classic UBT csproj files reference managed support assemblies from Binaries/DotNET
+            // even when the manifest does not contain a precompiled UnrealBuildTool.exe. Keep those
+            // assemblies visible together with the Mono host so xbuild/msbuild does not silently
+            // drop Ionic.Zip/RPCUtility/etc. references.
+            foreach (string path in manifest.Files.Keys.Where(path =>
+                         path.StartsWith("Engine/Binaries/DotNET/", StringComparison.Ordinal)))
             {
-                if (path.StartsWith(mono.BundlePrefix, StringComparison.Ordinal))
+                gitDependencyPaths.Add(path);
+            }
+
+            if (EpicBundledMonoResolver.TryResolve(manifest, runtimeIdentifier) is { } mono)
+            {
+                foreach (string path in manifest.Files.Keys)
                 {
-                    gitDependencyPaths.Add(path);
+                    if (path.StartsWith(mono.BundlePrefix, StringComparison.Ordinal))
+                    {
+                        gitDependencyPaths.Add(path);
+                    }
                 }
             }
         }
@@ -68,13 +81,28 @@ public static class VirtualEngineEmbeddedSeed
         AddIfPresent(manifest, gitDependencyPaths, "Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc");
 
         bool legacySeed = hasLegacyUbtPayload || sdk is null;
-        IReadOnlyList<string> gitPaths = !legacySeed
-            ? GitPaths.Value
-            : GitPaths.Value.Concat([
+        IEnumerable<string> commonGitPaths = GitPaths.Value.Concat([
+            // SDK-style UBT projects in UE5.5/5.6 import this shared props file even when the
+            // exact alpha.6 seed predates that path. Root Directory.Build files are similarly
+            // cheap compatibility inputs for branches whose managed layout moved slightly.
+            "Engine/Source/Programs/Shared/UnrealEngine.csproj.props",
+            "Directory.Build.props",
+            "Directory.Build.targets",
+        ]);
+        IReadOnlyList<string> gitPaths = (!legacySeed
+            ? commonGitPaths
+            : commonGitPaths.Concat([
                 "Engine/Source/Runtime/Core",
                 "Engine/Source/Runtime/Projects",
                 "Engine/Source/Runtime/Launch",
-            ]).Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal).ToArray();
+                // Classic UE4 UBT projects reference sibling DotNETCommon sources; early releases
+                // also reference the EnvVarsToXML project directly from UnrealBuildTool.csproj.
+                "Engine/Source/Programs/DotNETCommon",
+                "Engine/Source/Programs/EnvVarsToXML",
+            ]))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToArray();
 
         return new VirtualEngineSeed(
             gitPaths,

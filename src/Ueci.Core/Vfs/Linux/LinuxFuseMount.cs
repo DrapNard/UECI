@@ -50,10 +50,14 @@ public sealed class LinuxFuseMountSession : IAsyncDisposable
             return;
         }
 
-        await LinuxFuseMount.TryUnmountAsync(MountPoint).ConfigureAwait(false);
+        // Try a clean unmount first. If the helper is wedged (for example because the build
+        // exhausted its filesystem and the protocol server could no longer answer), terminate the
+        // helper and retry with lazy detach. The old order killed the helper after a failed normal
+        // unmount but never retried the mount itself, leaving stale engine-view mounts behind.
+        await LinuxFuseMount.TryUnmountAsync(MountPoint, lazy: false).ConfigureAwait(false);
         try
         {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
             await _process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
         }
         catch
@@ -69,6 +73,7 @@ public sealed class LinuxFuseMountSession : IAsyncDisposable
             catch { }
         }
 
+        await LinuxFuseMount.TryUnmountAsync(MountPoint, lazy: true).ConfigureAwait(false);
         _serverCancellation.Cancel();
         try { await _serverTask.ConfigureAwait(false); } catch { }
         await _server.DisposeAsync().ConfigureAwait(false);
@@ -145,6 +150,10 @@ public sealed class LinuxFuseMount
                 }
             }
             catch { }
+            // Startup can fail after libfuse has already attached the mount (for example when the
+            // caller is cancelled or the backing filesystem fills). Always detach defensively so
+            // a failed matrix row cannot leave an undeletable engine-view behind.
+            await TryUnmountAsync(mountPoint, lazy: true).ConfigureAwait(false);
             serverCancellation.Cancel();
             try { await serverTask.ConfigureAwait(false); } catch { }
             await server.DisposeAsync().ConfigureAwait(false);
@@ -247,12 +256,14 @@ public sealed class LinuxFuseMount
         return Path.Combine(Path.GetTempPath(), $"ueci-{token}.sock");
     }
 
-    internal static async Task TryUnmountAsync(string mountPoint)
+    internal static async Task TryUnmountAsync(string mountPoint, bool lazy = false)
     {
+        string[] fuseArgs = lazy ? ["-u", "-z", mountPoint] : ["-u", mountPoint];
+        string[] umountArgs = lazy ? ["-l", mountPoint] : [mountPoint];
         foreach ((string exe, string[] args) in new[]
         {
-            ("fusermount3", new[] { "-u", mountPoint }),
-            ("umount", new[] { mountPoint }),
+            ("fusermount3", fuseArgs),
+            ("umount", umountArgs),
         })
         {
             try
