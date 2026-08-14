@@ -98,6 +98,20 @@ public static class VirtualEngineEmbeddedSeed
         AddManagedBuildControlFiles(manifest, gitDependencyPaths);
         AddManagedSharedDependencies(manifest, gitDependencyPaths);
 
+        // Keep UBA lazy: adding the manifest entries to the virtual namespace costs no network I/O,
+        // but it lets branches that insist on probing/using UBA (notably newer UE5) resolve the
+        // native host payload instead of failing before the local executor can take over.
+        string? ubaPrefix = EpicBundledUbaResolver.GetNativePrefix(runtimeIdentifier);
+        if (ubaPrefix is not null)
+        {
+            AddIfPresent(manifest, gitDependencyPaths, EpicBundledUbaResolver.LibraryPropsPath);
+            foreach (string path in manifest.Files.Keys.Where(path =>
+                         path.StartsWith(ubaPrefix, StringComparison.Ordinal)))
+            {
+                gitDependencyPaths.Add(path);
+            }
+        }
+
         bool legacySeed = hasLegacyUbtPayload || sdk is null;
         IEnumerable<string> commonGitPaths = GitPaths.Value.Concat([
             // SDK-style UBT projects in UE5.5/5.6 import this shared props file even when the

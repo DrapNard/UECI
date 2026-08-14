@@ -89,6 +89,15 @@ public sealed class UnrealBuildToolCompiler
                     }
                 }
 
+                if (effectiveRuntime.BundlePrefix is null
+                    && effectiveRuntime.Kind == UnrealBuildToolRuntimeKind.DotNet
+                    && !string.IsNullOrWhiteSpace(existing.RuntimeConfigPath))
+                {
+                    await DotNetRuntimeConfig.EnsureRollForwardAsync(
+                        existing.RuntimeConfigPath,
+                        "LatestMajor",
+                        cancellationToken).ConfigureAwait(false);
+                }
                 progress?.Invoke($"Reusing cached UnrealBuildTool output: {existing.AssemblyPath}");
                 return new UnrealBuildToolCompileResult(
                     project,
@@ -172,6 +181,20 @@ public sealed class UnrealBuildToolCompiler
                 ex);
         }
 
+        if (effectiveRuntime.BundlePrefix is null
+            && effectiveRuntime.Kind == UnrealBuildToolRuntimeKind.DotNet
+            && !string.IsNullOrWhiteSpace(paths.RuntimeConfigPath))
+        {
+            // Environment roll-forward is enough for a direct UECI invocation, but the generated
+            // UBT can launch managed children without preserving that environment. Persist the
+            // policy into the generated runtimeconfig as well so a netcoreapp3.x UBT never falls
+            // back onto an installed-but-unusable OpenSSL 1.1-era runtime.
+            await DotNetRuntimeConfig.EnsureRollForwardAsync(
+                paths.RuntimeConfigPath,
+                "LatestMajor",
+                cancellationToken).ConfigureAwait(false);
+        }
+
         return new UnrealBuildToolCompileResult(project, effectiveRuntime.HostPath, process, paths, effectiveRuntime);
     }
 
@@ -201,7 +224,7 @@ public sealed class UnrealBuildToolCompiler
         };
         if (runtime.BundlePrefix is null)
         {
-            environment["DOTNET_ROLL_FORWARD"] = "Major";
+            environment["DOTNET_ROLL_FORWARD"] = "LatestMajor";
         }
 
         return ExternalProcess.RunAsync(

@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.0-alpha.23] - 2026-08-14
+
+### Fixed
+
+- Disable Engine plugins enabled by default in the synthetic UE5 project descriptor while explicitly enabling the plugin under test, preventing older UE5 releases from pulling Paper2D/Engine/ApplicationCore into the deliberately lean host before the equivalent TargetRules switch existed.
+- Make runner-managed historical UBT execution request `LatestMajor` roll-forward both in the generated runtimeconfig and on the `dotnet` host command line, avoiding fallback to an installed but OpenSSL-incompatible .NET Core 3.1 runtime after a successful modern-SDK bootstrap.
+- Expose host-specific Unreal Build Accelerator native payloads lazily from GitDependencies and pass UBA opt-out command-line switches only when the exact UBT source advertises them, covering newer UE5 releases that validate UBA before the local executor configuration takes effect.
+- Stop presenting Windows cross-compilation/AutoSDK environment variables to native-Linux legacy UBT. The projected Epic compiler remains first in `PATH` with `CC`/`CXX`, while Linux UBT can validate its native Setup.sh-style SDK layout without an injected incomplete AutoSDK root.
+- Let UE4.6 source tags reuse a complete historical `Required_1of2.zip`/`Required_2of2.zip` dependency set from a sibling 4.6.x GitHub release when the exact source patch release does not carry those transitional Ionic.Zip/RPCUtility assets.
+
+### Added
+
+- Regression coverage for runner runtimeconfig roll-forward, UE5 project-level default-plugin suppression, source-detected UBA invocation flags, UBA native seed visibility, and legacy rejection of modern UBA flags.
+
+### Validation
+
+- The alpha.22 boundary smoke produced the first fully green matrix target on UE5.7, including `libUECIHost-UECIMinimal.so`; alpha.23 keeps that result as the current proven release while advancing the remaining boundary failures.
+- CLI version advanced to `0.5.0-alpha.23`.
+
 ## [0.5.0-alpha.22] - 2026-08-14
 
 - Expand the mounted managed safety working set with `Engine/Config` plus GitDependencies-backed resources under `Engine/Source/Programs/Shared`, covering runtime config redirects, Oodle helper libraries and Horde protobuf inputs discovered by the alpha.21 boundary matrix.

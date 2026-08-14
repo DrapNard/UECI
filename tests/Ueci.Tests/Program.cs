@@ -40,6 +40,7 @@ internal static class Program
         ("GitDependencies overlay restores sparse-displaced files from CAS", GitDependenciesOverlayRestoresAsync),
         ("pack extractor rejects unknown magic", PackExtractorRejectsUnknownMagicAsync),
         ("runtimeconfig parser reads shared framework", RuntimeConfigParsesAsync),
+        ("runtimeconfig writer pins runner roll-forward", RuntimeConfigRollForwardAsync),
         ("Epic bundled dotnet resolver selects host runtime", BundledDotNetResolverAsync),
         ("Epic bundled dotnet SDK resolver selects latest SDK", BundledDotNetSdkResolverAsync),
         ("Epic bundled dotnet resolver accepts historical Linux bundle layouts", BundledDotNetHistoricalLayoutAsync),
@@ -58,6 +59,7 @@ internal static class Program
         ("tracked Epic index locates module rules and suffixes", EpicTrackedIndexFindsAsync),
         ("explicit module requirement force-refreshes an already-sparse Build.cs", ExplicitModuleRefreshAsync),
         ("plugin UBT invocation targets only requested modules", PluginBuildInvocationAsync),
+        ("plugin UBT invocation disables UBA when supported", PluginBuildInvocationModernUbaAsync),
         ("plugin UBT invocation filters unsupported flags for legacy UE4", PluginBuildInvocationLegacyAsync),
         ("plugin failure excerpt preserves early actionable diagnostics", PluginFailureExcerptAsync),
         ("plugin product collector harvests synthetic target binaries", PluginProductCollectorAsync),
@@ -1023,6 +1025,38 @@ internal static class Program
         }
     }
 
+    private static async Task RuntimeConfigRollForwardAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string path = Path.Combine(root, "UnrealBuildTool.runtimeconfig.json");
+            await File.WriteAllTextAsync(path, """
+                {
+                  "runtimeOptions": {
+                    "tfm": "netcoreapp3.1",
+                    "framework": {
+                      "name": "Microsoft.NETCore.App",
+                      "version": "3.1.0"
+                    }
+                  }
+                }
+                """);
+
+            await DotNetRuntimeConfig.EnsureRollForwardAsync(path);
+            string rewritten = await File.ReadAllTextAsync(path);
+            Assert.True(rewritten.Contains("\"rollForward\": \"LatestMajor\"", StringComparison.Ordinal));
+
+            DotNetRuntimeConfig config = await DotNetRuntimeConfig.ReadAsync(path);
+            Assert.Equal(1, config.Frameworks.Count);
+            Assert.Equal(new Version(3, 1, 0), config.Frameworks[0].Version);
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
     private static Task BundledDotNetResolverAsync()
     {
         var files = new Dictionary<string, GitDependencyFile>(StringComparer.Ordinal)
@@ -1114,6 +1148,10 @@ internal static class Program
                 new("Engine/Source/Programs/Shared/EpicGames.Oodle/Sdk/2.9.10/linux/lib/liboo2corelinux64.so.9", "k", false),
             ["Engine/Source/Programs/Shared/EpicGames.Horde/Protos/horde/log_rpc.proto"] =
                 new("Engine/Source/Programs/Shared/EpicGames.Horde/Protos/horde/log_rpc.proto", "l", false),
+            ["Engine/Source/Programs/Shared/EpicGames.UBA/Library.props"] =
+                new("Engine/Source/Programs/Shared/EpicGames.UBA/Library.props", "m", false),
+            ["Engine/Binaries/Linux/UnrealBuildAccelerator/UbaHost"] =
+                new("Engine/Binaries/Linux/UnrealBuildAccelerator/UbaHost", "n", true),
         };
         var manifest = new GitDependenciesManifest(
             "https://cdn.example.test/dependencies",
@@ -1141,6 +1179,12 @@ internal static class Program
             StringComparer.Ordinal));
         Assert.True(seed.GitDependencyPaths.Contains(
             "Engine/Source/Programs/Shared/EpicGames.Horde/Protos/horde/log_rpc.proto",
+            StringComparer.Ordinal));
+        Assert.True(seed.GitDependencyPaths.Contains(
+            "Engine/Source/Programs/Shared/EpicGames.UBA/Library.props",
+            StringComparer.Ordinal));
+        Assert.True(seed.GitDependencyPaths.Contains(
+            "Engine/Binaries/Linux/UnrealBuildAccelerator/UbaHost",
             StringComparer.Ordinal));
         Assert.True(seed.GitPathspecs.Contains("Engine/Config", StringComparer.Ordinal));
         return Task.CompletedTask;
@@ -1406,6 +1450,7 @@ internal static class Program
             string projectJson = await File.ReadAllTextAsync(host.ProjectPath);
             Assert.True(projectJson.Contains("\"Modules\"", StringComparison.Ordinal));
             Assert.True(projectJson.Contains("\"UECIHost\"", StringComparison.Ordinal));
+            Assert.True(projectJson.Contains("\"DisableEnginePluginsByDefault\": true", StringComparison.Ordinal));
             string runtimeTarget = Path.Combine(host.Root, "Source", "UECIHost.Target.cs");
             Assert.True(File.Exists(runtimeTarget));
             string runtimeTargetText = await File.ReadAllTextAsync(runtimeTarget);
@@ -1479,6 +1524,8 @@ internal static class Program
                 workspaceBaseDirectory: null,
                 compatibility: compatibility);
 
+            string projectJson = await File.ReadAllTextAsync(host.ProjectPath);
+            Assert.False(projectJson.Contains("DisableEnginePluginsByDefault", StringComparison.Ordinal));
             string target = await File.ReadAllTextAsync(Path.Combine(host.Root, "Source", "UECIHost.Target.cs"));
             string rules = await File.ReadAllTextAsync(Path.Combine(host.Root, "Source", "UECIHost", "UECIHost.Build.cs"));
             Assert.True(target.Contains("SetupBinaries", StringComparison.Ordinal));
@@ -1709,6 +1756,37 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static async Task PluginBuildInvocationModernUbaAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            await WriteCompatibilityFixtureAsync(root, 5, 8, modern: true);
+            UnrealEngineCompatibility compatibility = await UnrealEngineCompatibility.DetectAsync(root, "5.8");
+            var host = new UnrealPluginHostLayout(
+                "/tmp/host",
+                "/tmp/host/UECIHost.uproject",
+                "/tmp/host/Plugins/Fixture",
+                "/tmp/host/Plugins/Fixture/Fixture.uplugin",
+                "UECIHost",
+                "UECIHostEditor");
+            IReadOnlyList<string> arguments = UnrealPluginBuildInvocation.CreateArguments(
+                host,
+                "UECIHost",
+                "Linux",
+                "Development",
+                ["Fixture"],
+                "linux-x64",
+                compatibility);
+            Assert.True(arguments.Contains("-NoUBA", StringComparer.Ordinal));
+            Assert.True(arguments.Contains("-NoUBALocal", StringComparer.Ordinal));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
     private static async Task PluginBuildInvocationLegacyAsync()
     {
         string root = CreateTempDirectory();
@@ -1736,6 +1814,8 @@ internal static class Program
             Assert.False(arguments.Contains("-NoDumpSyms", StringComparer.Ordinal));
             Assert.False(arguments.Contains("-NoUBTMakefiles", StringComparer.Ordinal));
             Assert.False(arguments.Contains("-NoHotReloadFromIDE", StringComparer.Ordinal));
+            Assert.False(arguments.Contains("-NoUBA", StringComparer.Ordinal));
+            Assert.False(arguments.Contains("-NoUBALocal", StringComparer.Ordinal));
             Assert.False(arguments.Any(arg => arg.StartsWith("-Architecture=", StringComparison.Ordinal)));
         }
         finally
@@ -2124,7 +2204,7 @@ internal static class Program
                 "public class BuildConfiguration { public bool bAllowUBAExecutor; public bool bAllowUBALocalExecutor; public bool bAllowXGE; public bool bAllowFASTBuild; public bool bAllowSNDBS; public bool bDisableDumpSyms; }");
             await File.WriteAllTextAsync(
                 Path.Combine(modes, "BuildMode.cs"),
-                "// NoDumpSyms NoUBTMakefiles NoHotReloadFromIDE");
+                "// NoDumpSyms NoUBTMakefiles NoHotReloadFromIDE NoUBA NoUBALocal DisableEnginePluginsByDefault");
         }
         else
         {

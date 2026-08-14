@@ -150,8 +150,8 @@ for RAW_VERSION in "${VERSIONS[@]}"; do
     echo "[matrix] using dependency metadata from the release source layout"
   fi
 
-  # UE4.5 predates Commit.gitdeps.xml. Prepare Epic's historical Required/Optional release ZIPs in
-  # the FUSE upper layer before UECI creates the virtual Engine view.
+  # UE4.5 predates Commit.gitdeps.xml and transitional UE4.6 tags may still need the historical
+  # Required archives for managed UBT support binaries. Overlay them before mounting when present.
   if ! GH_TOKEN="$GH_TOKEN" ./scripts/prepare-legacy-release-deps.sh \
       "$VERSION" "$ENGINE_REF" "$ENGINE" 2>&1 | tee -a "$LOG"; then
     echo "❌ UE $VERSION: legacy dependency preparation failed"

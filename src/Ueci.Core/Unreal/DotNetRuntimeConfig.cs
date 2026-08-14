@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Ueci.Unreal;
 
@@ -56,6 +57,44 @@ public sealed record DotNetRuntimeConfig(IReadOnlyList<DotNetFrameworkRequiremen
         }
 
         return new DotNetRuntimeConfig(distinct);
+    }
+
+
+    public static async Task EnsureRollForwardAsync(
+        string path,
+        string policy = "LatestMajor",
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentException.ThrowIfNullOrWhiteSpace(policy);
+
+        string json = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+        JsonNode root = JsonNode.Parse(
+            json,
+            documentOptions: new JsonDocumentOptions
+            {
+                AllowTrailingCommas = true,
+                CommentHandling = JsonCommentHandling.Skip,
+            }) ?? throw new InvalidDataException($"Runtime config '{path}' is empty.");
+        JsonObject rootObject = root as JsonObject
+            ?? throw new InvalidDataException($"Runtime config '{path}' is not a JSON object.");
+        JsonObject runtimeOptions = rootObject["runtimeOptions"] as JsonObject
+            ?? throw new InvalidDataException($"Runtime config '{path}' has no runtimeOptions object.");
+        runtimeOptions["rollForward"] = policy;
+
+        string temp = path + $".{Guid.NewGuid():N}.tmp";
+        try
+        {
+            await File.WriteAllTextAsync(
+                temp,
+                rootObject.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine,
+                cancellationToken).ConfigureAwait(false);
+            File.Move(temp, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temp)) File.Delete(temp);
+        }
     }
 
     private static DotNetFrameworkRequirement ParseFramework(JsonElement element, string sourcePath)

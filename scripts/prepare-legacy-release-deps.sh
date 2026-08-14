@@ -29,16 +29,15 @@ UPPER="$ENGINE_DIR/.ueci/mounted-build/state/upper"
 STATE="$ENGINE_DIR/.ueci/mounted-build/state"
 MARKER="$STATE/legacy-release-deps.tag"
 mkdir -p "$UPPER" "$STATE"
-if [[ -f "$MARKER" ]] && [[ "$(cat "$MARKER")" == "$RELEASE_REF" ]]; then
+if [[ -f "$MARKER" ]] && [[ "$(cat "$MARKER")" == "$RELEASE_REF"* ]]; then
   echo "[matrix] UE$VERSION legacy release dependencies already prepared for $RELEASE_REF"
   exit 0
 fi
 
-release_json="$(gh api "repos/EpicGames/UnrealEngine/releases/tags/$RELEASE_REF")"
-selection="$(python3 -c '
+select_assets_from_release_json() {
+  python3 -c '
 import json, sys
 release=json.load(sys.stdin)
-wanted={"required_1of2.zip", "required_2of2.zip", "optional.zip"}
 assets={str(a.get("name") or "").lower(): a for a in release.get("assets") or []}
 missing=sorted(name for name in ("required_1of2.zip", "required_2of2.zip") if name not in assets)
 if missing:
@@ -48,7 +47,49 @@ for name in ("required_1of2.zip", "required_2of2.zip", "optional.zip"):
     asset=assets.get(name)
     if asset:
         print(str(asset.get("name") or "") + "\t" + str(asset.get("url") or ""))
-' <<<"$release_json")"
+'
+}
+
+release_json="$(gh api "repos/EpicGames/UnrealEngine/releases/tags/$RELEASE_REF")"
+selection="$(select_assets_from_release_json <<<"$release_json")"
+asset_release_ref="$RELEASE_REF"
+
+# Some transitional UE4.6 patch tags kept source releases separate from the dependency release
+# carrying Required_1of2/Required_2of2. If the exact source tag has no complete set, search the
+# repository's 4.6.x releases and reuse the nearest matching dependency archive set. The source
+# commit remains pinned to RELEASE_REF; only the historical binary dependency overlay comes from
+# the sibling release.
+if [[ "$selection" == MISSING$'\t'* && "$VERSION" == "4.6" ]]; then
+  for page in $(seq 1 20); do
+    page_json="$(gh api "repos/EpicGames/UnrealEngine/releases?per_page=100&page=$page")"
+    count="$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' <<<"$page_json")"
+    [[ "$count" != "0" ]] || break
+
+    candidate="$(python3 -c '
+import json, sys
+version=sys.argv[1]
+for release in json.load(sys.stdin):
+    tag=str(release.get("tag_name") or "")
+    if not (tag == version or tag.startswith(version + ".") or tag.startswith(version + "-")):
+        continue
+    assets={str(a.get("name") or "").lower(): a for a in release.get("assets") or []}
+    if not all(name in assets for name in ("required_1of2.zip", "required_2of2.zip")):
+        continue
+    print("SOURCE\t" + tag)
+    for name in ("required_1of2.zip", "required_2of2.zip", "optional.zip"):
+        asset=assets.get(name)
+        if asset:
+            print(str(asset.get("name") or "") + "\t" + str(asset.get("url") or ""))
+    break
+' "$VERSION" <<<"$page_json")"
+    if [[ "$candidate" == SOURCE$'\t'* ]]; then
+      asset_release_ref="$(head -n1 <<<"$candidate" | cut -f2-)"
+      selection="$(tail -n +2 <<<"$candidate")"
+      echo "[matrix] UE$VERSION dependency archives found on sibling release $asset_release_ref"
+      break
+    fi
+  done
+fi
 
 if [[ "$selection" == MISSING$'\t'* ]]; then
   if [[ "$VERSION" == "4.5" ]]; then
@@ -80,5 +121,5 @@ while IFS=$'\t' read -r name url; do
   unzip -q -o "$archive" -d "$UPPER"
 done <<<"$selection"
 
-printf '%s\n' "$RELEASE_REF" > "$MARKER"
-echo "[matrix] UE$VERSION legacy dependencies prepared in $UPPER"
+printf '%s\n' "$RELEASE_REF|$asset_release_ref" > "$MARKER"
+echo "[matrix] UE$VERSION legacy dependencies prepared in $UPPER (assets: $asset_release_ref)"

@@ -2,7 +2,7 @@
 
 **UECI is an experimental, minimal Unreal Engine substrate for CI/CD.** Its goal is to build Unreal Engine code plugins without installing a full Unreal Engine tree on every runner.
 
-> Status: **v0.5 alpha / technical prototype (alpha.22).** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, the materialized lazy plugin-build fallback, and a real Linux/FUSE3 virtual Engine mount now exist. `build-plugin --backend fuse` can compile UBT and the plugin directly through that mounted Engine on Linux x64. Windows/macOS mounted backends remain roadmap items.
+> Status: **v0.5 alpha / technical prototype (alpha.23).** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, the materialized lazy plugin-build fallback, and a real Linux/FUSE3 virtual Engine mount now exist. `build-plugin --backend fuse` can compile UBT and the plugin directly through that mounted Engine on Linux x64. Windows/macOS mounted backends remain roadmap items.
 
 ## Why
 
@@ -66,7 +66,7 @@ The long-term design supports both **materialized mode** (portable, no special p
 
 ## Unreal release compatibility matrix
 
-Alpha.20 continues hardening the executable release-compatibility contract introduced in alpha.18 using the first complete 32-release Linux run. `.github/workflows/unreal-version-matrix.yml` contains 32 independent Linux/FUSE jobs for the stable Epic release branches:
+Alpha.23 continues hardening the executable release-compatibility contract introduced in alpha.18 from repeated real Linux boundary runs. Alpha.22 produced the first complete green plugin build on UE5.7 through the FUSE backend, including a packaged native `.so`; the remaining release families are still treated as test-driven compatibility work rather than claimed support. `.github/workflows/unreal-version-matrix.yml` contains 32 independent Linux/FUSE jobs for the stable Epic release branches:
 
 - UE4: `4.5` through `4.27`
 - UE5: `5.0` through `5.8`
@@ -74,7 +74,7 @@ Alpha.20 continues hardening the executable release-compatibility contract intro
 Each row prepares the minimal fixture with the rule constructor expected by that release, resolves the exact Epic commit, runs the normal mounted `build-plugin` path, and fails unless `Binaries/Linux` contains a native `.so`. Diagnostics are uploaded per release so one legacy failure does not hide the rest of the matrix.
 For each release family, the workflow pins the highest available patch tag (for example `4.27.2-release`) before resolving its exact commit. If that release exposes a standalone `Commit.gitdeps.xml` asset it is passed explicitly; otherwise UECI uses the dependency layout associated with that pinned release. UE4.5, which predates `Commit.gitdeps.xml`, overlays its historical Required/Optional release archives into the writable VFS layer before the build.
 
-Alpha.20 makes compatibility-seed changes apply even when an older learned profile already exists: the persisted working set keeps its exact-size entries, while current safety Git metadata and release-specific managed GitDependencies files are merged without a full Engine index. This is used for the cross-release UBT bootstrap (`Programs/Shared`, historical managed references, and generated MSBuild support) and keeps iterative matrix runs useful without deleting the shared cache.
+Compatibility-seed changes apply even when an older learned profile already exists: the persisted working set keeps its exact-size entries, while current safety Git metadata and release-specific managed GitDependencies files are merged without a full Engine index. Alpha.23 extends this to UBA host payload visibility and continues the cross-release UBT bootstrap (`Programs/Shared`, historical managed references, generated MSBuild support, and explicit project plugin suppression) without requiring the shared cache to be deleted between matrix runs.
 
 The compatibility layer prefers **source feature detection** over hard-coded minor-version behavior. The Engine version is still used for broad runtime generations and conservative fallbacks, while individual TargetRules/ModuleRules/XML/CLI features are emitted only when the pinned UBT source exposes them. Moving development branches such as `release`, `master`, `ue5-main`, `ue6-main`, `dev-*`, `plus`, and `chaos` remain valid explicit refs, but are intentionally not used as reproducible release-matrix evidence.
 
@@ -363,7 +363,7 @@ The composite Action persists this cold-start cache under an exact Epic-commit k
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the lazy plugin build and package the result. Alpha.17 resolves the exact Epic ref object id first and keys the GitHub Actions cold-start cache with it, so moving refs such as `release` cannot accidentally reuse a cache as if the Engine commit were unchanged.
 
 ```yaml
-- uses: your-org/ueci@v0.5.0-alpha.22
+- uses: your-org/ueci@v0.5.0-alpha.23
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release

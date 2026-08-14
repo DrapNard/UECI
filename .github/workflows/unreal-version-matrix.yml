@@ -120,8 +120,8 @@ jobs:
           plugin="$(./scripts/prepare-compat-fixture.sh '${{ matrix.version }}' "$RUNNER_TEMP/ueci-plugin-${{ matrix.version }}")"
           printf 'plugin=%s\n' "$plugin" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare pre-GitDependencies release assets
-        if: ${{ matrix.version == '4.5' }}
+      - name: Prepare legacy release assets
+        if: ${{ matrix.version == '4.5' || matrix.version == '4.6' }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.UECI_EPIC_GITHUB_TOKEN }}

@@ -108,6 +108,18 @@ public sealed class UnrealEngineCompatibility
     public bool SupportsNoHotReloadFromIdeFlag
         => HasUbtToken("NoHotReloadFromIDE");
 
+    // UBA command-line switches have moved around between UE5 releases. Never emit a
+    // switch purely from the engine version; require the exact UBT source snapshot to
+    // advertise it. This keeps older command-line parsers from seeing unknown options.
+    public bool SupportsNoUbaFlag
+        => HasUbtToken("NoUBA") || HasUbtToken("NoUba");
+
+    public bool SupportsNoUbaLocalFlag
+        => HasUbtToken("NoUBALocal") || HasUbtToken("NoUbaLocal");
+
+    public bool SupportsDisableEnginePluginsByDefaultProject
+        => HasUbtToken("DisableEnginePluginsByDefault") || Version.Major >= 5;
+
     public bool SupportsTargetMember(string token) => HasTargetToken(token);
     public bool SupportsModuleMember(string token) => HasModuleToken(token);
     public bool SupportsUbtToken(string token) => HasUbtToken(token);

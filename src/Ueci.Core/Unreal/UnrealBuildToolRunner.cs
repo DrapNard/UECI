@@ -100,21 +100,23 @@ public sealed class UnrealBuildToolRunner
                     // UECI itself requires a modern runner .NET. When an old Epic SDK cannot run
                     // against the host OpenSSL, the compiler may deliberately fall back to that
                     // runner SDK. Let a netcoreapp3.1/net6 UBT roll forward to the runner runtime.
-                    environment["DOTNET_ROLL_FORWARD"] = "Major";
+                    environment["DOTNET_ROLL_FORWARD"] = "LatestMajor";
                 }
                 await UnrealBuildToolConfiguration.WriteHermeticLocalExecutorAsync(
                     isolatedUbtConfigDirectory,
                     cancellationToken,
                     compatibility).ConfigureAwait(false);
                 executable = runtimeHost;
-                processArguments = [ubt.AssemblyPath, .. arguments];
+                processArguments = IsEngineBundledDotNet(ubt.EngineRoot, runtimeHost)
+                    ? [ubt.AssemblyPath, .. arguments]
+                    : ["--roll-forward", "LatestMajor", ubt.AssemblyPath, .. arguments];
                 break;
 
             case UnrealBuildToolRuntimeKind.Mono:
                 // Legacy UE4 UBT predates UBA and its XML schema differs substantially. Do not
-                // inject modern BuildConfiguration fields. Older Linux UBT generations can also
-                // discover Epic's cross-toolchain only through LINUX_ROOT/LINUX_MULTIARCH_ROOT,
-                // so expose the projected immutable toolchain when UECI installed one.
+                // inject modern BuildConfiguration fields. Keep the projected immutable compiler
+                // first in PATH; only Windows cross-builds receive the historical LINUX_* variables.
+                // Native Linux releases validate the Setup.sh-style Engine SDK projection directly.
                 executable = runtimeHost;
                 processArguments = [ubt.AssemblyPath, .. arguments];
                 environment["MONO_ENV_OPTIONS"] = "--debug";
@@ -122,11 +124,6 @@ public sealed class UnrealBuildToolRunner
                 {
                     string toolchainRoot = Path.TrimEndingDirectorySeparator(
                         Path.GetFullPath(legacyLinuxToolchainRoot));
-                    environment["LINUX_ROOT"] = toolchainRoot;
-                    // Several UE4 LinuxPlatformSDK generations concatenate this value directly
-                    // with x86_64-unknown-linux-gnu rather than Path.Combine(). Epic's own
-                    // troubleshooting command likewise assumes the separator is part of the value.
-                    environment["LINUX_MULTIARCH_ROOT"] = toolchainRoot + Path.DirectorySeparatorChar;
 
                     string compilerBin = Path.Combine(
                         toolchainRoot, "x86_64-unknown-linux-gnu", "bin");
@@ -141,10 +138,15 @@ public sealed class UnrealBuildToolRunner
                     if (File.Exists(clang)) environment["CC"] = clang;
                     if (File.Exists(clangxx)) environment["CXX"] = clangxx;
 
-                    string autoSdkRoot = Path.Combine(
-                        Path.GetFullPath(ubt.EngineRoot),
-                        "Engine", "Extras", "ThirdPartyNotUE", "SDKs");
-                    environment["UE_SDKS_ROOT"] = autoSdkRoot;
+                    if (OperatingSystem.IsWindows())
+                    {
+                        // These variables describe Epic's Windows -> Linux cross compiler. Native
+                        // Linux UBT uses the Setup.sh-projected toolchain directly and can treat an
+                        // injected UE_SDKS_ROOT/LINUX_MULTIARCH_ROOT as an incomplete AutoSDK, which
+                        // prevents LinuxPlatformFactory from registering the platform.
+                        environment["LINUX_ROOT"] = toolchainRoot;
+                        environment["LINUX_MULTIARCH_ROOT"] = toolchainRoot + Path.DirectorySeparatorChar;
+                    }
                 }
                 break;
 
@@ -157,9 +159,11 @@ public sealed class UnrealBuildToolRunner
                 throw new NotSupportedException($"Unsupported UBT runtime '{ubt.RuntimeKind}'.");
         }
 
-        IReadOnlyList<string> unsetEnvironment = string.IsNullOrWhiteSpace(legacyLinuxToolchainRoot)
-            ? ["LINUX_ROOT", "LINUX_MULTIARCH_ROOT", "UE_SDKS_ROOT"]
-            : Array.Empty<string>();
+        bool exposeCrossLinuxSdkVariables = !string.IsNullOrWhiteSpace(legacyLinuxToolchainRoot)
+            && OperatingSystem.IsWindows();
+        IReadOnlyList<string> unsetEnvironment = exposeCrossLinuxSdkVariables
+            ? ["UE_SDKS_ROOT"]
+            : ["LINUX_ROOT", "LINUX_MULTIARCH_ROOT", "UE_SDKS_ROOT"];
         return await ExternalProcess.RunAsync(
             executable,
             ubt.EngineRoot,

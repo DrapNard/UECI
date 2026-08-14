@@ -69,6 +69,12 @@ public static class UnrealPluginBuildInvocation
             arguments.Add("-NoUBTMakefiles");
         if (compatibility is null || compatibility.SupportsNoDumpSymsFlag)
             arguments.Add("-NoDumpSyms");
+        // UE5.8 can select UBA even on a hermetic Linux runner before the native payload
+        // is visible. Prefer an explicit opt-out when the exact UBT source advertises it.
+        if (compatibility?.SupportsNoUbaFlag == true)
+            arguments.Add("-NoUBA");
+        if (compatibility?.SupportsNoUbaLocalFlag == true)
+            arguments.Add("-NoUBALocal");
         arguments.Add("-Progress");
 
         foreach (string module in modules)
