@@ -52,6 +52,7 @@ public sealed class UnrealEngineCompatibility
     private readonly string _ubtSource;
     private readonly string _linuxPlatformSource;
     private readonly string _applicationCoreRulesSource;
+    private readonly string _moduleValidationSource;
     private readonly bool _targetRulesAuthoritative;
 
     private UnrealEngineCompatibility(
@@ -63,6 +64,7 @@ public sealed class UnrealEngineCompatibility
         string ubtSource,
         string linuxPlatformSource,
         string applicationCoreRulesSource,
+        string moduleValidationSource,
         bool targetRulesAuthoritative)
     {
         Version = version;
@@ -73,6 +75,7 @@ public sealed class UnrealEngineCompatibility
         _ubtSource = ubtSource;
         _linuxPlatformSource = linuxPlatformSource;
         _applicationCoreRulesSource = applicationCoreRulesSource;
+        _moduleValidationSource = moduleValidationSource;
         _targetRulesAuthoritative = targetRulesAuthoritative;
     }
 
@@ -103,6 +106,37 @@ public sealed class UnrealEngineCompatibility
     public bool SupportsEnableTrace => HasTargetMemberDeclaration("bEnableTrace");
     public bool SupportsRuntimeSymbolFiles => HasTargetMemberDeclaration("bAllowRuntimeSymbolFiles");
     public bool SupportsGlobalDefinitions => HasTargetMemberDeclaration("GlobalDefinitions");
+
+    /// <summary>
+    /// Some newer UBT branches reject C++17 at module-validation time even though the enum token
+    /// remains in ModuleRules for source compatibility. Key the synthetic host behavior to the
+    /// validation shipped by the exact engine commit, not to a hard-coded UE version.
+    /// </summary>
+    public bool RejectsCpp17ModuleStandard
+        => _moduleValidationSource.Contains(
+                "Cpp17 is no longer supported",
+                StringComparison.OrdinalIgnoreCase)
+            || _moduleValidationSource.Contains(
+                "C++17 is no longer supported",
+                StringComparison.OrdinalIgnoreCase);
+
+    public bool RequiresExplicitModulePch
+        => _moduleValidationSource.Contains(
+            "must specify an explicit precompiled header for PCHUsage",
+            StringComparison.OrdinalIgnoreCase);
+
+    public bool SupportsModuleCppStandard
+        => HasModuleToken("CppStandard")
+            && (HasModuleToken("CppStandardVersion") || HasUbtToken("CppStandardVersion"));
+
+    public bool SupportsCpp20ModuleStandard
+        => SupportsModuleCppStandard
+            && (HasModuleToken("Cpp20") || HasUbtToken("Cpp20"));
+
+    public bool SupportsExplicitOrSharedPchUsage
+        => HasModuleToken("PCHUsage")
+            && (HasModuleToken("PCHUsageMode") || HasUbtToken("PCHUsageMode"))
+            && (HasModuleToken("UseExplicitOrSharedPCHs") || HasUbtToken("UseExplicitOrSharedPCHs"));
 
     /// <summary>
     /// Newer Engine module graphs may instantiate ApplicationCore even for the synthetic modular
@@ -182,6 +216,10 @@ public sealed class UnrealEngineCompatibility
             root, "Engine", "Source", "Programs", "UnrealBuildTool", "Modes", "BuildMode.cs");
         string applicationCoreRulesPath = Path.Combine(
             root, "Engine", "Source", "Runtime", "ApplicationCore", "ApplicationCore.Build.cs");
+        string moduleValidationPath = Path.Combine(
+            root, "Engine", "Source", "Programs", "UnrealBuildTool", "Configuration", "UEBuildModuleCPP.cs");
+        string targetValidationPath = Path.Combine(
+            root, "Engine", "Source", "Programs", "UnrealBuildTool", "Configuration", "UEBuildTarget.cs");
 
         string projectSource = await ReadIfExistsAsync(ubtProjectPath, cancellationToken).ConfigureAwait(false);
         string targetRulesSource = await ReadIfExistsAsync(targetRulesPath, cancellationToken).ConfigureAwait(false);
@@ -190,6 +228,13 @@ public sealed class UnrealEngineCompatibility
         string buildConfigurationSource = await ReadIfExistsAsync(buildConfigurationPath, cancellationToken).ConfigureAwait(false);
         string buildModeSource = await ReadIfExistsAsync(buildModePath, cancellationToken).ConfigureAwait(false);
         string applicationCoreRulesSource = await ReadIfExistsAsync(applicationCoreRulesPath, cancellationToken).ConfigureAwait(false);
+        string directModuleValidationSource = string.Join(
+            "\n",
+            new[]
+            {
+                await ReadIfExistsAsync(moduleValidationPath, cancellationToken).ConfigureAwait(false),
+                await ReadIfExistsAsync(targetValidationPath, cancellationToken).ConfigureAwait(false),
+            }.Where(value => value.Length != 0));
 
         // Very old UE4 layouts moved rule declarations and command-line options around. The UBT
         // subtree is already part of the bounded bootstrap seed, so fall back to a capped corpus
@@ -209,6 +254,11 @@ public sealed class UnrealEngineCompatibility
         // compatibility evidence. These tokens are advisory on native Linux: mounted builds can retry
         // a bounded set of historical SDK layouts instead of assuming that a token in source is active
         // on the current host. This matters for UE4.20 where native and cross-toolchain code coexist.
+        string moduleValidationSource = string.Join(
+            "\n",
+            new[] { directModuleValidationSource, moduleRulesSource, fallbackCorpus }
+                .Where(value => value.Length != 0));
+
         string linuxPlatformRoot = Path.Combine(ubtRoot, "Platform", "Linux");
         string linuxPlatformSource = Directory.Exists(linuxPlatformRoot)
             ? await ReadLinuxPlatformSourceCorpusAsync(linuxPlatformRoot, cancellationToken).ConfigureAwait(false)
@@ -228,6 +278,7 @@ public sealed class UnrealEngineCompatibility
             ubtSource,
             linuxPlatformSource,
             applicationCoreRulesSource,
+            moduleValidationSource,
             targetRulesAuthoritative);
     }
 

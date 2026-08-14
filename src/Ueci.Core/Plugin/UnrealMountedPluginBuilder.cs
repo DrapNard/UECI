@@ -484,6 +484,7 @@ internal sealed class UnrealMountedPluginBuilder
                             compatibility,
                             toolchain?.ToolchainDirectory,
                             legacyCompiler?.BinDirectory,
+                            legacyCompiler?.CxxIncludeDirectories,
                             virtualEngineRoot,
                             options.Progress,
                             cancellationToken)).ConfigureAwait(false);
@@ -743,6 +744,7 @@ internal sealed class UnrealMountedPluginBuilder
         UnrealEngineCompatibility compatibility,
         string? legacyLinuxToolchainRoot,
         string? legacyLinuxCompilerBin,
+        IReadOnlyList<string>? legacyLinuxCppIncludeDirectories,
         string engineRoot,
         Action<string>? progress,
         CancellationToken cancellationToken)
@@ -753,6 +755,7 @@ internal sealed class UnrealMountedPluginBuilder
             compatibility,
             legacyLinuxToolchainRoot,
             legacyLinuxCompilerBin,
+            legacyLinuxCppIncludeDirectories,
             progress,
             cancellationToken).ConfigureAwait(false);
 

@@ -81,6 +81,7 @@ public sealed class UnrealBuildToolRunner
         UnrealEngineCompatibility compatibility,
         string? legacyLinuxToolchainRoot = null,
         string? legacyLinuxCompilerBin = null,
+        IReadOnlyList<string>? legacyLinuxCppIncludeDirectories = null,
         Action<string>? progress = null,
         CancellationToken cancellationToken = default)
     {
@@ -121,7 +122,8 @@ public sealed class UnrealBuildToolRunner
                 compatibility,
                 toolchainRoot,
                 mode,
-                legacyLinuxCompilerBin).ConfigureAwait(false);
+                legacyLinuxCompilerBin,
+                legacyLinuxCppIncludeDirectories).ConfigureAwait(false);
             attempts.Add(new UnrealBuildToolRunAttempt(mode, result));
 
             if (result.Succeeded)
@@ -154,7 +156,8 @@ public sealed class UnrealBuildToolRunner
         UnrealEngineCompatibility? compatibility = null,
         string? legacyLinuxToolchainRoot = null,
         LegacyLinuxSdkEnvironmentMode legacyLinuxSdkMode = LegacyLinuxSdkEnvironmentMode.SourceDetected,
-        string? legacyLinuxCompilerBin = null)
+        string? legacyLinuxCompilerBin = null,
+        IReadOnlyList<string>? legacyLinuxCppIncludeDirectories = null)
     {
         ArgumentNullException.ThrowIfNull(ubt);
 
@@ -257,6 +260,15 @@ public sealed class UnrealBuildToolRunner
                     string clangxx = Path.Combine(compilerBin, OperatingSystem.IsWindows() ? "clang++.exe" : "clang++");
                     if (File.Exists(clang)) environment["CC"] = clang;
                     if (File.Exists(clangxx)) environment["CXX"] = clangxx;
+
+                    if (legacyLinuxCppIncludeDirectories is { Count: > 0 })
+                    {
+                        string inheritedIncludes = Environment.GetEnvironmentVariable("CPLUS_INCLUDE_PATH") ?? string.Empty;
+                        environment["CPLUS_INCLUDE_PATH"] = string.Join(
+                            Path.PathSeparator.ToString(),
+                            legacyLinuxCppIncludeDirectories.Where(Directory.Exists)) +
+                            (inheritedIncludes.Length == 0 ? string.Empty : Path.PathSeparator + inheritedIncludes);
+                    }
 
                     string compilerRoot = Directory.GetParent(compilerBin)?.FullName ?? compilerBin;
                     string compilerLib = Path.Combine(compilerRoot, "lib");

@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Ueci.Unreal;
 
 namespace Ueci.Plugin;
@@ -62,6 +63,11 @@ public static class UnrealPluginHostProject
         string sourcePluginRoot = Path.GetDirectoryName(plugin.DescriptorPath)
             ?? throw new InvalidDataException("Unable to determine plugin source directory.");
         CopyDirectory(sourcePluginRoot, pluginRoot, relative: string.Empty);
+        await NormalizeCopiedPluginModuleRulesAsync(
+            pluginRoot,
+            plugin,
+            compatibility,
+            cancellationToken).ConfigureAwait(false);
 
         string copiedDescriptor = Path.Combine(pluginRoot, Path.GetFileName(plugin.DescriptorPath));
         string projectPath = Path.Combine(workspace, "UECIHost.uproject");
@@ -154,29 +160,7 @@ public static class UnrealPluginHostProject
             editorTarget,
             cancellationToken).ConfigureAwait(false);
 
-        string moduleRules = compatibility.SupportsReadOnlyTargetRules
-            ? $$"""
-              using UnrealBuildTool;
-
-              public class {{GameTargetName}} : ModuleRules
-              {
-                  public {{GameTargetName}}(ReadOnlyTargetRules Target) : base(Target)
-                  {
-                      PrivateDependencyModuleNames.Add("Core");
-                  }
-              }
-              """
-            : $$"""
-              using UnrealBuildTool;
-
-              public class {{GameTargetName}} : ModuleRules
-              {
-                  public {{GameTargetName}}(TargetInfo Target)
-                  {
-                      PrivateDependencyModuleNames.Add("Core");
-                  }
-              }
-              """;
+        string moduleRules = BuildHostModuleRules(compatibility);
         await File.WriteAllTextAsync(
             Path.Combine(module, GameTargetName + ".Build.cs"),
             moduleRules + Environment.NewLine,
@@ -213,6 +197,137 @@ public static class UnrealPluginHostProject
             Path.Combine(module, GameTargetName + ".cpp"),
             cpp + Environment.NewLine,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    private static string BuildHostModuleRules(UnrealEngineCompatibility compatibility)
+    {
+        var text = new StringBuilder();
+        text.AppendLine("using UnrealBuildTool;");
+        text.AppendLine();
+        text.AppendLine($"public class {GameTargetName} : ModuleRules");
+        text.AppendLine("{");
+        if (compatibility.SupportsReadOnlyTargetRules)
+            text.AppendLine($"    public {GameTargetName}(ReadOnlyTargetRules Target) : base(Target)");
+        else
+            text.AppendLine($"    public {GameTargetName}(TargetInfo Target)");
+        text.AppendLine("    {");
+        AppendModuleCompatibilityAssignments(text, compatibility, "        ");
+        text.AppendLine("        PrivateDependencyModuleNames.Add(\"Core\");");
+        text.AppendLine("    }");
+        text.AppendLine("}");
+        return text.ToString().TrimEnd();
+    }
+
+    private static async Task NormalizeCopiedPluginModuleRulesAsync(
+        string pluginRoot,
+        UnrealPluginDescriptor plugin,
+        UnrealEngineCompatibility compatibility,
+        CancellationToken cancellationToken)
+    {
+        bool needsCppStandard = compatibility.RejectsCpp17ModuleStandard
+            && compatibility.SupportsCpp20ModuleStandard;
+        bool needsPchMode = compatibility.RequiresExplicitModulePch
+            && compatibility.SupportsExplicitOrSharedPchUsage;
+        if (!needsCppStandard && !needsPchMode) return;
+
+        string sourceRoot = Path.Combine(pluginRoot, "Source");
+        if (!Directory.Exists(sourceRoot)) return;
+
+        foreach (string moduleName in plugin.Modules
+                     .Select(module => module.Name)
+                     .Distinct(StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string? buildRules = Directory
+                .EnumerateFiles(sourceRoot, moduleName + ".Build.cs", SearchOption.AllDirectories)
+                .FirstOrDefault();
+            if (buildRules is null) continue;
+
+            string source = await File.ReadAllTextAsync(buildRules, cancellationToken).ConfigureAwait(false);
+            string updated = source;
+
+            if (needsCppStandard)
+            {
+                updated = Regex.Replace(
+                    updated,
+                    @"(?m)(\bCppStandard\s*=\s*CppStandardVersion\.)Cpp17\b",
+                    "$1Cpp20",
+                    RegexOptions.CultureInvariant);
+            }
+
+            var assignments = new List<string>(2);
+            if (needsPchMode && !Regex.IsMatch(
+                    updated,
+                    @"(?m)\bPrivatePCHHeaderFile\s*=",
+                    RegexOptions.CultureInvariant))
+            {
+                updated = Regex.Replace(
+                    updated,
+                    @"(?m)(\bPCHUsage\s*=\s*(?:ModuleRules\.)?PCHUsageMode\.)(?:NoSharedPCHs|UseSharedPCHs)\b",
+                    "$1UseExplicitOrSharedPCHs",
+                    RegexOptions.CultureInvariant);
+                if (!Regex.IsMatch(
+                        updated,
+                        @"(?m)\bPCHUsage\s*=",
+                        RegexOptions.CultureInvariant))
+                {
+                    assignments.Add("PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;");
+                }
+            }
+            if (needsCppStandard && !Regex.IsMatch(
+                    updated,
+                    @"(?m)\bCppStandard\s*=",
+                    RegexOptions.CultureInvariant))
+            {
+                assignments.Add("CppStandard = CppStandardVersion.Cpp20;");
+            }
+
+            if (assignments.Count != 0)
+            {
+                updated = InsertModuleConstructorAssignments(updated, moduleName, assignments);
+            }
+
+            if (!string.Equals(source, updated, StringComparison.Ordinal))
+            {
+                await File.WriteAllTextAsync(buildRules, updated, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static string InsertModuleConstructorAssignments(
+        string source,
+        string moduleName,
+        IReadOnlyList<string> assignments)
+    {
+        Match constructor = Regex.Match(
+            source,
+            $@"\bpublic\s+{Regex.Escape(moduleName)}\s*\([^)]*\)\s*(?::\s*base\s*\([^)]*\))?\s*\{{",
+            RegexOptions.CultureInvariant | RegexOptions.Singleline);
+        if (!constructor.Success) return source;
+
+        string newline = source.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        int lineStart = source.LastIndexOf('\n', Math.Max(0, constructor.Index - 1));
+        lineStart = lineStart < 0 ? 0 : lineStart + 1;
+        string constructorIndent = source[lineStart..constructor.Index]
+            .TakeWhile(char.IsWhiteSpace)
+            .Aggregate(new StringBuilder(), (builder, character) => builder.Append(character))
+            .ToString();
+        string assignmentIndent = constructorIndent + "    ";
+        string insertion = newline + string.Join(
+            newline,
+            assignments.Select(assignment => assignmentIndent + assignment));
+        return source.Insert(constructor.Index + constructor.Length, insertion);
+    }
+
+    private static void AppendModuleCompatibilityAssignments(
+        StringBuilder text,
+        UnrealEngineCompatibility compatibility,
+        string indent)
+    {
+        if (compatibility.RequiresExplicitModulePch && compatibility.SupportsExplicitOrSharedPchUsage)
+            text.AppendLine(indent + "PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;");
+        if (compatibility.RejectsCpp17ModuleStandard && compatibility.SupportsCpp20ModuleStandard)
+            text.AppendLine(indent + "CppStandard = CppStandardVersion.Cpp20;");
     }
 
     private static string BuildTargetSource(

@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0-alpha.30] - 2026-08-14
+
+### Fixed
+
+- Complete the UE4.5-4.8 native clang compatibility boundary with an isolated era-compatible C++ standard-library header set. The legacy compiler resolver now probes `<new>`/`<type_traits>` before accepting clang 3.5.x; when the portable LLVM 3.5.2 archive has no usable host C++ headers, UECI lazily caches the Ubuntu 14.04 GCC 4.8 `libstdc++-4.8-dev` headers and propagates their include search path through the real Mono/UBT build. Both FUSE and materialized plugin backends receive the same `CPLUS_INCLUDE_PATH` projection.
+- Adapt copied modern plugin `Build.cs` files to validation rules shipped by the exact UBT source snapshot. If that UBT explicitly rejects `CppStandardVersion.Cpp17`, the ephemeral copy uses `Cpp20`; if it requires explicit/shared PCH semantics, modules without an explicit `PCHUsage` opt into `UseExplicitOrSharedPCHs`. The original plugin source tree is never modified.
+- Generate the synthetic `UECIHost.Build.cs` with those same source-detected C++ standard and PCH settings, removing the UE5.8 module-validation failures without hard-coding a UE5.8 version branch.
+
+### Added
+
+- Source-capability detection for UBT module-validation diagnostics, plus regression coverage proving UE5.8-style PCH/C++ standard normalization is applied only to the ephemeral host/plugin copy.
+- Legacy compiler requirement coverage for the GCC 4.8 C++ header companion used by the clang 3.5.x release family.
+
+### Validation
+
+- The alpha.29 runner built UECI cleanly and executed all 63 registered tests successfully. Its matrix remains green on UE4.20, UE5.0, UE5.1, and UE5.7.
+- UE4.6 now passes synthetic target/plugin ownership and proceeds deep into UnrealHeaderTool/Core native compilation; its remaining alpha.29 failure is the portable clang 3.5.2 installation being unable to include `<new>`. Alpha.30 probes and supplies the missing era-compatible libstdc++ header boundary before UBT starts.
+- UE5.8 now passes Rules/target generation and reaches module validation; alpha.29 fails only because the synthetic host/plugin retain unsupported/default C++17 and legacy PCH modes. Alpha.30 derives and applies the required module settings from the exact UBT source.
+- This sandbox still has no usable .NET SDK/Roslyn compiler, so the new 64-test managed suite and private Epic matrix require the normal runner for runtime validation.
+- CLI version advanced to `0.5.0-alpha.30`.
+
 ## [0.5.0-alpha.29] - 2026-08-14
 
 ### Fixed

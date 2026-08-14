@@ -55,6 +55,7 @@ internal static class Program
         ("Engine compatibility ignores non-authoritative fallback TargetRules members", EngineCompatibilityRejectsFallbackMemberFalsePositivesAsync),
         ("Engine compatibility requires declarations for synthetic TargetRules assignments", EngineCompatibilityRequiresDeclaredTargetMembersAsync),
         ("plugin host requires an overridable TargetRules method before emitting monolithic override", PluginHostRejectsStaleMonolithicMethodAsync),
+        ("plugin host adapts modern module PCH and C++ standard validation", PluginHostModernModuleValidationAsync),
         ("Epic bundled UBA resolver selects managed + native host payload", BundledUbaResolverAsync),
         ("UBT locator requires compiled bootstrap files", UnrealBuildToolLocatorAsync),
         ("UBT locator discovers legacy UnrealBuildTool.exe", UnrealBuildToolLocatorLegacyAsync),
@@ -1635,6 +1636,78 @@ internal static class Program
         }
     }
 
+    private static async Task PluginHostModernModuleValidationAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string engine = Path.Combine(root, "Engine");
+            await WriteCompatibilityFixtureAsync(engine, 5, 8, modern: true);
+            string configuration = Path.Combine(
+                engine, "Engine", "Source", "Programs", "UnrealBuildTool", "Configuration");
+            await File.WriteAllTextAsync(
+                Path.Combine(configuration, "UEBuildModuleCPP.cs"),
+                "class UEBuildModuleCPP { const string A = \"Cpp17 is no longer supported\"; " +
+                "const string B = \"must specify an explicit precompiled header for PCHUsage\"; }");
+
+            UnrealEngineCompatibility compatibility = await UnrealEngineCompatibility.DetectAsync(engine, "5.8");
+            Assert.True(compatibility.RejectsCpp17ModuleStandard);
+            Assert.True(compatibility.RequiresExplicitModulePch);
+            Assert.True(compatibility.SupportsCpp20ModuleStandard);
+            Assert.True(compatibility.SupportsExplicitOrSharedPchUsage);
+
+            string pluginSource = Path.Combine(root, "PluginSource");
+            string moduleDirectory = Path.Combine(pluginSource, "Source", "Fixture");
+            Directory.CreateDirectory(moduleDirectory);
+            string descriptor = Path.Combine(pluginSource, "Fixture.uplugin");
+            await File.WriteAllTextAsync(
+                descriptor,
+                "{ \"FileVersion\": 3, \"Modules\": [{ \"Name\": \"Fixture\", \"Type\": \"Runtime\" }] }");
+            await File.WriteAllTextAsync(
+                Path.Combine(moduleDirectory, "Fixture.Build.cs"),
+                "using UnrealBuildTool; public class Fixture : ModuleRules { " +
+                "public Fixture(ReadOnlyTargetRules Target) : base(Target) { " +
+                "PCHUsage = PCHUsageMode.UseSharedPCHs; CppStandard = CppStandardVersion.Cpp17; " +
+                "PrivateDependencyModuleNames.Add(\"Core\"); } }");
+            UnrealPluginDescriptor plugin = await UnrealPluginDescriptor.ReadAsync(descriptor);
+
+            UnrealPluginHostLayout host = await UnrealPluginHostProject.PrepareAsync(
+                engine,
+                plugin,
+                workspaceBaseDirectory: null,
+                compatibility: compatibility);
+            string copiedRules = await File.ReadAllTextAsync(
+                Path.Combine(host.PluginRoot, "Source", "Fixture", "Fixture.Build.cs"));
+            Assert.True(copiedRules.Contains(
+                "PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;",
+                StringComparison.Ordinal));
+            Assert.True(copiedRules.Contains(
+                "CppStandard = CppStandardVersion.Cpp20;",
+                StringComparison.Ordinal));
+            Assert.False(copiedRules.Contains("CppStandardVersion.Cpp17", StringComparison.Ordinal));
+
+            string hostRules = await File.ReadAllTextAsync(
+                Path.Combine(host.Root, "Source", "UECIHost", "UECIHost.Build.cs"));
+            Assert.True(hostRules.Contains(
+                "PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;",
+                StringComparison.Ordinal));
+            Assert.True(hostRules.Contains(
+                "CppStandard = CppStandardVersion.Cpp20;",
+                StringComparison.Ordinal));
+
+            string originalRules = await File.ReadAllTextAsync(
+                Path.Combine(moduleDirectory, "Fixture.Build.cs"));
+            Assert.True(originalRules.Contains("CppStandardVersion.Cpp17", StringComparison.Ordinal));
+            Assert.True(originalRules.Contains(
+                "PCHUsage = PCHUsageMode.UseSharedPCHs;",
+                StringComparison.Ordinal));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
     private static Task BundledUbaResolverAsync()
     {
         const string libraryProps = EpicBundledUbaResolver.LibraryPropsPath;
@@ -2336,12 +2409,15 @@ internal static class Program
         Assert.Equal("3.5.2", ue46.PreferredRelease);
         Assert.True(ue46.PortableArchiveUri is not null);
         Assert.Equal("releases.llvm.org", ue46.PortableArchiveUri!.Host);
+        Assert.True(ue46.PortableLibStdCppArchiveUri is not null);
+        Assert.Equal("archive.ubuntu.com", ue46.PortableLibStdCppArchiveUri!.Host);
 
         UnrealLegacyLinuxCompilerRequirement? ue414 = UnrealLegacyLinuxCompilerRequirement.ForEngine(
             new UnrealEngineVersion(4, 14, 3));
         Assert.True(ue414 is not null);
         Assert.Equal(3, ue414!.ClangMajor);
         Assert.Equal(9, ue414.ClangMinor);
+        Assert.True(ue414.PortableLibStdCppArchiveUri is null);
 
         UnrealLegacyLinuxCompilerRequirement? ue419 = UnrealLegacyLinuxCompilerRequirement.ForEngine(
             new UnrealEngineVersion(4, 19, 2));
@@ -2590,7 +2666,10 @@ internal static class Program
                 "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>");
             await File.WriteAllTextAsync(
                 Path.Combine(configuration, "ModuleRules.cs"),
-                "public class ReadOnlyTargetRules {} public class ModuleRules { public ModuleRules(ReadOnlyTargetRules Target) {} }");
+                "public class ReadOnlyTargetRules {} public enum CppStandardVersion { Cpp17, Cpp20, Latest } " +
+                "public enum PCHUsageMode { NoSharedPCHs, UseSharedPCHs, UseExplicitOrSharedPCHs } " +
+                "public class ModuleRules { public CppStandardVersion CppStandard; public PCHUsageMode PCHUsage; " +
+                "public ModuleRules(ReadOnlyTargetRules Target) {} }");
             await File.WriteAllTextAsync(
                 Path.Combine(configuration, "TargetRules.cs"),
                 "public enum TargetBuildEnvironment { Unique } public enum TargetLinkType { Modular } public enum EngineIncludeOrderVersion { Latest } " +

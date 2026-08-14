@@ -7,7 +7,8 @@ public sealed record UnrealLegacyLinuxCompilerRequirement(
     int ClangMajor,
     int ClangMinor,
     string PreferredRelease,
-    Uri? PortableArchiveUri = null)
+    Uri? PortableArchiveUri = null,
+    Uri? PortableLibStdCppArchiveUri = null)
 {
     public override string ToString() => $"clang {ClangMajor}.{ClangMinor}.x (preferred {PreferredRelease})";
 
@@ -24,7 +25,8 @@ public sealed record UnrealLegacyLinuxCompilerRequirement(
                 3,
                 5,
                 "3.5.2",
-                new Uri("https://releases.llvm.org/3.5.2/clang%2Bllvm-3.5.2-x86_64-linux-gnu-ubuntu-14.04.tar.xz")),
+                new Uri("https://releases.llvm.org/3.5.2/clang%2Bllvm-3.5.2-x86_64-linux-gnu-ubuntu-14.04.tar.xz"),
+                new Uri("https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-4.8/libstdc%2B%2B-4.8-dev_4.8.4-2ubuntu1~14.04.4_amd64.deb")),
             9 or 10 => new(
                 3,
                 6,
@@ -61,7 +63,8 @@ public sealed record UnrealLegacyLinuxCompiler(
     string ClangxxPath,
     Version Version,
     string Source,
-    long DownloadedBytes = 0);
+    long DownloadedBytes = 0,
+    IReadOnlyList<string>? CxxIncludeDirectories = null);
 
 public interface IUnrealLegacyCompilerArchiveSource
 {
@@ -138,8 +141,17 @@ public sealed class UnrealLegacyLinuxCompilerResolver
                 cancellationToken).ConfigureAwait(false);
             if (candidate is not null)
             {
-                progress?.Invoke($"[compat] Legacy compiler selected: clang {candidate.Version} ({candidate.Source}).");
-                return candidate;
+                UnrealLegacyLinuxCompiler? completed = await EnsureCppStandardLibraryAsync(
+                    candidate,
+                    requirement,
+                    cacheDirectory,
+                    progress,
+                    cancellationToken).ConfigureAwait(false);
+                if (completed is not null)
+                {
+                    progress?.Invoke($"[compat] Legacy compiler selected: clang {completed.Version} ({completed.Source}).");
+                    return completed;
+                }
             }
         }
 
@@ -155,13 +167,331 @@ public sealed class UnrealLegacyLinuxCompilerResolver
             cacheDirectory,
             progress,
             cancellationToken).ConfigureAwait(false);
-        if (provisioned is not null)
+        if (provisioned is null) return null;
+
+        UnrealLegacyLinuxCompiler? completedProvisioned = await EnsureCppStandardLibraryAsync(
+            provisioned,
+            requirement,
+            cacheDirectory,
+            progress,
+            cancellationToken).ConfigureAwait(false);
+        if (completedProvisioned is not null)
         {
             progress?.Invoke(
-                $"[compat] Legacy compiler selected: clang {provisioned.Version} ({provisioned.Source}).");
+                $"[compat] Legacy compiler selected: clang {completedProvisioned.Version} ({completedProvisioned.Source}).");
         }
-        return provisioned;
+        return completedProvisioned;
     }
+
+
+    private async Task<UnrealLegacyLinuxCompiler?> EnsureCppStandardLibraryAsync(
+        UnrealLegacyLinuxCompiler compiler,
+        UnrealLegacyLinuxCompilerRequirement requirement,
+        string cacheDirectory,
+        Action<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (!OperatingSystem.IsLinux()) return compiler;
+
+        if (await CanCompileCppStandardHeaderAsync(
+                compiler,
+                Array.Empty<string>(),
+                cancellationToken).ConfigureAwait(false))
+        {
+            return compiler;
+        }
+
+        if (requirement.PortableLibStdCppArchiveUri is null)
+        {
+            // Preserve the established behavior for legacy families whose native standard-library
+            // boundary has not been pinned yet. Alpha.30 closes the observed clang 3.5.x boundary
+            // without making untested 3.6-5.0 families regress from "compiler selected" to hard
+            // failure solely because their host libstdc++ probe differs on a modern distro.
+            progress?.Invoke(
+                $"[compat] clang {compiler.Version} cannot include <new> with the runner defaults; " +
+                "no isolated stdlib companion is pinned for this compiler family yet, continuing with the existing compiler behavior.");
+            return compiler;
+        }
+
+        LegacyCppStandardLibrary? standardLibrary = await TryProvisionLegacyLibStdCppAsync(
+            requirement,
+            cacheDirectory,
+            progress,
+            cancellationToken).ConfigureAwait(false);
+        if (standardLibrary is null) return null;
+
+        if (!await CanCompileCppStandardHeaderAsync(
+                compiler,
+                standardLibrary.IncludeDirectories,
+                cancellationToken).ConfigureAwait(false))
+        {
+            progress?.Invoke(
+                $"[compat] Provisioned legacy libstdc++ headers could not be consumed by clang {compiler.Version}; " +
+                "set UECI_LEGACY_CLANG_ROOT to a complete era-compatible toolchain.");
+            return null;
+        }
+
+        progress?.Invoke(
+            $"[compat] Legacy C++ standard library selected: GCC 4.8 headers ({standardLibrary.Source}).");
+        return compiler with
+        {
+            DownloadedBytes = compiler.DownloadedBytes + standardLibrary.DownloadedBytes,
+            CxxIncludeDirectories = standardLibrary.IncludeDirectories,
+        };
+    }
+
+    private async Task<LegacyCppStandardLibrary?> TryProvisionLegacyLibStdCppAsync(
+        UnrealLegacyLinuxCompilerRequirement requirement,
+        string cacheDirectory,
+        Action<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        Uri archiveUri = requirement.PortableLibStdCppArchiveUri
+            ?? throw new InvalidOperationException("No legacy libstdc++ archive is configured.");
+        string cache = Path.GetFullPath(cacheDirectory);
+        string installRoot = Path.Combine(
+            cache,
+            "toolchains",
+            "legacy-stdlib",
+            "linux-x64",
+            "gcc-4.8-ubuntu14.04.4");
+        string genericInclude = Path.Combine(installRoot, "usr", "include", "c++", "4.8");
+        string targetInclude = Path.Combine(
+            installRoot, "usr", "include", "x86_64-linux-gnu", "c++", "4.8");
+        string newHeader = Path.Combine(genericInclude, "new");
+        string backwardInclude = Path.Combine(genericInclude, "backward");
+        string targetConfig = Path.Combine(targetInclude, "bits", "c++config.h");
+
+        if (File.Exists(newHeader) && File.Exists(targetConfig))
+        {
+            return new LegacyCppStandardLibrary(
+                BuildLegacyCppIncludeList(genericInclude, targetInclude, backwardInclude),
+                "UECI legacy stdlib cache",
+                0);
+        }
+
+        if (!TryFindExecutable("tar", out string? tar))
+        {
+            progress?.Invoke(
+                "[compat] Cannot provision legacy libstdc++ headers automatically because native tar/xz support is unavailable.");
+            return null;
+        }
+
+        string archives = Path.Combine(cache, "toolchains", "archives");
+        Directory.CreateDirectory(archives);
+        string archiveName = Path.GetFileName(Uri.UnescapeDataString(archiveUri.AbsolutePath));
+        string archive = Path.Combine(archives, archiveName);
+        long downloadedBytes = 0;
+
+        if (!File.Exists(archive) || new FileInfo(archive).Length < 1024)
+        {
+            progress?.Invoke(
+                "[compat] Downloading Ubuntu 14.04 GCC 4.8 C++ development headers for legacy UE4...");
+            string temp = archive + $".{Guid.NewGuid():N}.tmp";
+            try
+            {
+                await using (FileStream output = new(
+                    temp,
+                    FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.None,
+                    1024 * 1024,
+                    FileOptions.Asynchronous | FileOptions.SequentialScan))
+                {
+                    downloadedBytes = await _archiveSource.DownloadAsync(
+                        archiveUri,
+                        output,
+                        cancellationToken).ConfigureAwait(false);
+                    await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+                }
+                ValidateDebHeader(temp);
+                File.Move(temp, archive, overwrite: true);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidDataException)
+            {
+                TryDelete(temp);
+                progress?.Invoke($"[compat] Legacy libstdc++ download failed: {ex.Message}");
+                return null;
+            }
+        }
+        else
+        {
+            try
+            {
+                ValidateDebHeader(archive);
+            }
+            catch (InvalidDataException ex)
+            {
+                TryDelete(archive);
+                progress?.Invoke($"[compat] Cached legacy libstdc++ package is invalid ({ex.Message}); retry on the next build.");
+                return null;
+            }
+        }
+
+        string parent = Path.GetDirectoryName(installRoot)!;
+        Directory.CreateDirectory(parent);
+        string extraction = Path.Combine(parent, $".stdlib-extract-{Guid.NewGuid():N}");
+        string dataArchive = Path.Combine(parent, $".stdlib-data-{Guid.NewGuid():N}.tar.xz");
+        Directory.CreateDirectory(extraction);
+        try
+        {
+            ExtractDebDataArchive(archive, dataArchive);
+            ExternalProcessResult extractionResult = await ExternalProcess.RunAsync(
+                tar!,
+                extraction,
+                ["-xJf", dataArchive, "-C", extraction],
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (!extractionResult.Succeeded)
+            {
+                progress?.Invoke(
+                    $"[compat] Legacy libstdc++ extraction failed ({extractionResult.ExitCode}): " +
+                    FirstNonEmpty(extractionResult.StandardError, extractionResult.StandardOutput));
+                return null;
+            }
+
+            string extractedGeneric = Path.Combine(extraction, "usr", "include", "c++", "4.8");
+            string extractedTarget = Path.Combine(
+                extraction, "usr", "include", "x86_64-linux-gnu", "c++", "4.8");
+            if (!File.Exists(Path.Combine(extractedGeneric, "new"))
+                || !File.Exists(Path.Combine(extractedTarget, "bits", "c++config.h")))
+            {
+                progress?.Invoke("[compat] Legacy libstdc++ package does not contain the expected GCC 4.8 C++ headers.");
+                return null;
+            }
+
+            TryDeleteDirectory(installRoot);
+            Directory.Move(extraction, installRoot);
+        }
+        finally
+        {
+            TryDelete(dataArchive);
+            TryDeleteDirectory(extraction);
+        }
+
+        return new LegacyCppStandardLibrary(
+            BuildLegacyCppIncludeList(genericInclude, targetInclude, backwardInclude),
+            "Ubuntu 14.04 libstdc++-4.8-dev",
+            downloadedBytes);
+    }
+
+    private static IReadOnlyList<string> BuildLegacyCppIncludeList(
+        string genericInclude,
+        string targetInclude,
+        string backwardInclude)
+        => new[] { genericInclude, targetInclude, backwardInclude }
+            .Where(Directory.Exists)
+            .ToArray();
+
+    private static async Task<bool> CanCompileCppStandardHeaderAsync(
+        UnrealLegacyLinuxCompiler compiler,
+        IReadOnlyList<string> includeDirectories,
+        CancellationToken cancellationToken)
+    {
+        string root = Directory.GetParent(compiler.BinDirectory)?.FullName ?? compiler.BinDirectory;
+        string probeDirectory = Path.Combine(Path.GetTempPath(), "ueci-legacy-cxx-probe");
+        Directory.CreateDirectory(probeDirectory);
+        string source = Path.Combine(probeDirectory, $"probe-{Guid.NewGuid():N}.cpp");
+        try
+        {
+            await File.WriteAllTextAsync(
+                source,
+                "#include <new>\n#include <type_traits>\nint main() { return 0; }\n",
+                cancellationToken).ConfigureAwait(false);
+            var environment = new Dictionary<string, string>(StringComparer.Ordinal);
+            string lib = Path.Combine(root, "lib");
+            if (Directory.Exists(lib))
+            {
+                string inheritedLibraries = Environment.GetEnvironmentVariable("LD_LIBRARY_PATH") ?? string.Empty;
+                environment["LD_LIBRARY_PATH"] = lib +
+                    (inheritedLibraries.Length == 0 ? string.Empty : Path.PathSeparator + inheritedLibraries);
+            }
+            if (includeDirectories.Count != 0)
+            {
+                string inherited = Environment.GetEnvironmentVariable("CPLUS_INCLUDE_PATH") ?? string.Empty;
+                environment["CPLUS_INCLUDE_PATH"] = string.Join(Path.PathSeparator.ToString(), includeDirectories) +
+                    (inherited.Length == 0 ? string.Empty : Path.PathSeparator + inherited);
+            }
+
+            ExternalProcessResult probe = await ExternalProcess.RunAsync(
+                compiler.ClangxxPath,
+                root,
+                ["-std=c++11", "-fsyntax-only", source],
+                environment,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            return probe.Succeeded;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+            or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+        finally
+        {
+            TryDelete(source);
+        }
+    }
+
+    private static void ValidateDebHeader(string path)
+    {
+        Span<byte> header = stackalloc byte[8];
+        using FileStream stream = File.OpenRead(path);
+        if (stream.Read(header) != header.Length
+            || !header.SequenceEqual("!<arch>\n"u8))
+        {
+            throw new InvalidDataException($"'{path}' is not a Debian ar archive.");
+        }
+    }
+
+    private static void ExtractDebDataArchive(string debPath, string outputPath)
+    {
+        using FileStream input = File.OpenRead(debPath);
+        Span<byte> magic = stackalloc byte[8];
+        if (input.Read(magic) != magic.Length || !magic.SequenceEqual("!<arch>\n"u8))
+            throw new InvalidDataException($"'{debPath}' is not a Debian ar archive.");
+
+        byte[] header = new byte[60];
+        while (input.Position < input.Length)
+        {
+            int read = input.Read(header, 0, header.Length);
+            if (read == 0) break;
+            if (read != header.Length) throw new InvalidDataException("Truncated Debian ar member header.");
+            string name = System.Text.Encoding.ASCII.GetString(header, 0, 16).Trim().TrimEnd('/');
+            string sizeText = System.Text.Encoding.ASCII.GetString(header, 48, 10).Trim();
+            if (!long.TryParse(sizeText, out long size) || size < 0)
+                throw new InvalidDataException($"Invalid Debian ar member size '{sizeText}'.");
+            if (header[58] != (byte)'`' || header[59] != (byte)'\n')
+                throw new InvalidDataException("Invalid Debian ar member trailer.");
+
+            if (name.StartsWith("data.tar.xz", StringComparison.Ordinal))
+            {
+                using FileStream output = new(outputPath, FileMode.Create, FileAccess.Write, FileShare.None);
+                CopyExactly(input, output, size);
+                return;
+            }
+
+            input.Seek(size, SeekOrigin.Current);
+            if ((size & 1) != 0) input.Seek(1, SeekOrigin.Current);
+        }
+        throw new InvalidDataException("Debian package does not contain data.tar.xz.");
+    }
+
+    private static void CopyExactly(Stream input, Stream output, long bytes)
+    {
+        byte[] buffer = new byte[128 * 1024];
+        long remaining = bytes;
+        while (remaining > 0)
+        {
+            int read = input.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining));
+            if (read <= 0) throw new EndOfStreamException("Truncated Debian package payload.");
+            output.Write(buffer, 0, read);
+            remaining -= read;
+        }
+    }
+
+    private sealed record LegacyCppStandardLibrary(
+        IReadOnlyList<string> IncludeDirectories,
+        string Source,
+        long DownloadedBytes);
 
     private static IEnumerable<(string Path, string Source)> EnumerateCandidates(
         UnrealLegacyLinuxCompilerRequirement requirement)

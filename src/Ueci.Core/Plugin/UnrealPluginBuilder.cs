@@ -376,6 +376,7 @@ public sealed class UnrealPluginBuilder
                     compatibility,
                     legacyLinuxToolchainRoot: compatibilityToolchain?.ToolchainDirectory,
                     legacyLinuxCompilerBin: legacyCompiler?.BinDirectory,
+                    legacyLinuxCppIncludeDirectories: legacyCompiler?.CxxIncludeDirectories,
                     progress: options.Progress,
                     cancellationToken: cancellationToken).ConfigureAwait(false);
                 last = adaptive.Result;
