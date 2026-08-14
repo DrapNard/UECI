@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.0-alpha.27] - 2026-08-14
+
+### Fixed
+
+- Stop treating identifiers found in the bounded legacy UBT fallback corpus as authoritative `TargetRules` members. Synthetic targets now emit member assignments only when the canonical `TargetRules.cs` snapshot exposes a real declaration (with the established post-4.16 `ExtraModuleNames` fallback), preventing UE4.6 from generating unsupported `bCompileICU` and `ExtraModuleNames` assignments.
+- Teach modular UE4 plugin builds to learn missing synthetic-target link libraries such as `-lUECIHost-Core`. FUSE and materialized backends retry the same filtered UBT build with the newly required target modules instead of escalating to a full Engine target that would pull default plugins into the build.
+- Retarget UE5.0's historical managed project graph at the project-file level before compatibility restore. UECI rewrites `netcoreapp3.x` target frameworks in UBT and Shared `.csproj` files to `net6.0`, clears stale outputs, performs an explicit restore, then builds with `--no-restore` so `project.assets.json` contains the framework actually requested by the isolated .NET 6 SDK.
+
+### Added
+
+- Regression coverage for non-authoritative legacy `TargetRules` false positives, synthetic UE4 link-library discovery, real project TFM rewriting, and legacy host generation omitting unsupported `bCompileICU`.
+
+### Validation
+
+- The alpha.26 matrix remains green on UE5.1, UE5.7 and UE5.8. UE4.6 now reaches synthetic target compilation, UE4.20 compiles the plugin C++ module and reaches the final linker, and UE5.0 provisions/executes the isolated .NET 6 compatibility SDK before failing only because its restored assets graph still targeted `netcoreapp3.1`; alpha.27 addresses exactly those three deeper boundaries.
+- `git diff --check` and structural/static C# validation are clean. No .NET SDK/Roslyn compiler is available in this sandbox, and the official SDK binary cannot be materialized by the download sandbox, so the managed test executable and private Epic matrix still require the normal runner for runtime validation.
+- CLI version advanced to `0.5.0-alpha.27`.
+
 ## [0.5.0-alpha.26] - 2026-08-14
 
 ### Fixed

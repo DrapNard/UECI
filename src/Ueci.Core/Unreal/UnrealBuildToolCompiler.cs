@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace Ueci.Unreal;
 
 public sealed record UnrealBuildToolCompileResult(
@@ -143,6 +145,12 @@ public sealed class UnrealBuildToolCompiler
         if (compatibilityRuntimeSelected)
         {
             InvalidateManagedOutputForRetarget(root, project);
+            int retargetedProjects = RetargetLegacyManagedProjects(
+                root,
+                effectiveRuntime.TargetFrameworkOverride!);
+            progress?.Invoke(
+                $"[compat] Rewrote {retargetedProjects:N0} legacy managed project file(s) to " +
+                $"{effectiveRuntime.TargetFrameworkOverride} before restore.");
         }
         else
         {
@@ -231,7 +239,7 @@ public sealed class UnrealBuildToolCompiler
         return new UnrealBuildToolCompileResult(project, effectiveRuntime.HostPath, process, paths, effectiveRuntime);
     }
 
-    private static Task<ExternalProcessResult> CompileModernAsync(
+    private static async Task<ExternalProcessResult> CompileModernAsync(
         string root,
         string project,
         UnrealBuildToolRuntimePlan runtime,
@@ -262,6 +270,58 @@ public sealed class UnrealBuildToolCompiler
                 : "LatestPatch";
         }
 
+        string? targetFramework = string.IsNullOrWhiteSpace(runtime.TargetFrameworkOverride)
+            ? null
+            : runtime.TargetFrameworkOverride;
+
+        if (targetFramework is not null)
+        {
+            // dotnet build's implicit restore did not reliably carry a TargetFramework global
+            // property through UE5.0's historical project graph. Alpha.26 restored the projects
+            // but left UnrealBuildTool/obj/project.assets.json with only netcoreapp3.1, producing
+            // NETSDK1005. Perform the compatibility restore explicitly after rewriting the actual
+            // project TFMs, then build against exactly that assets graph.
+            var restoreArguments = new List<string>
+            {
+                "restore",
+                project,
+                "--nologo",
+                "--verbosity:minimal",
+                $"/p:TargetFramework={targetFramework}",
+            };
+            ExternalProcessResult restore = await ExternalProcess.RunAsync(
+                runtime.HostPath,
+                root,
+                restoreArguments,
+                environment,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (!restore.Succeeded)
+            {
+                return restore;
+            }
+
+            var compatibilityBuildArguments = new List<string>
+            {
+                "build",
+                project,
+                "--nologo",
+                "--verbosity:minimal",
+                "--no-incremental",
+                "--no-restore",
+                $"/p:TargetFramework={targetFramework}",
+            };
+            ExternalProcessResult build = await ExternalProcess.RunAsync(
+                runtime.HostPath,
+                root,
+                compatibilityBuildArguments,
+                environment,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            return new ExternalProcessResult(
+                build.ExitCode,
+                JoinProcessOutput(restore.StandardOutput, build.StandardOutput),
+                JoinProcessOutput(restore.StandardError, build.StandardError));
+        }
+
         var arguments = new List<string>
         {
             "build",
@@ -270,18 +330,18 @@ public sealed class UnrealBuildToolCompiler
             "--verbosity:minimal",
             "--no-incremental",
         };
-        if (!string.IsNullOrWhiteSpace(runtime.TargetFrameworkOverride))
-        {
-            arguments.Add($"/p:TargetFramework={runtime.TargetFrameworkOverride}");
-        }
-
-        return ExternalProcess.RunAsync(
+        return await ExternalProcess.RunAsync(
             runtime.HostPath,
             root,
             arguments,
             environment,
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
+
+    private static string JoinProcessOutput(string first, string second)
+        => string.Join(
+            Environment.NewLine,
+            new[] { first.TrimEnd(), second.TrimEnd() }.Where(value => value.Length != 0));
 
     private static Version ResolveFrameworkVersion(UnrealBuildToolRuntimePlan runtime)
         => runtime.FrameworkVersion ?? Environment.Version;
@@ -359,6 +419,56 @@ public sealed class UnrealBuildToolCompiler
                 Directory.Delete(directory, recursive: true);
             }
         }
+    }
+
+    internal static int RetargetLegacyManagedProjects(string root, string targetFramework)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetFramework);
+
+        string programs = Path.Combine(root, "Engine", "Source", "Programs");
+        string[] roots =
+        [
+            Path.Combine(programs, "UnrealBuildTool"),
+            Path.Combine(programs, "Shared"),
+        ];
+
+        int changedFiles = 0;
+        foreach (string sourceRoot in roots.Where(Directory.Exists))
+        {
+            foreach (string file in Directory.EnumerateFiles(sourceRoot, "*.csproj", SearchOption.AllDirectories))
+            {
+                string original = File.ReadAllText(file);
+                string rewritten = RewriteLegacyTargetFrameworks(original, targetFramework);
+                if (string.Equals(original, rewritten, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                File.WriteAllText(file, rewritten);
+                changedFiles++;
+            }
+        }
+        return changedFiles;
+    }
+
+    internal static string RewriteLegacyTargetFrameworks(string projectXml, string targetFramework)
+    {
+        projectXml ??= string.Empty;
+        return Regex.Replace(
+            projectXml,
+            @"(?<open><TargetFrameworks?\b[^>]*>)(?<value>[^<]*)(?<close></TargetFrameworks?>)",
+            match =>
+            {
+                string value = match.Groups["value"].Value;
+                string rewritten = Regex.Replace(
+                    value,
+                    @"(?<![A-Za-z0-9_.-])netcoreapp3(?:\.\d+)?(?![A-Za-z0-9_.-])",
+                    targetFramework,
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                return match.Groups["open"].Value + rewritten + match.Groups["close"].Value;
+            },
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
     private static bool IsLegacyDotNetHostCompatibilityFailure(ExternalProcessResult process)

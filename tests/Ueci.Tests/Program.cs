@@ -46,11 +46,13 @@ internal static class Program
         ("runtimeconfig writer converts self-contained framework metadata", RuntimeConfigConvertsIncludedFrameworksAsync),
         ("runtimeconfig writer synthesizes missing runner framework metadata", RuntimeConfigSynthesizesFrameworkAsync),
         ("legacy netcore UBT provisions isolated net6 compatibility SDK", CompatibilityDotNetSdkAsync),
+        ("legacy netcore UBT rewrites actual project TFMs before restore", CompatibilityDotNetRetargetsProjectsAsync),
         ("Epic bundled dotnet resolver selects host runtime", BundledDotNetResolverAsync),
         ("Epic bundled dotnet SDK resolver selects latest SDK", BundledDotNetSdkResolverAsync),
         ("Epic bundled dotnet resolver accepts historical Linux bundle layouts", BundledDotNetHistoricalLayoutAsync),
         ("Epic bundled Mono resolver selects legacy host runtime", BundledMonoResolverAsync),
         ("Engine compatibility feature-detects UE4 legacy and UE5 modern rules", EngineCompatibilityDetectsAsync),
+        ("Engine compatibility ignores non-authoritative fallback TargetRules members", EngineCompatibilityRejectsFallbackMemberFalsePositivesAsync),
         ("Epic bundled UBA resolver selects managed + native host payload", BundledUbaResolverAsync),
         ("UBT locator requires compiled bootstrap files", UnrealBuildToolLocatorAsync),
         ("UBT locator discovers legacy UnrealBuildTool.exe", UnrealBuildToolLocatorLegacyAsync),
@@ -68,6 +70,7 @@ internal static class Program
         ("plugin UBT invocation disables UBA when supported", PluginBuildInvocationModernUbaAsync),
         ("plugin UBT invocation filters unsupported flags for legacy UE4", PluginBuildInvocationLegacyAsync),
         ("plugin failure excerpt preserves early actionable diagnostics", PluginFailureExcerptAsync),
+        ("plugin diagnostics learn missing synthetic UE4 link modules", PluginLegacyLinkDependencyAsync),
         ("plugin product collector harvests synthetic target binaries", PluginProductCollectorAsync),
         ("plugin packager keeps binaries and drops Intermediate", PluginPackagerAsync),
         ("legacy Linux compiler requirements map UE4 release families", LegacyLinuxCompilerRequirementsAsync),
@@ -1236,6 +1239,38 @@ internal static class Program
         }
     }
 
+    private static Task CompatibilityDotNetRetargetsProjectsAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string ubt = Path.Combine(root, "Engine", "Source", "Programs", "UnrealBuildTool");
+            string shared = Path.Combine(root, "Engine", "Source", "Programs", "Shared", "EpicGames.Core");
+            Directory.CreateDirectory(ubt);
+            Directory.CreateDirectory(shared);
+            string ubtProject = Path.Combine(ubt, "UnrealBuildTool.csproj");
+            string sharedProject = Path.Combine(shared, "EpicGames.Core.csproj");
+            File.WriteAllText(
+                ubtProject,
+                "<Project><PropertyGroup><TargetFramework>netcoreapp3.1</TargetFramework></PropertyGroup></Project>");
+            File.WriteAllText(
+                sharedProject,
+                "<Project><PropertyGroup><TargetFrameworks>netstandard2.0;netcoreapp3.1</TargetFrameworks></PropertyGroup></Project>");
+
+            int changed = UnrealBuildToolCompiler.RetargetLegacyManagedProjects(root, "net6.0");
+            Assert.Equal(2, changed);
+            Assert.True(File.ReadAllText(ubtProject).Contains("<TargetFramework>net6.0</TargetFramework>", StringComparison.Ordinal));
+            string sharedText = File.ReadAllText(sharedProject);
+            Assert.True(sharedText.Contains("netstandard2.0;net6.0", StringComparison.Ordinal));
+            Assert.False(sharedText.Contains("netcoreapp3.1", StringComparison.OrdinalIgnoreCase));
+            return Task.CompletedTask;
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
     private static byte[] CreateCompatibilityDotNetArchive()
     {
         using var tarBytes = new MemoryStream();
@@ -1501,6 +1536,30 @@ internal static class Program
         }
     }
 
+    private static async Task EngineCompatibilityRejectsFallbackMemberFalsePositivesAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            await WriteCompatibilityFixtureAsync(root, 4, 6, modern: false);
+            string configuration = Path.Combine(
+                root, "Engine", "Source", "Programs", "UnrealBuildTool", "Configuration");
+            File.Delete(Path.Combine(configuration, "TargetRules.cs"));
+            await File.WriteAllTextAsync(
+                Path.Combine(configuration, "UnrelatedRules.cs"),
+                "public class NotTargetRules { public bool bCompileICU; public object ExtraModuleNames; public bool bCompileAgainstEngine; }");
+
+            UnrealEngineCompatibility compatibility = await UnrealEngineCompatibility.DetectAsync(root, "4.6.1-release");
+            Assert.False(compatibility.SupportsCompileIcu);
+            Assert.False(compatibility.SupportsExtraModuleNames);
+            Assert.False(compatibility.SupportsTargetMember("bCompileAgainstEngine"));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
     private static Task BundledUbaResolverAsync()
     {
         const string libraryProps = EpicBundledUbaResolver.LibraryPropsPath;
@@ -1741,6 +1800,7 @@ internal static class Program
             Assert.True(target.Contains("SetupBinaries", StringComparison.Ordinal));
             Assert.True(target.Contains("OutExtraModuleNames.Add(\"Fixture\")", StringComparison.Ordinal));
             Assert.False(target.Contains("        ExtraModuleNames.Add(", StringComparison.Ordinal));
+            Assert.False(target.Contains("bCompileICU", StringComparison.Ordinal));
             Assert.False(target.Contains("TargetLinkType.Modular", StringComparison.Ordinal));
             Assert.True(target.Contains("ShouldCompileMonolithic", StringComparison.Ordinal));
             Assert.True(target.Contains("return false;", StringComparison.Ordinal));
@@ -2057,6 +2117,24 @@ internal static class Program
         Assert.True(excerpt.Contains("synthetic actionable failure", StringComparison.Ordinal));
         Assert.True(excerpt.Contains("plugin module is not valid", StringComparison.Ordinal));
         Assert.True(excerpt.Length < string.Join('\n', lines).Length);
+        return Task.CompletedTask;
+    }
+
+    private static Task PluginLegacyLinkDependencyAsync()
+    {
+        const string diagnostics = """
+            x86_64-unknown-linux-gnu-ld: cannot find -lUECIHost-Core
+            clang++: error: linker command failed with exit code 1
+            ld: cannot find -lUECIHost-CoreUObject
+            ld: cannot find -lSomethingElse
+            """;
+        IReadOnlyList<string> modules = UnrealBuildDiagnostics.FindMissingTargetLinkModules(
+            diagnostics,
+            "UECIHost");
+        Assert.Equal(2, modules.Count);
+        Assert.True(modules.Contains("Core", StringComparer.OrdinalIgnoreCase));
+        Assert.True(modules.Contains("CoreUObject", StringComparer.OrdinalIgnoreCase));
+        Assert.False(modules.Contains("SomethingElse", StringComparer.OrdinalIgnoreCase));
         return Task.CompletedTask;
     }
 

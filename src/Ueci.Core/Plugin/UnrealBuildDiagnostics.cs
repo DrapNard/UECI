@@ -2,11 +2,18 @@ namespace Ueci.Plugin;
 
 public static class UnrealBuildDiagnostics
 {
+    private static readonly System.Text.RegularExpressions.Regex MissingLinkLibrary = new(
+        @"(?:cannot\s+find|unable\s+to\s+find\s+library|library\s+not\s+found\s+for)\s+(?:-l)?(?<library>[A-Za-z0-9_.+\-]+)",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+        System.Text.RegularExpressions.RegexOptions.Compiled |
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     private static readonly string[] ActionableMarkers =
     [
         "error:",
         "fatal error",
         "undefined symbol",
+        "cannot find -l",
         "linker command failed",
         "exited with error code",
         "compilationresultException",
@@ -18,6 +25,41 @@ public static class UnrealBuildDiagnostics
         "file not found",
         "result: failed",
     ];
+
+    /// <summary>
+    /// Extracts dependent modular libraries that an old source-only UE4 target expected to have
+    /// been built already. With -Module=Plugin, UE4.20 can compile the plugin and then fail with
+    /// "cannot find -lUECIHost-Core" because the filtered action graph omitted Core. Returning
+    /// Core here lets the caller retry with both module filters without falling back to a full
+    /// Engine target build (which would also enable a large set of default plugins).
+    /// </summary>
+    public static IReadOnlyList<string> FindMissingTargetLinkModules(string diagnostics, string targetName)
+    {
+        diagnostics ??= string.Empty;
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetName);
+
+        string prefix = targetName + "-";
+        var modules = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (System.Text.RegularExpressions.Match match in MissingLinkLibrary.Matches(diagnostics))
+        {
+            string library = match.Groups["library"].Value.Trim();
+            if (library.StartsWith("lib", StringComparison.OrdinalIgnoreCase))
+            {
+                library = library[3..];
+            }
+            if (!library.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string module = library[prefix.Length..].Trim();
+            if (module.Length != 0 && module.All(ch => char.IsLetterOrDigit(ch) || ch is '_' or '.'))
+            {
+                modules.Add(module);
+            }
+        }
+        return modules.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray();
+    }
 
     public static string CreateFailureExcerpt(
         string diagnostics,

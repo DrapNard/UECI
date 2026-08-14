@@ -447,47 +447,84 @@ internal sealed class UnrealMountedPluginBuilder
 
             foreach (MountedBuildPhase phase in phases)
             {
-                totalPasses++;
-                options.Progress?.Invoke(
-                    $"Building {phase.Target} with plugin modules [{string.Join(", ", phase.Modules)}] through the virtual Engine...");
+                var requestedModules = new HashSet<string>(phase.Modules, StringComparer.OrdinalIgnoreCase);
+                ExternalProcessResult? result = null;
+                int phasePasses = 0;
+                const int legacyLinkDependencyPassLimit = 24;
 
-                // The synthetic targets are modular. Ask UBT for the plugin module outputs
-                // explicitly so the mounted backend produces packageable native libraries instead
-                // of linking the plugin only into the UECIHost executable. Alpha.6 failed here
-                // because the old host was monolithic; -Module is valid once LinkType is Modular.
-                IReadOnlyList<string> arguments = UnrealPluginBuildInvocation.CreateArguments(
-                    host,
-                    phase.Target,
-                    options.Platform,
-                    options.Configuration,
-                    phase.Modules,
-                    options.RuntimeIdentifier,
-                    compatibility);
-                (ExternalProcessResult result, string diagnostics) = await timings.MeasureAsync(
-                    $"ubt.build.{phase.Target}",
-                    () => RunMountedUbtWithLegacySdkRetriesAsync(
-                        runner,
-                        compile.Paths,
-                        arguments,
-                        compatibility,
-                        toolchain?.ToolchainDirectory,
-                        legacyCompiler?.BinDirectory,
-                        virtualEngineRoot,
-                        options.Progress,
-                        cancellationToken)).ConfigureAwait(false);
-
-                string logPath = Path.Combine(logsDirectory, $"{phase.Target}-mounted.log");
-                await File.WriteAllTextAsync(logPath, diagnostics, cancellationToken).ConfigureAwait(false);
-                if (!result.Succeeded)
+                for (int pass = 1; pass <= legacyLinkDependencyPassLimit; pass++)
                 {
+                    phasePasses++;
+                    totalPasses++;
+                    string[] invocationModules = requestedModules
+                        .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+                    options.Progress?.Invoke(
+                        $"Building {phase.Target} with module filters [{string.Join(", ", invocationModules)}] through the virtual Engine" +
+                        (pass == 1 ? "..." : $" (legacy link retry {pass}/{legacyLinkDependencyPassLimit})..."));
+
+                    // Keep a modular -Module build rather than compiling a full synthetic Game target.
+                    // Old UE4 action filtering can omit dependent target modules (for example Core)
+                    // and reveal them only at link time. Those missing synthetic-target libraries are
+                    // learned below and folded into the next filtered invocation.
+                    IReadOnlyList<string> arguments = UnrealPluginBuildInvocation.CreateArguments(
+                        host,
+                        phase.Target,
+                        options.Platform,
+                        options.Configuration,
+                        invocationModules,
+                        options.RuntimeIdentifier,
+                        compatibility);
+                    (ExternalProcessResult attempt, string diagnostics) = await timings.MeasureAsync(
+                        $"ubt.build.{phase.Target}",
+                        () => RunMountedUbtWithLegacySdkRetriesAsync(
+                            runner,
+                            compile.Paths,
+                            arguments,
+                            compatibility,
+                            toolchain?.ToolchainDirectory,
+                            legacyCompiler?.BinDirectory,
+                            virtualEngineRoot,
+                            options.Progress,
+                            cancellationToken)).ConfigureAwait(false);
+                    result = attempt;
+
+                    string logPath = Path.Combine(logsDirectory, $"{phase.Target}-mounted.log");
+                    await File.WriteAllTextAsync(logPath, diagnostics, cancellationToken).ConfigureAwait(false);
+                    if (attempt.Succeeded)
+                    {
+                        break;
+                    }
+
+                    if (compatibility.Version.Major == 4)
+                    {
+                        string[] freshLinkModules = UnrealBuildDiagnostics
+                            .FindMissingTargetLinkModules(diagnostics, phase.Target)
+                            .Where(requestedModules.Add)
+                            .ToArray();
+                        if (freshLinkModules.Length != 0)
+                        {
+                            options.Progress?.Invoke(
+                                $"[compat] Legacy UE4 modular link needs target module(s) [{string.Join(", ", freshLinkModules)}]; " +
+                                "retrying with those modules included in the UBT action filter.");
+                            continue;
+                        }
+                    }
+
                     string excerpt = UnrealBuildDiagnostics.CreateFailureExcerpt(diagnostics);
                     throw new InvalidOperationException(
                         $"Mounted UBT build failed for target '{phase.Target}'. Full log: {logPath}" +
                         Environment.NewLine + excerpt);
                 }
 
+                if (result is null || !result.Succeeded)
+                {
+                    throw new InvalidOperationException(
+                        $"Mounted UBT build for target '{phase.Target}' exhausted legacy link dependency retries.");
+                }
+
                 options.Progress?.Invoke($"{phase.Target} plugin modules built successfully through FUSE.");
-                phaseResults.Add(new UnrealPluginBuildPhaseResult(phase.Target, phase.Modules, 1, result));
+                phaseResults.Add(new UnrealPluginBuildPhaseResult(phase.Target, phase.Modules, phasePasses, result));
             }
 
             IReadOnlyList<string> builtModules = phases

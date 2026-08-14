@@ -51,6 +51,7 @@ public sealed class UnrealEngineCompatibility
     private readonly string _projectSource;
     private readonly string _ubtSource;
     private readonly string _linuxPlatformSource;
+    private readonly bool _targetRulesAuthoritative;
 
     private UnrealEngineCompatibility(
         UnrealEngineVersion version,
@@ -59,7 +60,8 @@ public sealed class UnrealEngineCompatibility
         string moduleRulesSource,
         string projectSource,
         string ubtSource,
-        string linuxPlatformSource)
+        string linuxPlatformSource,
+        bool targetRulesAuthoritative)
     {
         Version = version;
         ProjectStyle = projectStyle;
@@ -68,13 +70,14 @@ public sealed class UnrealEngineCompatibility
         _projectSource = projectSource;
         _ubtSource = ubtSource;
         _linuxPlatformSource = linuxPlatformSource;
+        _targetRulesAuthoritative = targetRulesAuthoritative;
     }
 
     public UnrealEngineVersion Version { get; }
     public UnrealBuildToolProjectStyle ProjectStyle { get; }
 
     public bool SupportsReadOnlyTargetRules => HasModuleToken("ReadOnlyTargetRules") || Version.AtLeast(4, 16);
-    public bool SupportsExtraModuleNames => HasTargetToken("ExtraModuleNames") || Version.AtLeast(4, 16);
+    public bool SupportsExtraModuleNames => HasTargetMemberDeclaration("ExtraModuleNames") || Version.AtLeast(4, 16);
     public bool SupportsTargetInfoBaseConstructor => HasTargetToken("TargetRules(TargetInfo") || Version.AtLeast(4, 16);
     public bool SupportsTargetLinkType => HasTargetToken("TargetLinkType");
     public bool SupportsShouldCompileMonolithic => HasTargetToken("ShouldCompileMonolithic");
@@ -91,10 +94,10 @@ public sealed class UnrealEngineCompatibility
     public bool SupportsCompileWithPluginSupport => HasTargetToken("bCompileWithPluginSupport");
     public bool SupportsIncludePluginsForTargetPlatforms => HasTargetToken("bIncludePluginsForTargetPlatforms");
     public bool SupportsAllowEnginePluginsEnabledByDefault => HasTargetToken("bAllowEnginePluginsEnabledByDefault");
-    public bool SupportsCompileIcu => HasTargetToken("bCompileICU");
-    public bool SupportsEnableTrace => HasTargetToken("bEnableTrace");
-    public bool SupportsRuntimeSymbolFiles => HasTargetToken("bAllowRuntimeSymbolFiles");
-    public bool SupportsGlobalDefinitions => HasTargetToken("GlobalDefinitions");
+    public bool SupportsCompileIcu => HasTargetMemberDeclaration("bCompileICU");
+    public bool SupportsEnableTrace => HasTargetMemberDeclaration("bEnableTrace");
+    public bool SupportsRuntimeSymbolFiles => HasTargetMemberDeclaration("bAllowRuntimeSymbolFiles");
+    public bool SupportsGlobalDefinitions => HasTargetMemberDeclaration("GlobalDefinitions");
     public bool SupportsAllowUbaExecutorConfig => HasUbtToken("bAllowUBAExecutor");
     public bool SupportsAllowUbaLocalExecutorConfig => HasUbtToken("bAllowUBALocalExecutor");
     public bool SupportsAllowXgeConfig => HasUbtToken("bAllowXGE");
@@ -132,7 +135,7 @@ public sealed class UnrealEngineCompatibility
     public bool LegacyLinuxUsesAutoSdkRoot
         => ContainsIdentifier(_linuxPlatformSource, "UE_SDKS_ROOT");
 
-    public bool SupportsTargetMember(string token) => HasTargetToken(token);
+    public bool SupportsTargetMember(string token) => HasTargetMemberDeclaration(token);
     public bool SupportsModuleMember(string token) => HasModuleToken(token);
     public bool SupportsUbtToken(string token) => HasUbtToken(token);
 
@@ -160,6 +163,7 @@ public sealed class UnrealEngineCompatibility
 
         string projectSource = await ReadIfExistsAsync(ubtProjectPath, cancellationToken).ConfigureAwait(false);
         string targetRulesSource = await ReadIfExistsAsync(targetRulesPath, cancellationToken).ConfigureAwait(false);
+        bool targetRulesAuthoritative = targetRulesSource.Length != 0;
         string moduleRulesSource = await ReadIfExistsAsync(moduleRulesPath, cancellationToken).ConfigureAwait(false);
         string buildConfigurationSource = await ReadIfExistsAsync(buildConfigurationPath, cancellationToken).ConfigureAwait(false);
         string buildModeSource = await ReadIfExistsAsync(buildModePath, cancellationToken).ConfigureAwait(false);
@@ -199,7 +203,8 @@ public sealed class UnrealEngineCompatibility
             moduleRulesSource,
             projectSource,
             ubtSource,
-            linuxPlatformSource);
+            linuxPlatformSource,
+            targetRulesAuthoritative);
     }
 
     public static UnrealBuildToolProjectStyle DetectProjectStyle(string projectSource, UnrealEngineVersion version)
@@ -220,6 +225,24 @@ public sealed class UnrealEngineCompatibility
 
     private bool HasTargetToken(string token)
         => ContainsIdentifier(_targetRulesSource, token);
+
+    private bool HasTargetMemberDeclaration(string token)
+    {
+        if (!_targetRulesAuthoritative
+            || string.IsNullOrWhiteSpace(_targetRulesSource)
+            || string.IsNullOrWhiteSpace(token)) return false;
+
+        // Old UE4 fast profiles may not contain the canonical TargetRules.cs file. In that case
+        // _targetRulesSource is a bounded UBT corpus, and a raw identifier search can mistake a
+        // local variable or an unrelated class member for a TargetRules API. Alpha.26 did exactly
+        // that on UE4.6 for bCompileICU and ExtraModuleNames. Assignments emitted into a synthetic
+        // target must therefore require an actual C# field/property declaration, while method/
+        // enum capability checks can continue using the broader identifier evidence above.
+        return Regex.IsMatch(
+            _targetRulesSource,
+            $@"(?m)(?:^|[;{{}}])\s*(?:public|protected|internal)\s+(?:(?:static|readonly|virtual|override|new)\s+)*[^\r\n;{{}}]+?\b{Regex.Escape(token)}\b\s*(?:[;={{])",
+            RegexOptions.CultureInvariant);
+    }
 
     private bool HasModuleToken(string token)
         => ContainsIdentifier(_moduleRulesSource, token);

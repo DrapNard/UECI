@@ -342,12 +342,16 @@ public sealed class UnrealPluginBuilder
         {
             ExternalProcessResult? last = null;
             int phasePasses = 0;
+            var requestedModules = new HashSet<string>(phase.Modules, StringComparer.OrdinalIgnoreCase);
             for (int pass = 1; pass <= options.MaxDiscoveryPasses; pass++)
             {
                 phasePasses++;
                 totalPasses++;
+                string[] invocationModules = requestedModules
+                    .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
                 options.Progress?.Invoke(
-                    $"Building {phase.Target} modules [{string.Join(", ", phase.Modules)}] " +
+                    $"Building {phase.Target} modules [{string.Join(", ", invocationModules)}] " +
                     $"(discovery pass {pass}/{options.MaxDiscoveryPasses})...");
 
                 IReadOnlyList<string> ubtArguments = UnrealPluginBuildInvocation.CreateArguments(
@@ -355,7 +359,7 @@ public sealed class UnrealPluginBuilder
                     phase.Target,
                     options.Platform,
                     options.Configuration,
-                    phase.Modules,
+                    invocationModules,
                     options.RuntimeIdentifier,
                     compatibility);
                 if (compatibilityToolchain is not null)
@@ -389,6 +393,21 @@ public sealed class UnrealPluginBuilder
                 {
                     options.Progress?.Invoke($"{phase.Target} plugin modules built successfully.");
                     break;
+                }
+
+                if (compatibility.Version.Major == 4)
+                {
+                    string[] freshLinkModules = UnrealBuildDiagnostics
+                        .FindMissingTargetLinkModules(diagnostics, phase.Target)
+                        .Where(requestedModules.Add)
+                        .ToArray();
+                    if (freshLinkModules.Length != 0)
+                    {
+                        options.Progress?.Invoke(
+                            $"[compat] Legacy UE4 modular link needs target module(s) [{string.Join(", ", freshLinkModules)}]; " +
+                            "retrying with those modules included in the UBT action filter.");
+                        continue;
+                    }
                 }
 
                 IReadOnlyList<UnrealBuildRequirement> discovered = UnrealBuildDiagnosticParser.Parse(

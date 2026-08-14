@@ -8,4 +8,7 @@
     <EmbeddedResource Include="Vfs/Linux/ueci-fuse-helper.c" />
     <EmbeddedResource Include="Vfs/Profiles/*.seed" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Ueci.Tests" />
+  </ItemGroup>
 </Project>
