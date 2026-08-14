@@ -249,7 +249,11 @@ public static class UnrealPluginHostProject
             AppendBool(text, compatibility, "bCompileAgainstEngine", false);
             AppendBool(text, compatibility, "bCompileAgainstCoreUObject", false);
             if (compatibility.SupportsCompileAgainstApplicationCore)
-                text.AppendLine("        bCompileAgainstApplicationCore = false;");
+            {
+                bool compileAgainstApplicationCore = compatibility.ApplicationCoreRejectsDisabledTarget;
+                text.AppendLine(
+                    $"        bCompileAgainstApplicationCore = {(compileAgainstApplicationCore ? "true" : "false")};");
+            }
             AppendBool(text, compatibility, "bBuildDeveloperTools", false);
             if (compatibility.SupportsBuildTargetDeveloperTools)
                 text.AppendLine("        bBuildTargetDeveloperTools = false;");

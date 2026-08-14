@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.0-alpha.28] - 2026-08-14
+
+### Fixed
+
+- Require authoritative `TargetRules` member declarations for every capability that emits a synthetic target assignment. UE4.6 can contain identifiers such as `bForceBuildTargetPlatforms`, `bForceBuildShaderFormats`, or `bCompileWithPluginSupport` without exposing those members on its `TargetRules` API; alpha.28 no longer turns those incidental tokens into uncompilable `UECIHost.Target.cs` assignments.
+- Detect the `ApplicationCore.Build.cs` opt-in guard from the exact Engine snapshot. When that module rejects targets with `bCompileAgainstApplicationCore = false` (as UE5.8 does), the synthetic host explicitly enables ApplicationCore instead of forcing the older lean-target setting. This is source-feature-driven rather than hard-coded to an Unreal release number.
+
+### Added
+
+- Regression coverage for authoritative `TargetRules` files that mention legacy-only identifiers without declaring them, and for modern ApplicationCore rules that require `bCompileAgainstApplicationCore = true`.
+
+### Validation
+
+- The alpha.27 runner matrix is green on UE4.20, UE5.0, UE5.1, and UE5.7. UE4.20 now completes its three-pass filtered modular link, and UE5.0 completes the isolated .NET 6 retarget/restore/build path and packages `libUECIHost-UECIMinimal.so`.
+- UE4.6 reaches synthetic `Target.cs` compilation and fails only on three unsupported assignments now removed by declaration-based capability checks. UE5.8 reaches clean Rules evaluation and exposes the ApplicationCore opt-in invariant that was previously hidden by a warm Rules assembly; alpha.28 models that invariant from the module's source.
+- The alpha.27 runner itself built cleanly and executed all 61 registered tests successfully before the boundary matrix. Alpha.28 adds one new regression test; this sandbox has no local .NET SDK, so the updated managed suite still requires the normal runner for execution.
+- CLI version advanced to `0.5.0-alpha.28`.
+
 ## [0.5.0-alpha.27] - 2026-08-14
 
 ### Fixed

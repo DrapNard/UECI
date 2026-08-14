@@ -51,6 +51,7 @@ public sealed class UnrealEngineCompatibility
     private readonly string _projectSource;
     private readonly string _ubtSource;
     private readonly string _linuxPlatformSource;
+    private readonly string _applicationCoreRulesSource;
     private readonly bool _targetRulesAuthoritative;
 
     private UnrealEngineCompatibility(
@@ -61,6 +62,7 @@ public sealed class UnrealEngineCompatibility
         string projectSource,
         string ubtSource,
         string linuxPlatformSource,
+        string applicationCoreRulesSource,
         bool targetRulesAuthoritative)
     {
         Version = version;
@@ -70,6 +72,7 @@ public sealed class UnrealEngineCompatibility
         _projectSource = projectSource;
         _ubtSource = ubtSource;
         _linuxPlatformSource = linuxPlatformSource;
+        _applicationCoreRulesSource = applicationCoreRulesSource;
         _targetRulesAuthoritative = targetRulesAuthoritative;
     }
 
@@ -79,25 +82,42 @@ public sealed class UnrealEngineCompatibility
     public bool SupportsReadOnlyTargetRules => HasModuleToken("ReadOnlyTargetRules") || Version.AtLeast(4, 16);
     public bool SupportsExtraModuleNames => HasTargetMemberDeclaration("ExtraModuleNames") || Version.AtLeast(4, 16);
     public bool SupportsTargetInfoBaseConstructor => HasTargetToken("TargetRules(TargetInfo") || Version.AtLeast(4, 16);
-    public bool SupportsTargetLinkType => HasTargetToken("TargetLinkType");
+    public bool SupportsTargetLinkType => HasTargetMemberDeclaration("LinkType") && HasTargetToken("TargetLinkType");
     public bool SupportsShouldCompileMonolithic => HasTargetToken("ShouldCompileMonolithic");
-    public bool SupportsLaunchModuleName => HasTargetToken("LaunchModuleName");
-    public bool SupportsUniqueBuildEnvironment => HasTargetToken("TargetBuildEnvironment") && HasTargetToken("Unique");
-    public bool SupportsDefaultBuildSettings => HasTargetToken("DefaultBuildSettings");
-    public bool SupportsIncludeOrderVersion => HasTargetToken("EngineIncludeOrderVersion");
-    public bool SupportsAdditionalPlugins => HasTargetToken("AdditionalPlugins");
-    public bool SupportsCompileAgainstApplicationCore => HasTargetToken("bCompileAgainstApplicationCore");
-    public bool SupportsBuildTargetDeveloperTools => HasTargetToken("bBuildTargetDeveloperTools");
-    public bool SupportsForceBuildTargetPlatforms => HasTargetToken("bForceBuildTargetPlatforms");
-    public bool SupportsForceBuildShaderFormats => HasTargetToken("bForceBuildShaderFormats");
-    public bool SupportsNeedsExtraShaderFormatsOverride => HasTargetToken("bNeedsExtraShaderFormatsOverride");
-    public bool SupportsCompileWithPluginSupport => HasTargetToken("bCompileWithPluginSupport");
-    public bool SupportsIncludePluginsForTargetPlatforms => HasTargetToken("bIncludePluginsForTargetPlatforms");
-    public bool SupportsAllowEnginePluginsEnabledByDefault => HasTargetToken("bAllowEnginePluginsEnabledByDefault");
+    public bool SupportsLaunchModuleName => HasTargetMemberDeclaration("LaunchModuleName");
+    public bool SupportsUniqueBuildEnvironment
+        => HasTargetMemberDeclaration("BuildEnvironment") && HasTargetToken("TargetBuildEnvironment") && HasTargetToken("Unique");
+    public bool SupportsDefaultBuildSettings => HasTargetMemberDeclaration("DefaultBuildSettings");
+    public bool SupportsIncludeOrderVersion
+        => HasTargetMemberDeclaration("IncludeOrderVersion") && HasTargetToken("EngineIncludeOrderVersion");
+    public bool SupportsAdditionalPlugins => HasTargetMemberDeclaration("AdditionalPlugins");
+    public bool SupportsCompileAgainstApplicationCore => HasTargetMemberDeclaration("bCompileAgainstApplicationCore");
+    public bool SupportsBuildTargetDeveloperTools => HasTargetMemberDeclaration("bBuildTargetDeveloperTools");
+    public bool SupportsForceBuildTargetPlatforms => HasTargetMemberDeclaration("bForceBuildTargetPlatforms");
+    public bool SupportsForceBuildShaderFormats => HasTargetMemberDeclaration("bForceBuildShaderFormats");
+    public bool SupportsNeedsExtraShaderFormatsOverride => HasTargetMemberDeclaration("bNeedsExtraShaderFormatsOverride");
+    public bool SupportsCompileWithPluginSupport => HasTargetMemberDeclaration("bCompileWithPluginSupport");
+    public bool SupportsIncludePluginsForTargetPlatforms => HasTargetMemberDeclaration("bIncludePluginsForTargetPlatforms");
+    public bool SupportsAllowEnginePluginsEnabledByDefault => HasTargetMemberDeclaration("bAllowEnginePluginsEnabledByDefault");
     public bool SupportsCompileIcu => HasTargetMemberDeclaration("bCompileICU");
     public bool SupportsEnableTrace => HasTargetMemberDeclaration("bEnableTrace");
     public bool SupportsRuntimeSymbolFiles => HasTargetMemberDeclaration("bAllowRuntimeSymbolFiles");
     public bool SupportsGlobalDefinitions => HasTargetMemberDeclaration("GlobalDefinitions");
+
+    /// <summary>
+    /// Newer Engine module graphs may instantiate ApplicationCore even for the synthetic modular
+    /// Game host. Detect the exact ApplicationCore.Build.cs guard instead of keying this behavior
+    /// to a release number so custom Epic branches inherit the rule they actually ship.
+    /// </summary>
+    public bool ApplicationCoreRejectsDisabledTarget
+        => ContainsIdentifier(_applicationCoreRulesSource, "bCompileAgainstApplicationCore")
+            && (_applicationCoreRulesSource.Contains(
+                    "cannot be used when Target.bCompileAgainstApplicationCore = false",
+                    StringComparison.OrdinalIgnoreCase)
+                || Regex.IsMatch(
+                    _applicationCoreRulesSource,
+                    @"(?:!\s*Target\.bCompileAgainstApplicationCore\b|Target\.bCompileAgainstApplicationCore\s*==\s*false\b)",
+                    RegexOptions.CultureInvariant | RegexOptions.IgnoreCase));
     public bool SupportsAllowUbaExecutorConfig => HasUbtToken("bAllowUBAExecutor");
     public bool SupportsAllowUbaLocalExecutorConfig => HasUbtToken("bAllowUBALocalExecutor");
     public bool SupportsAllowXgeConfig => HasUbtToken("bAllowXGE");
@@ -160,6 +180,8 @@ public sealed class UnrealEngineCompatibility
             root, "Engine", "Source", "Programs", "UnrealBuildTool", "Configuration", "BuildConfiguration.cs");
         string buildModePath = Path.Combine(
             root, "Engine", "Source", "Programs", "UnrealBuildTool", "Modes", "BuildMode.cs");
+        string applicationCoreRulesPath = Path.Combine(
+            root, "Engine", "Source", "Runtime", "ApplicationCore", "ApplicationCore.Build.cs");
 
         string projectSource = await ReadIfExistsAsync(ubtProjectPath, cancellationToken).ConfigureAwait(false);
         string targetRulesSource = await ReadIfExistsAsync(targetRulesPath, cancellationToken).ConfigureAwait(false);
@@ -167,6 +189,7 @@ public sealed class UnrealEngineCompatibility
         string moduleRulesSource = await ReadIfExistsAsync(moduleRulesPath, cancellationToken).ConfigureAwait(false);
         string buildConfigurationSource = await ReadIfExistsAsync(buildConfigurationPath, cancellationToken).ConfigureAwait(false);
         string buildModeSource = await ReadIfExistsAsync(buildModePath, cancellationToken).ConfigureAwait(false);
+        string applicationCoreRulesSource = await ReadIfExistsAsync(applicationCoreRulesPath, cancellationToken).ConfigureAwait(false);
 
         // Very old UE4 layouts moved rule declarations and command-line options around. The UBT
         // subtree is already part of the bounded bootstrap seed, so fall back to a capped corpus
@@ -204,6 +227,7 @@ public sealed class UnrealEngineCompatibility
             projectSource,
             ubtSource,
             linuxPlatformSource,
+            applicationCoreRulesSource,
             targetRulesAuthoritative);
     }
 

@@ -53,6 +53,7 @@ internal static class Program
         ("Epic bundled Mono resolver selects legacy host runtime", BundledMonoResolverAsync),
         ("Engine compatibility feature-detects UE4 legacy and UE5 modern rules", EngineCompatibilityDetectsAsync),
         ("Engine compatibility ignores non-authoritative fallback TargetRules members", EngineCompatibilityRejectsFallbackMemberFalsePositivesAsync),
+        ("Engine compatibility requires declarations for synthetic TargetRules assignments", EngineCompatibilityRequiresDeclaredTargetMembersAsync),
         ("Epic bundled UBA resolver selects managed + native host payload", BundledUbaResolverAsync),
         ("UBT locator requires compiled bootstrap files", UnrealBuildToolLocatorAsync),
         ("UBT locator discovers legacy UnrealBuildTool.exe", UnrealBuildToolLocatorLegacyAsync),
@@ -1527,6 +1528,7 @@ internal static class Program
             Assert.True(ue58.SupportsExtraModuleNames);
             Assert.True(ue58.SupportsTargetLinkType);
             Assert.True(ue58.SupportsUniqueBuildEnvironment);
+            Assert.True(ue58.ApplicationCoreRejectsDisabledTarget);
             Assert.True(ue58.SupportsDisableDumpSymsConfig);
             Assert.True(ue58.SupportsNoDumpSymsFlag);
         }
@@ -1553,6 +1555,31 @@ internal static class Program
             Assert.False(compatibility.SupportsCompileIcu);
             Assert.False(compatibility.SupportsExtraModuleNames);
             Assert.False(compatibility.SupportsTargetMember("bCompileAgainstEngine"));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task EngineCompatibilityRequiresDeclaredTargetMembersAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            await WriteCompatibilityFixtureAsync(root, 4, 6, modern: false);
+            string targetRules = Path.Combine(
+                root, "Engine", "Source", "Programs", "UnrealBuildTool", "Configuration", "TargetRules.cs");
+            await File.AppendAllTextAsync(
+                targetRules,
+                "\npublic class LegacyHelper { public void Probe() { " +
+                "var bForceBuildTargetPlatforms = false; var bForceBuildShaderFormats = false; " +
+                "var bCompileWithPluginSupport = false; } }\n");
+
+            UnrealEngineCompatibility compatibility = await UnrealEngineCompatibility.DetectAsync(root, "4.6.1-release");
+            Assert.False(compatibility.SupportsForceBuildTargetPlatforms);
+            Assert.False(compatibility.SupportsForceBuildShaderFormats);
+            Assert.False(compatibility.SupportsCompileWithPluginSupport);
         }
         finally
         {
@@ -1728,6 +1755,7 @@ internal static class Program
             Assert.True(runtimeTargetText.Contains("LaunchModuleName = \"UECIHost\"", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("BuildEnvironment = TargetBuildEnvironment.Unique", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("bCompileAgainstEngine = false", StringComparison.Ordinal));
+            Assert.True(runtimeTargetText.Contains("bCompileAgainstApplicationCore = true", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("bBuildDeveloperTools = false", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("bCompileWithPluginSupport = true", StringComparison.Ordinal));
             Assert.True(runtimeTargetText.Contains("AdditionalPlugins.Add(\"Fixture\")", StringComparison.Ordinal));
@@ -2529,6 +2557,11 @@ internal static class Program
             await File.WriteAllTextAsync(
                 Path.Combine(modes, "BuildMode.cs"),
                 "// NoDumpSyms NoUBTMakefiles NoHotReloadFromIDE NoUBA NoUBALocal DisableEnginePluginsByDefault");
+            string applicationCore = Path.Combine(engineRoot, "Engine", "Source", "Runtime", "ApplicationCore");
+            Directory.CreateDirectory(applicationCore);
+            await File.WriteAllTextAsync(
+                Path.Combine(applicationCore, "ApplicationCore.Build.cs"),
+                "public class ApplicationCore { public ApplicationCore(dynamic Target) { if (!Target.bCompileAgainstApplicationCore) { throw new System.Exception(); } } }");
         }
         else
         {
