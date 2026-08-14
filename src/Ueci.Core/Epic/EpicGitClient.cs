@@ -262,20 +262,54 @@ public sealed class EpicGitClient
             cancellationToken).ConfigureAwait(false);
         progress?.Invoke($"Epic sparse source seed contains {trackedPathCount:N0} tracked files.");
 
-        await RequireSuccessAsync(
+        // The initial projection needs a complete sparse specification. Subsequent lazy discovery
+        // must be additive: `set` followed by `reset --hard` rewrites every already-projected
+        // tracked path, which displaces thousands of GitDependencies overlay files on a real UE
+        // checkout. `add` touches only the newly requested cones and preserves that overlay layer.
+        GitProcessResult sparseList = await GitProcess.RunAsync(
             root,
-            ["sparse-checkout", "init", "--cone"],
+            ["sparse-checkout", "list"],
             environment,
             cancellationToken).ConfigureAwait(false);
+        string[] existingDirectories = sparseList.ExitCode == 0
+            ? sparseList.StandardOutput
+                .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(NormalizeGitPathspec)
+                .ToArray()
+            : Array.Empty<string>();
+        string[] additions = normalizedDirectories
+            .Except(existingDirectories, StringComparer.Ordinal)
+            .ToArray();
+        bool incrementalUpdate = existingDirectories.Length != 0;
 
-        var sparseSetArguments = new List<string>(2 + normalizedDirectories.Length)
+        if (!incrementalUpdate)
         {
-            "sparse-checkout",
-            "set",
-        };
-        sparseSetArguments.AddRange(normalizedDirectories);
-        await RequireSuccessAsync(
-            root, sparseSetArguments, environment, cancellationToken).ConfigureAwait(false);
+            await RequireSuccessAsync(
+                root,
+                ["sparse-checkout", "init", "--cone"],
+                environment,
+                cancellationToken).ConfigureAwait(false);
+
+            var sparseSetArguments = new List<string>(2 + normalizedDirectories.Length)
+            {
+                "sparse-checkout",
+                "set",
+            };
+            sparseSetArguments.AddRange(normalizedDirectories);
+            await RequireSuccessAsync(
+                root, sparseSetArguments, environment, cancellationToken).ConfigureAwait(false);
+        }
+        else if (additions.Length != 0)
+        {
+            var sparseAddArguments = new List<string>(2 + additions.Length)
+            {
+                "sparse-checkout",
+                "add",
+            };
+            sparseAddArguments.AddRange(additions);
+            await RequireSuccessAsync(
+                root, sparseAddArguments, environment, cancellationToken).ConfigureAwait(false);
+        }
 
         // Populate HEAD/index without touching the working tree. This gives `git backfill --sparse`
         // a current sparse specification while still avoiding lazy blob materialization.
@@ -310,14 +344,18 @@ public sealed class EpicGitClient
                 + (diagnostics.Length == 0 ? string.Empty : Environment.NewLine + diagnostics));
         }
 
-        // reset --hard honors the sparse-checkout specification. If backfill succeeded this is local-only;
-        // on older Git it becomes the compatibility lazy-fetch path. It does not remove untracked UECI
-        // state or generated build outputs.
-        await RequireSuccessAsync(
-            root,
-            ["reset", "--hard", "--quiet", commit],
-            environment,
-            cancellationToken).ConfigureAwait(false);
+        // On the initial projection reset --hard materializes the sparse worktree after the batched
+        // backfill. An additive sparse update has already materialized its new cones; repeating a
+        // hard reset would overwrite GitDependencies' higher-precedence files across the whole
+        // existing projection and turn each one-module discovery pass into a full overlay restore.
+        if (!incrementalUpdate)
+        {
+            await RequireSuccessAsync(
+                root,
+                ["reset", "--hard", "--quiet", commit],
+                environment,
+                cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private static async Task<int> CountTrackedPathsAsync(

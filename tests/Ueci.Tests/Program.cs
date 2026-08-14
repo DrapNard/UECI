@@ -52,6 +52,7 @@ internal static class Program
         ("Epic bundled dotnet resolver accepts historical Linux bundle layouts", BundledDotNetHistoricalLayoutAsync),
         ("Epic bundled Mono resolver selects legacy host runtime", BundledMonoResolverAsync),
         ("Engine compatibility feature-detects UE4 legacy and UE5 modern rules", EngineCompatibilityDetectsAsync),
+        ("Engine compatibility discovers UE5 moved rules declarations", EngineCompatibilityDiscoversMovedRulesAsync),
         ("Engine compatibility ignores non-authoritative fallback TargetRules members", EngineCompatibilityRejectsFallbackMemberFalsePositivesAsync),
         ("Engine compatibility requires declarations for synthetic TargetRules assignments", EngineCompatibilityRequiresDeclaredTargetMembersAsync),
         ("plugin host requires an overridable TargetRules method before emitting monolithic override", PluginHostRejectsStaleMonolithicMethodAsync),
@@ -66,6 +67,7 @@ internal static class Program
         ("plugin host emits classic UE4 rules when required", PluginHostProjectLegacyRulesAsync),
         ("plugin host project supports an external mounted-build workspace", PluginHostProjectExternalWorkspaceAsync),
         ("plugin diagnostic parser derives lazy requirements", PluginDiagnosticsParseAsync),
+        ("plugin diagnostics recognize wrapped missing Engine inputs", PluginDiagnosticsWrappedEnginePathAsync),
         ("plugin diagnostic parser recognizes legacy Linux platform registration failure", PluginDiagnosticsLegacyPlatformAsync),
         ("module dependency hints parse standard Build.cs lists", ModuleDependencyHintsParseAsync),
         ("tracked Epic index locates module rules and suffixes", EpicTrackedIndexFindsAsync),
@@ -347,6 +349,22 @@ internal static class Program
                 clientRoot, "Engine", "Source", "Programs", "Shared", "EpicGames.Core", "Core.cs")));
             Assert.False(File.Exists(Path.Combine(clientRoot, "Other", "Excluded", "large.bin")));
             Assert.True(progress.Any(line => line.Contains("sparse source seed contains", StringComparison.Ordinal)));
+
+            // A materialized GitDependencies overlay is deliberately higher precedence than the
+            // sparse Git source. Expanding a later lazy cone must not reset that existing overlay.
+            string overlaidManifest = Path.Combine(clientRoot, "Engine", "Build", "Commit.gitdeps.xml");
+            await File.WriteAllTextAsync(overlaidManifest, "<DependencyManifest Overlay=\"true\" />\n");
+            await client.MaterializeSparseDirectoriesAsync(
+                clientRoot,
+                [
+                    "Engine/Build",
+                    "Engine/Source/Programs/UnrealBuildTool",
+                    "Engine/Source/Programs/Shared",
+                    "Other/Excluded",
+                ],
+                tokenVariable);
+            Assert.True((await File.ReadAllTextAsync(overlaidManifest)).Contains("Overlay=\"true\"", StringComparison.Ordinal));
+            Assert.True(File.Exists(Path.Combine(clientRoot, "Other", "Excluded", "large.bin")));
         }
         finally
         {
@@ -1002,6 +1020,17 @@ internal static class Program
 
             GitDependenciesBatchResult? warm = await overlay.RestoreMissingAsync();
             Assert.True(warm is null);
+
+            // Post-bootstrap sparse discovery must repair only the concrete new requirement,
+            // rather than restoring every previously tracked overlay file.
+            File.Delete(tool);
+            File.Delete(core);
+            GitDependenciesPlan selected = overlay.TrackSelection(
+                exactPaths: ["Engine/Binaries/Linux/tool"]);
+            GitDependenciesBatchResult selectedResult = await overlay.MaterializePlanAsync(selected);
+            Assert.Equal(1, selectedResult.FileCount);
+            Assert.True(File.Exists(tool));
+            Assert.False(File.Exists(core));
         }
         finally
         {
@@ -1525,6 +1554,18 @@ internal static class Program
 
             string modern = Path.Combine(root, "modern");
             await WriteCompatibilityFixtureAsync(modern, 5, 8, modern: true);
+            // UE 5.8 moved the Linux dump-symbol switch out of the common UBT modes
+            // and into UEBuildLinux. The capability probe must retain that platform
+            // source instead of omitting -NoDumpSyms from a sparse Linux build.
+            string modernModes = Path.Combine(
+                modern, "Engine", "Source", "Programs", "UnrealBuildTool", "Modes", "BuildMode.cs");
+            await File.WriteAllTextAsync(modernModes, "// NoUBTMakefiles NoHotReloadFromIDE NoUBA NoUBALocal DisableEnginePluginsByDefault");
+            string modernLinuxPlatform = Path.Combine(
+                modern, "Engine", "Source", "Programs", "UnrealBuildTool", "Platform", "Linux");
+            Directory.CreateDirectory(modernLinuxPlatform);
+            await File.WriteAllTextAsync(
+                Path.Combine(modernLinuxPlatform, "UEBuildLinux.cs"),
+                "[CommandLine(\"-NoDumpSyms\")] public bool bDisableDumpSyms;");
             UnrealEngineCompatibility ue58 = await UnrealEngineCompatibility.DetectAsync(modern, "5.8");
             Assert.Equal(UnrealBuildToolProjectStyle.ModernDotNet, ue58.ProjectStyle);
             Assert.True(ue58.SupportsReadOnlyTargetRules);
@@ -1534,6 +1575,31 @@ internal static class Program
             Assert.True(ue58.ApplicationCoreRejectsDisabledTarget);
             Assert.True(ue58.SupportsDisableDumpSymsConfig);
             Assert.True(ue58.SupportsNoDumpSymsFlag);
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task EngineCompatibilityDiscoversMovedRulesAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            await WriteCompatibilityFixtureAsync(root, 5, 8, modern: true);
+            string configuration = Path.Combine(
+                root, "Engine", "Source", "Programs", "UnrealBuildTool", "Configuration");
+            string rules = Path.Combine(configuration, "Rules");
+            Directory.CreateDirectory(rules);
+            File.Move(Path.Combine(configuration, "TargetRules.cs"), Path.Combine(rules, "TargetRules.cs"));
+            File.Move(Path.Combine(configuration, "ModuleRules.cs"), Path.Combine(rules, "ModuleRules.cs"));
+
+            UnrealEngineCompatibility compatibility = await UnrealEngineCompatibility.DetectAsync(root, "5.8");
+            Assert.True(compatibility.SupportsAllowEnginePluginsEnabledByDefault);
+            Assert.True(compatibility.SupportsCompileWithPluginSupport);
+            Assert.True(compatibility.SupportsCpp20ModuleStandard);
+            Assert.True(compatibility.SupportsExplicitOrSharedPchUsage);
         }
         finally
         {
@@ -1777,6 +1843,33 @@ internal static class Program
                 compatibility,
                 diagnostics);
             Assert.False(changedAgain);
+
+            string runtimeTarget = Path.Combine(host.Root, "Source", "UECIHost.Target.cs");
+            await File.WriteAllTextAsync(
+                runtimeTarget,
+                (await File.ReadAllTextAsync(runtimeTarget)).Replace(
+                    "bCompileAgainstApplicationCore = true;",
+                    "bCompileAgainstApplicationCore = false;",
+                    StringComparison.Ordinal));
+            bool applicationCoreChanged = await UnrealPluginHostProject.ApplyBuildDiagnosticCompatibilityAsync(
+                host,
+                plugin,
+                compatibility,
+                "ApplicationCore cannot be used when Target.bCompileAgainstApplicationCore = false.");
+            Assert.True(applicationCoreChanged);
+            Assert.True((await File.ReadAllTextAsync(runtimeTarget)).Contains(
+                "bCompileAgainstApplicationCore = true;",
+                StringComparison.Ordinal));
+
+            bool engineChanged = await UnrealPluginHostProject.ApplyBuildDiagnosticCompatibilityAsync(
+                host,
+                plugin,
+                compatibility,
+                "error: 'GetWorld' marked 'override' but does not override any member functions");
+            Assert.True(engineChanged);
+            Assert.True((await File.ReadAllTextAsync(runtimeTarget)).Contains(
+                "bCompileAgainstEngine = true;",
+                StringComparison.Ordinal));
 
             string originalRules = await File.ReadAllTextAsync(
                 Path.Combine(moduleDirectory, "Fixture.Build.cs"));
@@ -2084,6 +2177,7 @@ internal static class Program
     {
         string diagnostics = """
             ERROR: Could not find definition for module 'Core', (referenced via Fixture.Build.cs)
+            Unable to instantiate module 'Engine': Could not find a module named 'NetCore'.
             fatal error: 'HAL/Platform.h' file not found
             System.IO.FileNotFoundException: Could not find file '/tmp/UE/Engine/Source/ThirdParty/Foo/libFoo.a'
             Unable to find valid SDK(s) for Linux:
@@ -2093,9 +2187,13 @@ internal static class Program
             UBA is not available - please ensure the UBA binaries exist for your host platform
             Library '/tmp/UE/Engine/Source/ThirdParty/BLAKE3/1.3.1/lib/Unix/x86_64-unknown-linux-gnu/Release/libBLAKE3.a' was not resolvable to a file when used in Module 'BLAKE3'
             Library 'ThirdParty/jemalloc/lib/Unix/x86_64-unknown-linux-gnu/libjemalloc_pic.a' was not resolvable to a file when used in Module 'jemalloc'
+            ld.lld: error: cannot open ThirdParty/MikkTSpace/lib/Unix/x86_64-unknown-linux-gnu/libMikkTSpace.a: No such file or directory
+            Engine/Source/ThirdParty/Microsoft/XCurl/XCurl.build.cs(20,5): error CS0103: The name 'GRDK' does not exist in the current context
+            ERROR: Missing generated ISPC response file under Engine/Source/
             """;
         IReadOnlyList<UnrealBuildRequirement> requirements = UnrealBuildDiagnosticParser.Parse(diagnostics);
         Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.Module && r.Value == "Core"));
+        Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.Module && r.Value == "NetCore"));
         Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.PathSuffix && r.Value == "HAL/Platform.h"));
         Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.EnginePath
             && r.Value.Contains("Engine/Source/ThirdParty/Foo/libFoo.a", StringComparison.Ordinal)));
@@ -2105,6 +2203,24 @@ internal static class Program
             && r.Value.EndsWith("Engine/Source/ThirdParty/BLAKE3/1.3.1/lib/Unix/x86_64-unknown-linux-gnu/Release/libBLAKE3.a", StringComparison.Ordinal)));
         Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.PathSuffix
             && r.Value == "ThirdParty/jemalloc/lib/Unix/x86_64-unknown-linux-gnu/libjemalloc_pic.a"));
+        Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.PathSuffix
+            && r.Value == "ThirdParty/MikkTSpace/lib/Unix/x86_64-unknown-linux-gnu/libMikkTSpace.a"));
+        Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.Module && r.Value == "GRDK"));
+        Assert.False(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.EnginePath
+            && r.Value.TrimEnd('/').Equals("Engine/Source", StringComparison.OrdinalIgnoreCase)));
+        return Task.CompletedTask;
+    }
+
+    private static Task PluginDiagnosticsWrappedEnginePathAsync()
+    {
+        const string wrappedPchFailure = """
+            Unhandled exception: DirectoryNotFoundException: Could not find a part of the path '/tmp/engine-view/Engine/Source/Runtime/Engine/Public/EngineSharedPCH.h'.
+               at Interop.ThrowExceptionForIoErrno(ErrorInfo errorInfo, String path, Boolean isDirError)
+            """;
+
+        Assert.True(UnrealBuildDiagnostics.HasMissingEngineInput(wrappedPchFailure));
+        Assert.False(UnrealBuildDiagnostics.HasMissingEngineInput(
+            "UbaStorageServer - Failed to create directory /tmp/.epic/UnrealBuildAccelerator/sessions"));
         return Task.CompletedTask;
     }
 
@@ -2151,6 +2267,9 @@ internal static class Program
             "Engine/Source/Editor/Other/Core.Build.cs",
             "Engine/Platforms/Linux/Source/Runtime/LinuxRuntime/LinuxRuntime.Build.cs",
             "Engine/Plugins/Runtime/Foo/Source/Foo/Foo.Build.cs",
+            "Engine/Source/Developer/ShaderFormatOpenGL/ShaderFormatOpenGL.Build.cs",
+            "Engine/Source/Runtime/OpenGLDrv/OpenGL.Build.cs",
+            "Engine/Source/Runtime/CorePreciseFP/CorePreciseFP.build.cs",
         ]);
         IReadOnlyList<string> rules = index.FindModuleRules("Core");
         Assert.Equal("Engine/Source/Runtime/Core/Core.Build.cs", rules[0]);
@@ -2163,6 +2282,12 @@ internal static class Program
         Assert.Equal(
             "Engine/Plugins/Runtime/Foo/Source/Foo/Foo.Build.cs",
             index.FindModuleRules("Foo")[0]);
+        Assert.Equal(
+            "Engine/Source/Runtime/CorePreciseFP/CorePreciseFP.build.cs",
+            index.FindModuleRules("CorePreciseFP")[0]);
+        Assert.Equal(
+            "Engine/Source/Runtime/OpenGLDrv/OpenGL.Build.cs",
+            index.FindModuleRules("OpenGL")[0]);
         return Task.CompletedTask;
     }
 

@@ -98,6 +98,7 @@ public sealed class UnrealPluginBuilder
     private static readonly string[] UbtSparseSeed =
     [
         "Engine/Build",
+        "Engine/Programs/UnrealHeaderTool",
         "Engine/Source/Programs/UnrealBuildTool",
         "Engine/Source/Programs/Shared",
     ];
@@ -209,8 +210,14 @@ public sealed class UnrealPluginBuilder
                 Array.Empty<string>());
         }
 
+        string? persistentRuntimePrefix = bootstrap.ManagedRuntimePlan?.BundlePrefix;
         string[] bootstrapOverlayFiles = bootstrap.Dependencies.MaterializedFiles
             .Select(path => ToEngineRelativePath(bootstrap.EngineRoot, path))
+            // Bootstrap relocates the selected bundled .NET runtime to .ueci/ before this
+            // overlay is constructed. It is no longer an Engine-worktree overlay and must not
+            // be counted as a missing file after the first sparse expansion.
+            .Where(path => string.IsNullOrWhiteSpace(persistentRuntimePrefix)
+                || !path.StartsWith(persistentRuntimePrefix, StringComparison.Ordinal))
             .ToArray();
         var gitDependenciesOverlay = new UnrealGitDependenciesOverlay(
             manifest,
@@ -640,11 +647,14 @@ public sealed class UnrealPluginBuilder
         ArgumentException.ThrowIfNullOrWhiteSpace(options.Platform);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.Configuration);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.OutputDirectory);
-        if (options.MaxDiscoveryPasses < 1 || options.MaxDiscoveryPasses > 64)
+        // Broad but valid plugin graphs can legitimately exceed 64 lazy UBT passes (for
+        // example when a runtime module opts into Engine and its audio/UI transitive graph).
+        // Keep the safeguard finite, while allowing callers to select a practical ceiling.
+        if (options.MaxDiscoveryPasses < 1 || options.MaxDiscoveryPasses > 128)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(options.MaxDiscoveryPasses),
-                "MaxDiscoveryPasses must be between 1 and 64.");
+                "MaxDiscoveryPasses must be between 1 and 128.");
         }
     }
 

@@ -49,11 +49,13 @@ public static class UnrealPluginPackager
 
         foreach (string file in Directory.EnumerateFiles(source))
         {
+            if (IsSymbolicLink(file)) continue;
             File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), overwrite: true);
         }
 
         foreach (string directory in Directory.EnumerateDirectories(source))
         {
+            if (IsSymbolicLink(directory)) continue;
             string name = Path.GetFileName(directory);
             if (name is "Intermediate" or "Saved" or ".git" or ".ueci")
             {
@@ -63,4 +65,7 @@ public static class UnrealPluginPackager
             CopyDirectory(sourceRoot, destinationRoot, child);
         }
     }
+
+    private static bool IsSymbolicLink(string path)
+        => (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
 }

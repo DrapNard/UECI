@@ -366,7 +366,7 @@ The composite Action persists this cold-start cache under an exact Epic-commit k
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the lazy plugin build and package the result. Alpha.17 resolves the exact Epic ref object id first and keys the GitHub Actions cold-start cache with it, so moving refs such as `release` cannot accidentally reuse a cache as if the Engine commit were unchanged.
 
 ```yaml
-- uses: your-org/ueci@v0.5.0-alpha.31
+- uses: your-org/ueci@v0.5.0-alpha.32
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release

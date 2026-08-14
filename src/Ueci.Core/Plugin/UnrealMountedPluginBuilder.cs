@@ -525,6 +525,17 @@ internal sealed class UnrealMountedPluginBuilder
                         }
                     }
 
+                    // Inspect the complete UBT output before reducing it to a concise exception
+                    // excerpt. Modern UBT may emit tens of thousands of benign unresolved-library
+                    // warnings after a missing shared PCH; the tail-only excerpt then omits the
+                    // DirectoryNotFoundException that proves the fast Engine profile is incomplete.
+                    // Throwing this typed failure keeps the outer fast-profile handler bounded to
+                    // its single dynamic retry and lets it learn the exact Engine path.
+                    if (context.IsFastProfile && UnrealBuildDiagnostics.HasMissingEngineInput(diagnostics))
+                    {
+                        throw new DirectoryNotFoundException(diagnostics);
+                    }
+
                     string excerpt = UnrealBuildDiagnostics.CreateFailureExcerpt(diagnostics);
                     throw new InvalidOperationException(
                         $"Mounted UBT build failed for target '{phase.Target}'. Full log: {logPath}" +
@@ -709,6 +720,15 @@ internal sealed class UnrealMountedPluginBuilder
         }
 
         string text = exception.ToString();
+
+        // Modern UBT can wrap an absent shared PCH in DirectoryNotFoundException while retaining
+        // the complete Engine-relative absolute path. Treat that structured evidence as a profile
+        // miss before applying the native-error guard below; one bounded dynamic pass can make the
+        // required immutable input visible, whereas a linker/compiler diagnostic by itself cannot.
+        if (UnrealBuildDiagnostics.HasMissingEngineInput(text))
+        {
+            return true;
+        }
 
         // A complete Engine namespace cannot repair a genuine compile/link error. In alpha.7 the
         // linker failure for the synthetic host target was followed by harmless UBA probe text

@@ -61,6 +61,16 @@ public static class UnrealBuildDiagnostics
         return modules.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
+    /// <summary>
+    /// Determines whether UBT's wrapped diagnostics identify an immutable Engine input that is
+    /// absent from the currently projected namespace. In particular, modern .NET UBT reports a
+    /// missing shared PCH as <see cref="DirectoryNotFoundException"/> rather than the traditional
+    /// compiler "file not found" spelling.
+    /// </summary>
+    public static bool HasMissingEngineInput(string diagnostics)
+        => UnrealBuildDiagnosticParser.Parse(diagnostics)
+            .Any(requirement => requirement.Kind == UnrealBuildRequirementKind.EnginePath);
+
     public static string CreateFailureExcerpt(
         string diagnostics,
         int contextBefore = 5,

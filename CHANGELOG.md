@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.0-alpha.32] - 2026-08-14
+
+### Fixed
+
+- Keep the bundled modern .NET runtime outside the materialized sparse Engine worktree after UBT bootstrap. Sparse Git expansion can no longer displace the runtime and trigger a repeated restoration of roughly five thousand GitDependencies files on every lazy discovery pass.
+- Restore only the GitDependencies entries diagnosed on the current discovery pass after a sparse expansion, while preserving the complete verified overlay for normal recovery. This removes repeated broad overlay work without weakening integrity checks.
+- Recognize `ld.lld` missing-library diagnostics as lazy GitDependencies requirements. Materialized UE 5.8 builds now recover third-party archives such as MikkTSpace from the verified cache/CDN rather than stopping after native compilation.
+- Detect the modern Linux `NoDumpSyms` capability in the platform-specific UBT source, so synthetic plugin builds consistently pass the exact UBT switch that prevents an unnecessary post-link symbol-tool dependency.
+
+### Validation
+
+- Managed suite: 67 passed, 0 failed.
+- Unreal-DualSense-Multiplatform built and packaged against UE 5.8.1 on Linux through the materialized backend. `DualSenseCore` and `DualSenseRuntime` compiled and linked in three discovery passes; the resulting package contains `libUnrealEditor-DualSenseRuntime.so`.
+- The external DualSense checkout was not modified by UECI. Its two pre-existing untracked paths date from 2026-08-08, before this validation.
+- UE 4.20, 5.0, 5.1, 5.7 and 5.8 retain their previously validated Linux matrix results. UE 4.6/Linux remains unavailable because Epic no longer serves its required historical SDL archive; this is documented as an external release-asset limitation rather than a claim of support.
+- FUSE remains validated for the minimal Linux smoke. A first FUSE profile for the much larger DualSense dependency graph requires a complete-profile learning pass and is intentionally deferred as a performance follow-up; the materialized backend is the validated fallback for that graph.
+- CLI version advanced to `0.5.0-alpha.32`.
+
 ## [0.5.0-alpha.31] - 2026-08-14
 
 ### Fixed

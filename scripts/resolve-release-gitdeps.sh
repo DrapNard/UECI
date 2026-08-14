@@ -67,6 +67,22 @@ if [[ -n "$REF_DEST" && -n "$release_tag" ]]; then
 fi
 
 if [[ -z "$asset_url" || "$asset_url" == "$selection" ]]; then
+  # UE4.6 release pages do not attach the manifest, but the source tag tracks it beneath
+  # Engine/Build. Prefer the release asset when available; otherwise materialize this authoritative
+  # source copy so callers such as the legacy dependency overlay can validate every fallback file.
+  mkdir -p "$(dirname "$DEST")"
+  tmp="$DEST.$$.tmp"
+  trap 'rm -f -- "$tmp"' EXIT
+  for tracked_path in 'Engine/Build/Commit.gitdeps.xml' 'Commit.gitdeps.xml'; do
+    if gh api -H 'Accept: application/vnd.github.raw+json' \
+        "repos/EpicGames/UnrealEngine/contents/$tracked_path?ref=$release_tag" > "$tmp" 2>/dev/null \
+        && [[ -s "$tmp" ]] && grep -q '<' "$tmp"; then
+      mv -f -- "$tmp" "$DEST"
+      trap - EXIT
+      printf '%s\n' "$DEST"
+      exit 0
+    fi
+  done
   printf '\n'
   exit 0
 fi

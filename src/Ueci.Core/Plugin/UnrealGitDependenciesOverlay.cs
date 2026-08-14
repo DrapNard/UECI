@@ -80,6 +80,20 @@ public sealed class UnrealGitDependenciesOverlay
             $"{(plan.FileCount == 1 ? string.Empty : "s")} displaced by the sparse Git worktree " +
             $"({plan.UniqueBlobCount:N0} blobs / {plan.UniquePackCount:N0} packs)...");
 
+        return await MaterializePlanAsync(plan, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Materializes an explicit, newly diagnosed GitDependencies selection. Unlike restoring the
+    /// bootstrap overlay, this deliberately does not revisit every tracked overlay file: sparse
+    /// expansion can displace thousands of historical bootstrap files that the current UBT action
+    /// never reads.
+    /// </summary>
+    public async Task<GitDependenciesBatchResult> MaterializePlanAsync(
+        GitDependenciesPlan plan,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
         IGitDependenciesPackSource source = _packSourceFactory();
         try
         {

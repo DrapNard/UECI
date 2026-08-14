@@ -235,30 +235,28 @@ public sealed class UnrealPluginRequirementMaterializer
 
         long downloadedBytes = 0;
         int materializedGitDeps = 0;
+        GitDependenciesPlan? newlyRequiredGitDependencies = null;
         if (gitDepsFiles.Count != 0 || gitDepsPrefixes.Count != 0)
         {
-            GitDependenciesPlan newlyRequired = _gitDependenciesOverlay.TrackSelection(
+            newlyRequiredGitDependencies = _gitDependenciesOverlay.TrackSelection(
                 gitDepsFiles,
                 gitDepsPrefixes);
-            materializedGitDeps = newlyRequired.FileCount;
+            materializedGitDeps = newlyRequiredGitDependencies.FileCount;
             progress?.Invoke(
-                $"Tracking {newlyRequired.FileCount:N0} newly required GitDependencies files " +
-                $"({newlyRequired.UniquePackCount:N0} packs, {FormatBytes(newlyRequired.DownloadCompressedBytes)} compressed)...");
+                $"Materializing {newlyRequiredGitDependencies.FileCount:N0} newly required GitDependencies files " +
+                $"({newlyRequiredGitDependencies.UniquePackCount:N0} packs, {FormatBytes(newlyRequiredGitDependencies.DownloadCompressedBytes)} compressed)...");
         }
 
-        // A sparse-checkout update may displace files that GitDependencies overlaid on paths which
-        // are also known to Git. Restore every tracked overlay file that is currently absent before
-        // the next UBT invocation. Newly discovered GitDependencies paths are included in the same
-        // restore, so one pass repairs both old and new requirements from the CAS/CDN.
-        if (sparseToAdd.Count != 0 || gitDepsFiles.Count != 0 || gitDepsPrefixes.Count != 0)
+        // The bootstrap phase restores the complete managed UBT overlay once. Later sparse updates
+        // may displace it again, but eagerly restoring all of it on every one-module discovery pass
+        // dominates a cold build. UBT diagnostics are authoritative here: repair only the concrete
+        // GitDependencies files it requested, while leaving unrelated bootstrap payloads lazy.
+        if (newlyRequiredGitDependencies is not null)
         {
-            GitDependenciesBatchResult? restored = await _gitDependenciesOverlay.RestoreMissingAsync(
-                progress,
+            GitDependenciesBatchResult restored = await _gitDependenciesOverlay.MaterializePlanAsync(
+                newlyRequiredGitDependencies,
                 cancellationToken).ConfigureAwait(false);
-            if (restored is not null)
-            {
-                downloadedBytes += restored.DownloadedBytes;
-            }
+            downloadedBytes += restored.DownloadedBytes;
         }
 
         int platformSdkChanges = 0;
@@ -425,6 +423,13 @@ public sealed class UnrealPluginRequirementMaterializer
     {
         string path = Normalize(rawPath);
         if (!path.StartsWith("Engine/", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        // Never let a diagnostic for the source root turn into an unbounded sparse checkout.
+        // Concrete directories (for example, a ThirdParty SDK directory) remain valid inputs.
+        if (path.TrimEnd('/').Equals("Engine/Source", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }

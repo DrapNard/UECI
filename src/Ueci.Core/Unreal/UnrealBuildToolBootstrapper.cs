@@ -37,6 +37,10 @@ public sealed class UnrealBuildToolBootstrapper
     private static readonly string[] GitSeedDirectories =
     [
         "Engine/Build",
+        // UHT reads DelegateParameterCountStrings and related parser policy from this
+        // config hierarchy. Without it modern UHT only recognizes zero-argument
+        // dynamic delegates, which makes every *_OneParam declaration fail.
+        "Engine/Programs/UnrealHeaderTool",
         "Engine/Source/Programs/UnrealBuildTool",
         "Engine/Source/Programs/Shared",
         "Engine/Source/Programs/DotNETCommon",
@@ -208,6 +212,12 @@ public sealed class UnrealBuildToolBootstrapper
             cancellationToken,
             compatibilityCacheDirectory: options.FetchOptions.CacheDirectory).ConfigureAwait(false);
 
+        // The bundled .NET runtime is a GitDependencies overlay below the Git worktree. A later
+        // sparse-checkout extension can replace that whole directory, forcing an expensive restore
+        // of thousands of runtime files before every UBT pass. Relocate the verified runtime once
+        // beside UECI's other persistent build state and run UBT from there instead.
+        compile = PersistManagedRuntime(root, manifest, compile, options.Progress);
+
         IReadOnlyList<DotNetFrameworkRequirement> frameworks = Array.Empty<DotNetFrameworkRequirement>();
         if (compile.Paths.RuntimeKind == UnrealBuildToolRuntimeKind.DotNet
             && !string.IsNullOrWhiteSpace(compile.Runtime.BundlePrefix))
@@ -258,6 +268,76 @@ public sealed class UnrealBuildToolBootstrapper
             compile.Process,
             probe,
             compile.Runtime);
+    }
+
+    private static UnrealBuildToolCompileResult PersistManagedRuntime(
+        string engineRoot,
+        GitDependenciesManifest manifest,
+        UnrealBuildToolCompileResult compile,
+        Action<string>? progress)
+    {
+        UnrealBuildToolRuntimePlan runtime = compile.Runtime;
+        if (runtime.Kind != UnrealBuildToolRuntimeKind.DotNet
+            || string.IsNullOrWhiteSpace(runtime.BundlePrefix)
+            || !Directory.Exists(runtime.RuntimeRoot)
+            || !File.Exists(runtime.HostPath))
+        {
+            return compile;
+        }
+
+        string hostRelative = Path.GetRelativePath(runtime.RuntimeRoot, runtime.HostPath);
+        if (hostRelative.Equals("..", StringComparison.Ordinal)
+            || hostRelative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+        {
+            return compile;
+        }
+
+        string hostEnginePath = GitDependencyPath.Normalize(Path.GetRelativePath(engineRoot, runtime.HostPath));
+        if (!manifest.Files.TryGetValue(hostEnginePath, out GitDependencyFile? hostFile))
+        {
+            return compile;
+        }
+
+        string persistentRoot = Path.Combine(
+            engineRoot,
+            ".ueci",
+            "managed-runtimes",
+            hostFile.Hash.ToLowerInvariant());
+        string persistentHost = Path.Combine(persistentRoot, hostRelative);
+        if (!File.Exists(persistentHost))
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(persistentRoot)!);
+            if (!Directory.Exists(persistentRoot))
+            {
+                Directory.Move(runtime.RuntimeRoot, persistentRoot);
+            }
+        }
+
+        if (!File.Exists(persistentHost))
+        {
+            // Preserve the working runtime when a non-standard filesystem prevents relocation.
+            return compile;
+        }
+
+        string? persistentBuildTool = runtime.BuildToolPath is not null
+            && Path.GetFullPath(runtime.BuildToolPath).StartsWith(
+                Path.GetFullPath(runtime.RuntimeRoot) + Path.DirectorySeparatorChar,
+                StringComparison.Ordinal)
+            ? Path.Combine(persistentRoot, Path.GetRelativePath(runtime.RuntimeRoot, runtime.BuildToolPath))
+            : runtime.BuildToolPath;
+        UnrealBuildToolRuntimePlan persistentRuntime = runtime with
+        {
+            RuntimeRoot = persistentRoot,
+            HostPath = persistentHost,
+            BuildToolPath = persistentBuildTool,
+        };
+        progress?.Invoke("Persisted the bundled UBT runtime outside the sparse Engine worktree.");
+        return compile with
+        {
+            Runtime = persistentRuntime,
+            RuntimeHostPath = persistentHost,
+            Paths = compile.Paths with { RuntimeHostPath = persistentHost },
+        };
     }
 
     private static string FormatBytes(long value)

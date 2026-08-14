@@ -85,7 +85,7 @@ show_space() {
 }
 
 printf '%s\n' "============================================================" "Building UECI" "============================================================"
-dotnet build Ueci.sln -c Release --nologo || exit 1
+dotnet build Ueci.sln -c Release --nologo -p:MSBuildEnableWorkloadResolver=false || exit 1
 
 if [[ "$RUN_PREFLIGHT" == "1" ]]; then
   printf '\n%s\n' "============================================================" "Running UECI preflight tests" "============================================================"

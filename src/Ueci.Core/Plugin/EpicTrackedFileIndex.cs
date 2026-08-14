@@ -33,9 +33,20 @@ public sealed class EpicTrackedFileIndex
     }
 
     public IReadOnlyList<string> FindModuleRules(string moduleName, int maxResults = 8)
-        => FindBySuffix(moduleName + ".Build.cs", maxResults)
-            .Where(path => path.StartsWith("Engine/", StringComparison.Ordinal))
+    {
+        // UE normally uses .Build.cs, but current UE5 sources include CorePreciseFP.build.cs.
+        // The tracked index must preserve the real path while matching this convention
+        // case-insensitively, otherwise lazy materialization cannot recover that module.
+        string ruleName = moduleName + ".Build.cs";
+        return _paths
+            .Where(path => path.StartsWith("Engine/", StringComparison.Ordinal)
+                && Path.GetFileName(path).Equals(ruleName, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(ScorePath)
+            .ThenBy(path => path.Length)
+            .ThenBy(path => path, StringComparer.Ordinal)
+            .Take(maxResults)
             .ToArray();
+    }
 
     public bool HasPrefix(string prefix)
     {

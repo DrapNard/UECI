@@ -244,7 +244,16 @@ public static class UnrealPluginHostProject
                 "must specify an explicit precompiled header for PCHUsage",
                 StringComparison.OrdinalIgnoreCase)
             && compatibility.SupportsExplicitOrSharedPchUsage;
-        if (!forceCpp20 && !forcePchMode) return false;
+        bool forceApplicationCore = diagnostics.Contains(
+                "ApplicationCore cannot be used when Target.bCompileAgainstApplicationCore = false",
+                StringComparison.OrdinalIgnoreCase);
+        // UE 5.8's UObject only exposes GetWorld when WITH_ENGINE is enabled. A plugin may pull
+        // Engine modules in after the synthetic target was intentionally started lean; the
+        // compiler then reports the derived GetWorld declarations as non-overrides.
+        bool forceEngine = diagnostics.Contains(
+                "GetWorld' marked 'override' but does not override any member functions",
+                StringComparison.OrdinalIgnoreCase);
+        if (!forceCpp20 && !forcePchMode && !forceApplicationCore && !forceEngine) return false;
 
         bool changed = await NormalizeCopiedPluginModuleRulesAsync(
             host.PluginRoot,
@@ -265,6 +274,44 @@ public static class UnrealPluginHostProject
             forceCpp20,
             forcePchMode,
             cancellationToken).ConfigureAwait(false);
+
+        if (forceApplicationCore)
+        {
+            string runtimeTargetPath = Path.Combine(host.Root, "Source", GameTargetName + ".Target.cs");
+            if (File.Exists(runtimeTargetPath))
+            {
+                string source = await File.ReadAllTextAsync(runtimeTargetPath, cancellationToken).ConfigureAwait(false);
+                string updated = Regex.Replace(
+                    source,
+                    @"\bbCompileAgainstApplicationCore\s*=\s*false\s*;",
+                    "bCompileAgainstApplicationCore = true;",
+                    RegexOptions.CultureInvariant);
+                if (!string.Equals(source, updated, StringComparison.Ordinal))
+                {
+                    await File.WriteAllTextAsync(runtimeTargetPath, updated, cancellationToken).ConfigureAwait(false);
+                    changed = true;
+                }
+            }
+        }
+
+        if (forceEngine)
+        {
+            string runtimeTargetPath = Path.Combine(host.Root, "Source", GameTargetName + ".Target.cs");
+            if (File.Exists(runtimeTargetPath))
+            {
+                string source = await File.ReadAllTextAsync(runtimeTargetPath, cancellationToken).ConfigureAwait(false);
+                string updated = Regex.Replace(
+                    source,
+                    @"\bbCompileAgainstEngine\s*=\s*false\s*;",
+                    "bCompileAgainstEngine = true;",
+                    RegexOptions.CultureInvariant);
+                if (!string.Equals(source, updated, StringComparison.Ordinal))
+                {
+                    await File.WriteAllTextAsync(runtimeTargetPath, updated, cancellationToken).ConfigureAwait(false);
+                    changed = true;
+                }
+            }
+        }
 
         if (changed)
         {
@@ -593,10 +640,16 @@ public static class UnrealPluginHostProject
         Directory.CreateDirectory(destination);
 
         foreach (string file in Directory.EnumerateFiles(source))
+        {
+            if (IsSymbolicLink(file)) continue;
             File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), overwrite: true);
+        }
 
         foreach (string directory in Directory.EnumerateDirectories(source))
         {
+            // A plugin checkout can contain a convenience link back to its own root. Do not let
+            // staging traverse links outside the supplied plugin—or recurse indefinitely.
+            if (IsSymbolicLink(directory)) continue;
             string name = Path.GetFileName(directory);
             if (name is "Intermediate" or "Saved" or ".git" or ".ueci") continue;
             if (relative.Length == 0 && name == "Binaries")
@@ -610,6 +663,9 @@ public static class UnrealPluginHostProject
             CopyDirectory(sourceRoot, destinationRoot, child);
         }
     }
+
+    private static bool IsSymbolicLink(string path)
+        => (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
 
     private static string Sanitize(string value)
     {

@@ -57,8 +57,10 @@ asset_release_ref="$RELEASE_REF"
 # Some transitional UE4.6 patch tags kept source releases separate from the dependency release
 # carrying Required_1of2/Required_2of2. If the exact source tag has no complete set, first search
 # sibling 4.6.x releases. A few GitHub histories expose no complete 4.6 archive set at all; in that
-# case use a 4.5 dependency release only as a source for the two managed UBT support assemblies.
-# The source commit always remains pinned to RELEASE_REF.
+# case use a 4.5 dependency release as a narrowly projected fallback. The original UE4.6 manifest
+# still names CDN packs that are no longer publicly retrievable, so limiting that fallback to managed
+# UBT support alone leaves the first UHT link unable to open zlib/ICU/SDL/etc. archives. The source
+# commit always remains pinned to RELEASE_REF.
 legacy_support_only=0
 if [[ "$selection" == MISSING$'\t'* && "$VERSION" == "4.6" ]]; then
   for search_version in "4.6" "4.5"; do
@@ -139,6 +141,49 @@ extract_managed_support() {
   return $(( found == 1 ? 0 : 1 ))
 }
 
+extract_matching_linux_dependencies() {
+  local archive="$1"
+  local manifest="$(dirname "$ENGINE_DIR")/Commit.gitdeps.xml"
+  # A 4.5 release archive is useful only as an archival transport. Never project a file merely
+  # because it has the right path: a number of 4.5 and 4.6 Linux libraries have different ABI
+  # payloads at the same path. The release manifest is authoritative, so retain only files whose
+  # SHA-1 matches its recorded UE4.6 content.
+  [[ -s "$manifest" ]] || {
+    echo "UE4.6 release manifest is required to select compatible legacy dependencies." >&2
+    return 1
+  }
+  python3 - "$manifest" "$archive" "$UPPER" <<'PY'
+import hashlib
+import os
+import sys
+import xml.etree.ElementTree as ET
+import zipfile
+
+manifest_path, archive_path, upper = sys.argv[1:]
+expected = {
+    item.attrib["Name"]: item.attrib["Hash"].lower()
+    for item in ET.parse(manifest_path).iter("File")
+    if "/Linux/" in item.attrib.get("Name", "")
+}
+matched = 0
+with zipfile.ZipFile(archive_path) as archive:
+    for info in archive.infolist():
+        name = info.filename.rstrip("/")
+        wanted_hash = expected.get(name)
+        if wanted_hash is None:
+            continue
+        content = archive.read(info)
+        if hashlib.sha1(content).hexdigest() != wanted_hash:
+            continue
+        destination = os.path.join(upper, name)
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        with open(destination, "wb") as output:
+            output.write(content)
+        matched += 1
+print(f"[matrix] projected {matched} manifest-matching Linux dependency file(s) from {os.path.basename(archive_path)}")
+PY
+}
+
 while IFS=$'\t' read -r name url; do
   [[ -n "$name" && -n "$url" ]] || continue
   archive="$ARCHIVE_DIR/$name"
@@ -146,8 +191,9 @@ while IFS=$'\t' read -r name url; do
   gh api "$url" -H 'Accept: application/octet-stream' > "$archive"
   [[ -s "$archive" ]] || { echo "Downloaded asset is empty: $name" >&2; exit 1; }
   if [[ "$VERSION" == "4.6" && "$legacy_support_only" == "1" ]]; then
-    echo "[matrix] extracting only UE4.6 managed UBT support from $name"
+    echo "[matrix] extracting UE4.6 managed UBT support and manifest-matching Linux fallback from $name"
     extract_managed_support "$archive" || true
+    extract_matching_linux_dependencies "$archive"
   else
     echo "[matrix] extracting $name into the FUSE upper overlay"
     unzip -q -o "$archive" -d "$UPPER"

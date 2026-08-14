@@ -159,8 +159,13 @@ public sealed class UnrealEngineCompatibility
     public bool SupportsAllowSndbsConfig => HasUbtToken("bAllowSNDBS");
     public bool SupportsDisableDumpSymsConfig => HasUbtToken("bDisableDumpSyms");
 
+    // UE 5.8 declares the Linux-only switch in UEBuildLinux.cs rather than in the
+    // common BuildMode/BuildConfiguration sources. Keep this probe capability-based:
+    // a sparse bootstrap already reads the bounded Linux platform corpus for SDK
+    // detection, and the flag must only be emitted when the exact platform source
+    // advertises it.
     public bool SupportsNoDumpSymsFlag
-        => HasUbtToken("NoDumpSyms");
+        => HasUbtToken("NoDumpSyms") || ContainsIdentifier(_linuxPlatformSource, "NoDumpSyms");
 
     public bool SupportsNoUbtMakefilesFlag
         => HasUbtToken("NoUBTMakefiles");
@@ -208,8 +213,12 @@ public sealed class UnrealEngineCompatibility
             root, "Engine", "Source", "Programs", "UnrealBuildTool", "UnrealBuildTool.csproj");
         string targetRulesPath = Path.Combine(
             root, "Engine", "Source", "Programs", "UnrealBuildTool", "Configuration", "TargetRules.cs");
+        string movedTargetRulesPath = Path.Combine(
+            root, "Engine", "Source", "Programs", "UnrealBuildTool", "Configuration", "Rules", "TargetRules.cs");
         string moduleRulesPath = Path.Combine(
             root, "Engine", "Source", "Programs", "UnrealBuildTool", "Configuration", "ModuleRules.cs");
+        string movedModuleRulesPath = Path.Combine(
+            root, "Engine", "Source", "Programs", "UnrealBuildTool", "Configuration", "Rules", "ModuleRules.cs");
         string buildConfigurationPath = Path.Combine(
             root, "Engine", "Source", "Programs", "UnrealBuildTool", "Configuration", "BuildConfiguration.cs");
         string buildModePath = Path.Combine(
@@ -222,9 +231,15 @@ public sealed class UnrealEngineCompatibility
             root, "Engine", "Source", "Programs", "UnrealBuildTool", "Configuration", "UEBuildTarget.cs");
 
         string projectSource = await ReadIfExistsAsync(ubtProjectPath, cancellationToken).ConfigureAwait(false);
-        string targetRulesSource = await ReadIfExistsAsync(targetRulesPath, cancellationToken).ConfigureAwait(false);
+        // UE 5.8 moved both public rules declarations into Configuration/Rules. Probe the exact
+        // source layout rather than assuming the historical paths; otherwise a synthetically
+        // generated target silently loses its feature-gated trimming assignments and UBT scans
+        // default Engine plugins unnecessarily.
+        string targetRulesSource = await ReadFirstExistingAsync(
+            [targetRulesPath, movedTargetRulesPath], cancellationToken).ConfigureAwait(false);
         bool targetRulesAuthoritative = targetRulesSource.Length != 0;
-        string moduleRulesSource = await ReadIfExistsAsync(moduleRulesPath, cancellationToken).ConfigureAwait(false);
+        string moduleRulesSource = await ReadFirstExistingAsync(
+            [moduleRulesPath, movedModuleRulesPath], cancellationToken).ConfigureAwait(false);
         string buildConfigurationSource = await ReadIfExistsAsync(buildConfigurationPath, cancellationToken).ConfigureAwait(false);
         string buildModeSource = await ReadIfExistsAsync(buildModePath, cancellationToken).ConfigureAwait(false);
         string applicationCoreRulesSource = await ReadIfExistsAsync(applicationCoreRulesPath, cancellationToken).ConfigureAwait(false);
@@ -438,6 +453,18 @@ public sealed class UnrealEngineCompatibility
         return await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
     }
 
+    private static async Task<string> ReadFirstExistingAsync(
+        IReadOnlyList<string> paths,
+        CancellationToken cancellationToken)
+    {
+        foreach (string path in paths)
+        {
+            string source = await ReadIfExistsAsync(path, cancellationToken).ConfigureAwait(false);
+            if (source.Length != 0) return source;
+        }
+        return string.Empty;
+    }
+
     private static async Task<string> ReadLinuxPlatformSourceCorpusAsync(
         string root,
         CancellationToken cancellationToken)
@@ -453,7 +480,8 @@ public sealed class UnrealEngineCompatibility
             string text = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
             if (text.Contains("LINUX_ROOT", StringComparison.Ordinal)
                 || text.Contains("LINUX_MULTIARCH_ROOT", StringComparison.Ordinal)
-                || text.Contains("UE_SDKS_ROOT", StringComparison.Ordinal))
+                || text.Contains("UE_SDKS_ROOT", StringComparison.Ordinal)
+                || text.Contains("DumpSyms", StringComparison.Ordinal))
             {
                 builder.AppendLine(text);
             }
