@@ -281,7 +281,8 @@ internal sealed class UnrealMountedPluginBuilder
                     managedRuntime,
                     cancellationToken,
                     reuseExistingOutput: true,
-                    progress: options.Progress));
+                    progress: options.Progress,
+                    compatibilityCacheDirectory: options.FetchOptions.CacheDirectory));
 
             Task<UnrealPluginHostLayout> hostTask = timings.MeasureAsync(
                 "host.prepare",
@@ -414,11 +415,10 @@ internal sealed class UnrealMountedPluginBuilder
             else if (compile.Paths.RuntimeKind == UnrealBuildToolRuntimeKind.DotNet)
             {
                 // A historical Epic host may be unable to start on a modern distro (notably
-                // netcoreapp3.x + OpenSSL 3). In that case the compiler deliberately rebuilt UBT
-                // with the runner SDK. The generated runtimeconfig may not name an Epic shared
-                // framework, and none is required because subsequent UBT runs use the same runner.
+                // netcoreapp3.x + OpenSSL 3). The compiler can rebuild that graph against an
+                // isolated compatibility SDK instead of mixing it with the runner's current framework.
                 options.Progress?.Invoke(
-                    $"[compat] Using runner-managed UBT runtime: {compile.Runtime.Description}; skipping Epic framework projection validation.");
+                    $"[compat] Using UECI-managed UBT runtime: {compile.Runtime.Description}; skipping Epic framework projection validation.");
             }
 
             options.Progress?.Invoke(compatibility.Version.Major >= 5
@@ -570,7 +570,7 @@ internal sealed class UnrealMountedPluginBuilder
         }
         finally
         {
-            if (plugin.HasCode)
+            if (failure is null && plugin.HasCode)
             {
                 try
                 {
@@ -642,6 +642,7 @@ internal sealed class UnrealMountedPluginBuilder
                 || path.StartsWith("Engine/Build/", StringComparison.Ordinal)
                 || path.StartsWith("Engine/Config/", StringComparison.Ordinal)
                 || path.StartsWith("Engine/Plugins/", StringComparison.Ordinal)
+                || path.StartsWith("Engine/Platforms/", StringComparison.Ordinal)
                 || path.StartsWith("Engine/Shaders/", StringComparison.Ordinal))
             .Distinct(StringComparer.Ordinal)
             .OrderBy(value => value, StringComparer.Ordinal)
@@ -675,6 +676,7 @@ internal sealed class UnrealMountedPluginBuilder
             "was not materialized",
             "is missing from the Epic source seed",
             "bundled dotnet SDK host is missing",
+            "No BuildPlatform found for Linux",
         ];
         if (explicitProfileIndicators.Any(indicator =>
                 text.Contains(indicator, StringComparison.OrdinalIgnoreCase)))

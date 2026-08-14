@@ -45,6 +45,7 @@ internal static class Program
         ("runtimeconfig parser reads included frameworks", RuntimeConfigIncludedFrameworksAsync),
         ("runtimeconfig writer converts self-contained framework metadata", RuntimeConfigConvertsIncludedFrameworksAsync),
         ("runtimeconfig writer synthesizes missing runner framework metadata", RuntimeConfigSynthesizesFrameworkAsync),
+        ("legacy netcore UBT provisions isolated net6 compatibility SDK", CompatibilityDotNetSdkAsync),
         ("Epic bundled dotnet resolver selects host runtime", BundledDotNetResolverAsync),
         ("Epic bundled dotnet SDK resolver selects latest SDK", BundledDotNetSdkResolverAsync),
         ("Epic bundled dotnet resolver accepts historical Linux bundle layouts", BundledDotNetHistoricalLayoutAsync),
@@ -59,6 +60,7 @@ internal static class Program
         ("plugin host emits classic UE4 rules when required", PluginHostProjectLegacyRulesAsync),
         ("plugin host project supports an external mounted-build workspace", PluginHostProjectExternalWorkspaceAsync),
         ("plugin diagnostic parser derives lazy requirements", PluginDiagnosticsParseAsync),
+        ("plugin diagnostic parser recognizes legacy Linux platform registration failure", PluginDiagnosticsLegacyPlatformAsync),
         ("module dependency hints parse standard Build.cs lists", ModuleDependencyHintsParseAsync),
         ("tracked Epic index locates module rules and suffixes", EpicTrackedIndexFindsAsync),
         ("explicit module requirement force-refreshes an already-sparse Build.cs", ExplicitModuleRefreshAsync),
@@ -1186,6 +1188,82 @@ internal static class Program
         }
     }
 
+    private static async Task CompatibilityDotNetSdkAsync()
+    {
+        if (!OperatingSystem.IsLinux()
+            || System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
+                is not (System.Runtime.InteropServices.Architecture.X64 or System.Runtime.InteropServices.Architecture.Arm64))
+        {
+            return;
+        }
+
+        string root = CreateTempDirectory();
+        try
+        {
+            byte[] archive = CreateCompatibilityDotNetArchive();
+            var source = new FakeCompatibilityDotNetArchiveSource(archive);
+            string rid = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
+                == System.Runtime.InteropServices.Architecture.Arm64 ? "linux-arm64" : "linux-x64";
+            string checksum = Convert.ToHexString(SHA512.HashData(archive)).ToLowerInvariant();
+            var resolver = new UnrealCompatibilityDotNetSdkResolver(
+                source,
+                new Dictionary<string, string>(StringComparer.Ordinal) { [rid] = checksum });
+            var original = new UnrealBuildToolRuntimePlan(
+                UnrealBuildToolRuntimeKind.DotNet,
+                "/epic/dotnet",
+                "/epic/dotnet/dotnet",
+                "/epic/dotnet/dotnet",
+                new Version(3, 1, 401),
+                "Engine/Binaries/ThirdParty/DotNet/Linux",
+                Array.Empty<string>(),
+                Array.Empty<string>());
+
+            UnrealBuildToolRuntimePlan? plan = await resolver.ResolveAsync(original, root);
+            Assert.True(plan is not null);
+            Assert.Equal("net6.0", plan!.TargetFrameworkOverride);
+            Assert.Equal(new Version(6, 0, 428), plan.SdkVersion);
+            Assert.Equal(new Version(6, 0, 36), plan.FrameworkVersion);
+            Assert.True(File.Exists(plan.HostPath));
+            Assert.Equal(1, source.DownloadCount);
+
+            UnrealBuildToolRuntimePlan? cached = await resolver.ResolveAsync(original, root);
+            Assert.True(cached is not null);
+            Assert.Equal(1, source.DownloadCount);
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static byte[] CreateCompatibilityDotNetArchive()
+    {
+        using var tarBytes = new MemoryStream();
+        using (var writer = new TarWriter(tarBytes, leaveOpen: true))
+        {
+            WriteTarFile(writer, "dotnet", "fixture-host");
+            WriteTarFile(writer, "sdk/6.0.428/dotnet.dll", "fixture-sdk");
+            WriteTarFile(writer, "shared/Microsoft.NETCore.App/6.0.36/System.Private.CoreLib.dll", "fixture-runtime");
+        }
+
+        tarBytes.Position = 0;
+        using var compressed = new MemoryStream();
+        using (var gzip = new GZipStream(compressed, CompressionLevel.SmallestSize, leaveOpen: true))
+        {
+            tarBytes.CopyTo(gzip);
+        }
+        return compressed.ToArray();
+    }
+
+    private static void WriteTarFile(TarWriter writer, string name, string content)
+    {
+        var entry = new PaxTarEntry(TarEntryType.RegularFile, name)
+        {
+            DataStream = new MemoryStream(Encoding.UTF8.GetBytes(content)),
+        };
+        writer.WriteEntry(entry);
+    }
+
     private static Task BundledDotNetResolverAsync()
     {
         var files = new Dictionary<string, GitDependencyFile>(StringComparer.Ordinal)
@@ -1737,6 +1815,14 @@ internal static class Program
             && r.Value.EndsWith("Engine/Source/ThirdParty/BLAKE3/1.3.1/lib/Unix/x86_64-unknown-linux-gnu/Release/libBLAKE3.a", StringComparison.Ordinal)));
         Assert.True(requirements.Any(r => r.Kind == UnrealBuildRequirementKind.PathSuffix
             && r.Value == "ThirdParty/jemalloc/lib/Unix/x86_64-unknown-linux-gnu/libjemalloc_pic.a"));
+        return Task.CompletedTask;
+    }
+
+    private static Task PluginDiagnosticsLegacyPlatformAsync()
+    {
+        IReadOnlyList<UnrealBuildRequirement> requirements = UnrealBuildDiagnosticParser.Parse(
+            "ERROR: GetBuildPlatform: No BuildPlatform found for Linux");
+        Assert.True(requirements.Any(requirement => requirement.Kind == UnrealBuildRequirementKind.PlatformSdk));
         return Task.CompletedTask;
     }
 
@@ -2447,6 +2533,23 @@ internal static class Program
         foreach (string library in observedCoreLibraries)
         {
             Assert.True(manifest.Files.ContainsKey(library));
+        }
+    }
+
+    private sealed class FakeCompatibilityDotNetArchiveSource(byte[] payload) : IUnrealCompatibilityDotNetArchiveSource
+    {
+        public int DownloadCount { get; private set; }
+
+        public async Task<long> DownloadAsync(
+            Uri uri,
+            Stream destination,
+            CancellationToken cancellationToken = default)
+        {
+            Assert.True(uri.Host.Equals("builds.dotnet.microsoft.com", StringComparison.OrdinalIgnoreCase));
+            Assert.True(uri.AbsolutePath.Contains("/Sdk/6.0.428/", StringComparison.Ordinal));
+            DownloadCount++;
+            await destination.WriteAsync(payload.AsMemory(), cancellationToken);
+            return payload.Length;
         }
     }
 

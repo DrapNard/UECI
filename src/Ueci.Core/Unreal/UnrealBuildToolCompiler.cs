@@ -28,7 +28,7 @@ public sealed class UnrealBuildToolCompiler
             null,
             Array.Empty<string>(),
             Array.Empty<string>());
-        return CompileAsync(engineRoot, runtime, cancellationToken, reuseExistingOutput, progress);
+        return CompileAsync(engineRoot, runtime, cancellationToken, reuseExistingOutput, progress, compatibilityCacheDirectory: null);
     }
 
     public async Task<UnrealBuildToolCompileResult> CompileAsync(
@@ -36,7 +36,8 @@ public sealed class UnrealBuildToolCompiler
         UnrealBuildToolRuntimePlan runtime,
         CancellationToken cancellationToken = default,
         bool reuseExistingOutput = false,
-        Action<string>? progress = null)
+        Action<string>? progress = null,
+        string? compatibilityCacheDirectory = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(engineRoot);
         ArgumentNullException.ThrowIfNull(runtime);
@@ -46,24 +47,35 @@ public sealed class UnrealBuildToolCompiler
             root,
             "Engine", "Source", "Programs", "UnrealBuildTool", "UnrealBuildTool.csproj");
 
-        if (!File.Exists(runtime.HostPath))
-        {
-            throw new FileNotFoundException(
-                runtime.Kind == UnrealBuildToolRuntimeKind.DotNet
-                    ? "Epic bundled dotnet SDK host is missing."
-                    : "Mono runtime used for legacy UnrealBuildTool is missing.",
-                runtime.HostPath);
-        }
-
         UnrealBuildToolRuntimePlan effectiveRuntime = runtime;
+        bool compatibilityRuntimeSelected = false;
         if (runtime.Kind == UnrealBuildToolRuntimeKind.DotNet
             && runtime.SdkVersion is { Major: <= 3 }
-            && TryCreateRunnerDotNetPlan() is { } cachedRunnerRuntime)
+            && !string.IsNullOrWhiteSpace(compatibilityCacheDirectory))
         {
-            // A restored netcoreapp3.x UBT is perfectly reusable, but its historical host may not
-            // load on a modern OpenSSL-only runner. Execute the cached assembly through the runner
-            // .NET with roll-forward instead of reintroducing the host compatibility failure.
-            effectiveRuntime = cachedRunnerRuntime;
+            UnrealBuildToolRuntimePlan? compatibilityRuntime =
+                await new UnrealCompatibilityDotNetSdkResolver().ResolveAsync(
+                    runtime,
+                    compatibilityCacheDirectory,
+                    progress,
+                    cancellationToken).ConfigureAwait(false);
+            if (compatibilityRuntime is not null)
+            {
+                effectiveRuntime = compatibilityRuntime;
+                compatibilityRuntimeSelected = true;
+                progress?.Invoke(
+                    $"[compat] Retargeting legacy {runtime.SdkVersion} UBT managed projects to {effectiveRuntime.TargetFrameworkOverride} " +
+                    $"under {effectiveRuntime.Description}; no .NET 8 framework roll-forward will be used.");
+            }
+        }
+
+        if (!File.Exists(effectiveRuntime.HostPath))
+        {
+            throw new FileNotFoundException(
+                effectiveRuntime.Kind == UnrealBuildToolRuntimeKind.DotNet
+                    ? "Managed runtime host for UnrealBuildTool is missing."
+                    : "Mono runtime used for legacy UnrealBuildTool is missing.",
+                effectiveRuntime.HostPath);
         }
 
         if (reuseExistingOutput)
@@ -75,6 +87,11 @@ public sealed class UnrealBuildToolCompiler
                     RuntimeKind = effectiveRuntime.Kind,
                     RuntimeHostPath = effectiveRuntime.HostPath,
                 };
+                if (compatibilityRuntimeSelected && !HasCompatibilityStamp(existing, effectiveRuntime))
+                {
+                    throw new InvalidDataException(
+                        "Cached UnrealBuildTool output predates the isolated net6 compatibility retarget.");
+                }
                 if (new FileInfo(existing.AssemblyPath).Length == 0)
                 {
                     throw new InvalidDataException("Cached UnrealBuildTool output is incomplete.");
@@ -95,8 +112,8 @@ public sealed class UnrealBuildToolCompiler
                 {
                     await DotNetRuntimeConfig.PinFrameworkVersionAsync(
                         existing.RuntimeConfigPath,
-                        Environment.Version,
-                        "LatestMajor",
+                        ResolveFrameworkVersion(effectiveRuntime),
+                        effectiveRuntime.TargetFrameworkOverride is null ? "LatestMajor" : "LatestPatch",
                         cancellationToken).ConfigureAwait(false);
                 }
                 progress?.Invoke($"Reusing cached UnrealBuildTool output: {existing.AssemblyPath}");
@@ -120,19 +137,29 @@ public sealed class UnrealBuildToolCompiler
                 project);
         }
 
-        // No reusable output was found. Start compilation with Epic's selected SDK and only move
-        // to the runner SDK if that historical host itself proves incompatible with this machine.
-        effectiveRuntime = runtime;
-        ExternalProcessResult process = runtime.Kind switch
+        // No reusable output was found. A netcoreapp3.x branch with an isolated compatibility SDK
+        // is deliberately rebuilt for net6.0; otherwise start with Epic's selected SDK and only
+        // move to the runner SDK if that historical host itself proves incompatible with this machine.
+        if (compatibilityRuntimeSelected)
         {
-            UnrealBuildToolRuntimeKind.DotNet => await CompileModernAsync(root, project, runtime, cancellationToken)
+            InvalidateManagedOutputForRetarget(root, project);
+        }
+        else
+        {
+            effectiveRuntime = runtime;
+        }
+
+        ExternalProcessResult process = effectiveRuntime.Kind switch
+        {
+            UnrealBuildToolRuntimeKind.DotNet => await CompileModernAsync(root, project, effectiveRuntime, cancellationToken)
                 .ConfigureAwait(false),
-            UnrealBuildToolRuntimeKind.Mono => await CompileLegacyAsync(root, project, runtime, cancellationToken)
+            UnrealBuildToolRuntimeKind.Mono => await CompileLegacyAsync(root, project, effectiveRuntime, cancellationToken)
                 .ConfigureAwait(false),
-            _ => throw new NotSupportedException($"UBT compilation runtime '{runtime.Kind}' is not supported."),
+            _ => throw new NotSupportedException($"UBT compilation runtime '{effectiveRuntime.Kind}' is not supported."),
         };
 
         if (!process.Succeeded
+            && !compatibilityRuntimeSelected
             && runtime.Kind == UnrealBuildToolRuntimeKind.DotNet
             && IsLegacyDotNetHostCompatibilityFailure(process))
         {
@@ -186,15 +213,19 @@ public sealed class UnrealBuildToolCompiler
             && effectiveRuntime.Kind == UnrealBuildToolRuntimeKind.DotNet
             && !string.IsNullOrWhiteSpace(paths.RuntimeConfigPath))
         {
-            // Environment roll-forward is enough for a direct UECI invocation, but the generated
-            // UBT can launch managed children without preserving that environment. Persist the
-            // policy into the generated runtimeconfig as well so a netcoreapp3.x UBT never falls
-            // back onto an installed-but-unusable OpenSSL 1.1-era runtime.
+            // Persist the selected framework policy into the generated runtimeconfig as well.
+            // Legacy netcoreapp3.x graphs are rebuilt for net6.0 before reaching this point; newer
+            // runner-hosted graphs retain the broader roll-forward policy used by the bootstrap.
             await DotNetRuntimeConfig.PinFrameworkVersionAsync(
                 paths.RuntimeConfigPath,
-                Environment.Version,
-                "LatestMajor",
+                ResolveFrameworkVersion(effectiveRuntime),
+                effectiveRuntime.TargetFrameworkOverride is null ? "LatestMajor" : "LatestPatch",
                 cancellationToken).ConfigureAwait(false);
+        }
+
+        if (compatibilityRuntimeSelected)
+        {
+            await WriteCompatibilityStampAsync(paths, effectiveRuntime, cancellationToken).ConfigureAwait(false);
         }
 
         return new UnrealBuildToolCompileResult(project, effectiveRuntime.HostPath, process, paths, effectiveRuntime);
@@ -226,15 +257,108 @@ public sealed class UnrealBuildToolCompiler
         };
         if (runtime.BundlePrefix is null)
         {
-            environment["DOTNET_ROLL_FORWARD"] = "LatestMajor";
+            environment["DOTNET_ROLL_FORWARD"] = runtime.TargetFrameworkOverride is null
+                ? "LatestMajor"
+                : "LatestPatch";
+        }
+
+        var arguments = new List<string>
+        {
+            "build",
+            project,
+            "--nologo",
+            "--verbosity:minimal",
+            "--no-incremental",
+        };
+        if (!string.IsNullOrWhiteSpace(runtime.TargetFrameworkOverride))
+        {
+            arguments.Add($"/p:TargetFramework={runtime.TargetFrameworkOverride}");
         }
 
         return ExternalProcess.RunAsync(
             runtime.HostPath,
             root,
-            ["build", project, "--nologo", "--verbosity:minimal", "--no-incremental"],
+            arguments,
             environment,
             cancellationToken: cancellationToken);
+    }
+
+    private static Version ResolveFrameworkVersion(UnrealBuildToolRuntimePlan runtime)
+        => runtime.FrameworkVersion ?? Environment.Version;
+
+    private static string GetCompatibilityStampPath(UnrealBuildToolPaths paths)
+        => Path.Combine(Path.GetDirectoryName(paths.AssemblyPath)!, ".ueci-runtime");
+
+    private static string CreateCompatibilityStamp(UnrealBuildToolRuntimePlan runtime)
+        => string.Join(
+            "|",
+            runtime.TargetFrameworkOverride ?? string.Empty,
+            runtime.SdkVersion?.ToString() ?? string.Empty,
+            runtime.FrameworkVersion?.ToString() ?? string.Empty);
+
+    private static bool HasCompatibilityStamp(UnrealBuildToolPaths paths, UnrealBuildToolRuntimePlan runtime)
+    {
+        string stamp = GetCompatibilityStampPath(paths);
+        if (!File.Exists(stamp)) return false;
+        try
+        {
+            return string.Equals(
+                File.ReadAllText(stamp).Trim(),
+                CreateCompatibilityStamp(runtime),
+                StringComparison.Ordinal);
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+    }
+
+    private static Task WriteCompatibilityStampAsync(
+        UnrealBuildToolPaths paths,
+        UnrealBuildToolRuntimePlan runtime,
+        CancellationToken cancellationToken)
+        => File.WriteAllTextAsync(
+            GetCompatibilityStampPath(paths),
+            CreateCompatibilityStamp(runtime) + Environment.NewLine,
+            cancellationToken);
+
+    private static void InvalidateManagedOutputForRetarget(string root, string project)
+    {
+        string projectDirectory = Path.GetDirectoryName(project)!;
+        var directories = new HashSet<string>(StringComparer.Ordinal)
+        {
+            Path.Combine(root, "Engine", "Binaries", "DotNET", "UnrealBuildTool"),
+            Path.Combine(projectDirectory, "bin"),
+            Path.Combine(projectDirectory, "obj"),
+        };
+
+        // A previous alpha may have built UE5.0's shared program projects with the runner's .NET 8
+        // SDK. Remove those intermediate outputs as well so the net6 retarget cannot pick up an
+        // up-to-date-looking ProjectReference assembly from a different target framework.
+        string sharedPrograms = Path.Combine(root, "Engine", "Source", "Programs", "Shared");
+        if (Directory.Exists(sharedPrograms))
+        {
+            foreach (string name in new[] { "bin", "obj" })
+            {
+                foreach (string directory in Directory.EnumerateDirectories(
+                    sharedPrograms,
+                    name,
+                    SearchOption.AllDirectories).ToArray())
+                {
+                    directories.Add(directory);
+                }
+            }
+        }
+
+        foreach (string directory in directories
+            .OrderByDescending(value => value.Length)
+            .ThenBy(value => value, StringComparer.Ordinal))
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
     }
 
     private static bool IsLegacyDotNetHostCompatibilityFailure(ExternalProcessResult process)

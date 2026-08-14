@@ -434,10 +434,21 @@ public sealed class UnrealPluginBuilder
                     options.Progress?.Invoke(
                         "Recompiling UnrealBuildTool after materializing the host UBA payload...");
                     var compiler = new UnrealBuildToolCompiler();
-                    await compiler.CompileAsync(
-                        bootstrap.EngineRoot,
-                        bootstrap.ManagedRuntimeRoot,
-                        cancellationToken).ConfigureAwait(false);
+                    if (bootstrap.ManagedRuntimePlan is not null)
+                    {
+                        await compiler.CompileAsync(
+                            bootstrap.EngineRoot,
+                            bootstrap.ManagedRuntimePlan,
+                            cancellationToken,
+                            compatibilityCacheDirectory: options.FetchOptions.CacheDirectory).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await compiler.CompileAsync(
+                            bootstrap.EngineRoot,
+                            bootstrap.ManagedRuntimeRoot,
+                            cancellationToken).ConfigureAwait(false);
+                    }
                 }
 
                 if (materialized.AddedSparseDirectories == 0

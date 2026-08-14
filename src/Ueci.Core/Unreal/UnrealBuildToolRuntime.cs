@@ -17,9 +17,12 @@ public sealed record UnrealBuildToolRuntimePlan(
     Version? SdkVersion,
     string? BundlePrefix,
     IReadOnlyList<string> ExactPaths,
-    IReadOnlyList<string> Prefixes)
+    IReadOnlyList<string> Prefixes,
+    string? TargetFrameworkOverride = null,
+    Version? FrameworkVersion = null,
+    string? DescriptionOverride = null)
 {
-    public string Description => Kind switch
+    public string Description => DescriptionOverride ?? Kind switch
     {
         UnrealBuildToolRuntimeKind.DotNet when BundlePrefix is null && SdkVersion is not null => $"runner .NET SDK {SdkVersion}",
         UnrealBuildToolRuntimeKind.DotNet when BundlePrefix is null => "runner .NET SDK",

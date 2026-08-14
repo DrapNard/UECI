@@ -29,7 +29,8 @@ public sealed record UnrealBuildToolBootstrapResult(
     IReadOnlyList<DotNetFrameworkRequirement> Frameworks,
     GitDependenciesBatchResult Dependencies,
     ExternalProcessResult CompileResult,
-    ExternalProcessResult? ProbeResult);
+    ExternalProcessResult? ProbeResult,
+    UnrealBuildToolRuntimePlan? ManagedRuntimePlan = null);
 
 public sealed class UnrealBuildToolBootstrapper
 {
@@ -204,7 +205,8 @@ public sealed class UnrealBuildToolBootstrapper
         UnrealBuildToolCompileResult compile = await _compiler.CompileAsync(
             root,
             managedRuntime,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            compatibilityCacheDirectory: options.FetchOptions.CacheDirectory).ConfigureAwait(false);
 
         IReadOnlyList<DotNetFrameworkRequirement> frameworks = Array.Empty<DotNetFrameworkRequirement>();
         if (compile.Paths.RuntimeKind == UnrealBuildToolRuntimeKind.DotNet
@@ -254,7 +256,8 @@ public sealed class UnrealBuildToolBootstrapper
             frameworks,
             dependencyResult,
             compile.Process,
-            probe);
+            probe,
+            compile.Runtime);
     }
 
     private static string FormatBytes(long value)

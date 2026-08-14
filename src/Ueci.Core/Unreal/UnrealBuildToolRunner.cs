@@ -197,6 +197,7 @@ public sealed class UnrealBuildToolRunner
         switch (ubt.RuntimeKind)
         {
             case UnrealBuildToolRuntimeKind.DotNet:
+            {
                 environment["DOTNET_ROOT"] = ResolveDotNetRoot(runtimeHost);
                 environment["DOTNET_MULTILEVEL_LOOKUP"] = "0";
                 environment["DOTNET_NOLOGO"] = "1";
@@ -204,12 +205,16 @@ public sealed class UnrealBuildToolRunner
                 environment["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"] = "1";
                 environment["DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE"] = "1";
                 environment["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "1";
+                string? externalFrameworkVersion = null;
                 if (!IsEngineBundledDotNet(ubt.EngineRoot, runtimeHost))
                 {
-                    // UECI itself requires a modern runner .NET. When an old Epic SDK cannot run
-                    // against the host OpenSSL, the compiler may deliberately fall back to that
-                    // runner SDK. Let a netcoreapp3.1/net6 UBT roll forward to the runner runtime.
-                    environment["DOTNET_ROLL_FORWARD"] = "LatestMajor";
+                    // External runtimes include both the runner SDK and UECI's isolated legacy
+                    // compatibility SDK. Pin execution to the framework actually installed beside
+                    // that host instead of assuming Environment.Version belongs to the same dotnet.
+                    externalFrameworkVersion = ResolveInstalledDotNetFrameworkVersion(runtimeHost);
+                    environment["DOTNET_ROLL_FORWARD"] = externalFrameworkVersion is null
+                        ? "LatestMajor"
+                        : "LatestPatch";
                 }
                 await UnrealBuildToolConfiguration.WriteHermeticLocalExecutorAsync(
                     isolatedUbtConfigDirectory,
@@ -218,8 +223,11 @@ public sealed class UnrealBuildToolRunner
                 executable = runtimeHost;
                 processArguments = IsEngineBundledDotNet(ubt.EngineRoot, runtimeHost)
                     ? [ubt.AssemblyPath, .. arguments]
-                    : ["--fx-version", FormatCurrentRuntimeVersion(), ubt.AssemblyPath, .. arguments];
+                    : externalFrameworkVersion is not null
+                        ? ["--fx-version", externalFrameworkVersion, ubt.AssemblyPath, .. arguments]
+                        : [ubt.AssemblyPath, .. arguments];
                 break;
+            }
 
             case UnrealBuildToolRuntimeKind.Mono:
                 // Legacy UE4 UBT predates UBA and its XML schema differs substantially. Do not
@@ -342,11 +350,19 @@ public sealed class UnrealBuildToolRunner
         }
     }
 
-    private static string FormatCurrentRuntimeVersion()
+    internal static string? ResolveInstalledDotNetFrameworkVersion(string runtimeHost)
     {
-        Version version = Environment.Version;
-        int build = version.Build >= 0 ? version.Build : 0;
-        return $"{version.Major}.{version.Minor}.{build}";
+        string root = ResolveDotNetRoot(runtimeHost);
+        string frameworks = Path.Combine(root, "shared", "Microsoft.NETCore.App");
+        if (!Directory.Exists(frameworks)) return null;
+
+        return Directory.EnumerateDirectories(frameworks)
+            .Select(Path.GetFileName)
+            .Where(value => !string.IsNullOrWhiteSpace(value) && Version.TryParse(value, out _))
+            .Select(value => (Text: value!, Version: Version.Parse(value!)))
+            .OrderByDescending(value => value.Version)
+            .Select(value => value.Text)
+            .FirstOrDefault();
     }
 
     private static string ResolveDotNetRoot(string runtimeHost)

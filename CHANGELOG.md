@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0-alpha.26] - 2026-08-14
+
+### Fixed
+
+- Treat the exact legacy `No BuildPlatform found for Linux` UBT failure as evidence that a mounted fast profile may have hidden platform-registration inputs. UE4.6/UE4.20 now get the existing one-shot complete-namespace retry and can learn the exact missing commit-scoped paths instead of repeating SDK environment modes against the same incomplete view.
+- Never persist a learned mounted profile from a failed build. The alpha.25 matrix showed failed UE4 jobs writing tiny commit profiles; alpha.26 only promotes profile observations after a successful native build, and includes `Engine/Platforms/` extension inputs in actionable recovery paths.
+- Stop running UE5.0's `netcoreapp3.1` managed graph directly on the runner's .NET 8 framework. UECI provisions an isolated .NET SDK 6.0.428 compatibility bridge on Linux x64/arm64, rebuilds the legacy UBT project graph as `net6.0`, pins execution to its installed 6.0.36 framework, and invalidates stale UBT/Shared `bin`/`obj` outputs left by earlier runner-SDK fallbacks.
+- Pin runner-managed UBT execution to the `Microsoft.NETCore.App` framework installed beside the selected `dotnet` host instead of assuming the UECI process runtime belongs to that host.
+- Classify the classic `GetBuildPlatform: No BuildPlatform found for Linux` diagnostic as a platform-SDK requirement so lazy-profile recovery and materialization diagnostics agree on the failure category.
+
+### Added
+
+- A cached, offline-testable compatibility .NET SDK resolver with injectable archive downloads, pinned Microsoft SHA-512 verification for Linux x64/arm64, and regression coverage for first-use extraction plus cache reuse.
+- Regression coverage for the legacy Linux platform-registration diagnostic emitted by UE4 UBT.
+
+### Validation
+
+- The alpha.25 boundary matrix remains green on UE5.1, UE5.7 and UE5.8. It also proves the alpha.25 legacy clang resolver is active on UE4.6 (`clang 3.5.2`) and that UE5.0 now reaches managed UBT execution; alpha.26 targets the deeper platform-registration/profile and managed-runtime-graph failures exposed after those fixes.
+- `git diff --check` is clean. This sandbox has no preinstalled .NET SDK and cannot execute the private Epic Engine matrix, so the managed test executable and UE4.6/UE4.20/UE5.0 boundary jobs still need the normal runner for final runtime validation.
+- CLI version advanced to `0.5.0-alpha.26`.
+
 ## [0.5.0-alpha.25] - 2026-08-14
 
 ### Fixed

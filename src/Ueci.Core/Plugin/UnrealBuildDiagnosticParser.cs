@@ -40,7 +40,7 @@ public static class UnrealBuildDiagnosticParser
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex PlatformSdk = new(
-        "(?:unable to find|not a valid|has no valid|SDK.*(?:missing|invalid)|SDK for .* not found).{0,80}(?:SDK|platform)|(?:SDK|platform).{0,80}(?:unable to find|not a valid|missing|invalid|not found)",
+        "(?:unable to find|not a valid|has no valid|SDK.*(?:missing|invalid)|SDK for .* not found).{0,80}(?:SDK|platform)|(?:SDK|platform).{0,80}(?:unable to find|not a valid|missing|invalid|not found)|No\\s+BuildPlatform\\s+found\\s+for\\s+[A-Za-z0-9_]+",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex MissingUba = new(
