@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.5.0-alpha.25] - 2026-08-14
+
+### Fixed
+
+- Accept historical/self-contained UBT `runtimeconfig.json` files that declare `includedFrameworks`, convert them to a runner-managed framework-dependent shape when Epic's old .NET host cannot run, and synthesize `Microsoft.NETCore.App` metadata when the generated config omits shared-framework declarations entirely.
+- Replace the single source-token-derived UE4 Linux SDK environment guess with bounded native-Linux retries. Mono UBT now tries plain compiler environment, AutoSDK, legacy `LINUX_ROOT`/`LINUX_MULTIARCH_ROOT`, then the combined layout, and advances only for the exact Linux platform-registration failure.
+- Stop treating an arbitrary modern runner clang as a safe fallback for pre-UE4.20 Linux. UECI resolves the expected historical clang family, honors `UECI_LEGACY_CLANG` / `UECI_LEGACY_CLANG_ROOT`, and can cache the matching official LLVM portable release.
+- Apply the same legacy compiler and SDK-registration strategy to the materialized plugin backend; UE4.20–4.27 materialized builds ensure the Epic toolchain projection before the native pass and restore it after sparse updates.
+- Re-download a cached legacy LLVM archive if its xz header is invalid instead of making the cache failure permanent.
+
+### Added
+
+- Regression coverage for `includedFrameworks` parsing/conversion, missing-framework synthesis, and the pre-UE4.20 compiler-family map.
+- Timing visibility for mounted legacy compiler acquisition.
+
+### Validation
+
+- `git diff --check` is clean and the release bundle is clone-verified. The local execution container does not include a .NET SDK, so the managed test executable and the private Epic UE4/UE5 matrix still need to run on the normal CI/self-hosted runner before these three boundary fixes are called green.
+- CLI version advanced to `0.5.0-alpha.25`.
+
 ## [0.5.0-alpha.24] - 2026-08-14
 
 ### Fixed

@@ -36,7 +36,8 @@ The current compatibility layer adapts:
   order, plugin support, global definitions, and runtime-symbol settings;
 - optional UBT CLI switches and `BuildConfiguration.xml` fields;
 - modern `Linux_SDK.json` toolchain descriptors, legacy setup-script descriptors, and the known UE4.20–4.27 native Linux toolchain identifiers as a conservative fallback;
-- legacy `LINUX_ROOT` / `LINUX_MULTIARCH_ROOT` projection when an Epic toolchain is available.
+- pre-UE4.20 native compiler families, preferring an explicitly supplied `UECI_LEGACY_CLANG` / `UECI_LEGACY_CLANG_ROOT` and otherwise caching a matching official LLVM portable release on Linux;
+- bounded native-Linux SDK registration retries for legacy Mono UBT: plain `PATH`/`CC`/`CXX`, then AutoSDK, then legacy `LINUX_ROOT` / `LINUX_MULTIARCH_ROOT`, and finally both layouts. Source-token detection remains advisory rather than deciding the only environment attempted.
 
 ## Non-release refs
 

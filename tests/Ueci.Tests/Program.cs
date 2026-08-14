@@ -42,6 +42,9 @@ internal static class Program
         ("runtimeconfig parser reads shared framework", RuntimeConfigParsesAsync),
         ("runtimeconfig writer pins runner roll-forward", RuntimeConfigRollForwardAsync),
         ("runtimeconfig writer pins runner framework version", RuntimeConfigPinFrameworkAsync),
+        ("runtimeconfig parser reads included frameworks", RuntimeConfigIncludedFrameworksAsync),
+        ("runtimeconfig writer converts self-contained framework metadata", RuntimeConfigConvertsIncludedFrameworksAsync),
+        ("runtimeconfig writer synthesizes missing runner framework metadata", RuntimeConfigSynthesizesFrameworkAsync),
         ("Epic bundled dotnet resolver selects host runtime", BundledDotNetResolverAsync),
         ("Epic bundled dotnet SDK resolver selects latest SDK", BundledDotNetSdkResolverAsync),
         ("Epic bundled dotnet resolver accepts historical Linux bundle layouts", BundledDotNetHistoricalLayoutAsync),
@@ -65,6 +68,7 @@ internal static class Program
         ("plugin failure excerpt preserves early actionable diagnostics", PluginFailureExcerptAsync),
         ("plugin product collector harvests synthetic target binaries", PluginProductCollectorAsync),
         ("plugin packager keeps binaries and drops Intermediate", PluginPackagerAsync),
+        ("legacy Linux compiler requirements map UE4 release families", LegacyLinuxCompilerRequirementsAsync),
         ("Linux SDK descriptor resolves Epic native toolchain", LinuxToolchainDescriptorAsync),
         ("Linux SDK descriptor discovers legacy setup-script toolchain", LinuxToolchainLegacyDescriptorAsync),
         ("Linux native toolchain installer is offline-testable and cached", LinuxToolchainInstallerAsync),
@@ -1090,6 +1094,98 @@ internal static class Program
         }
     }
 
+    private static async Task RuntimeConfigIncludedFrameworksAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string path = Path.Combine(root, "UnrealBuildTool.runtimeconfig.json");
+            await File.WriteAllTextAsync(path, """
+                {
+                  "runtimeOptions": {
+                    "tfm": "netcoreapp3.1",
+                    "includedFrameworks": [
+                      {
+                        "name": "Microsoft.NETCore.App",
+                        "version": "3.1.0"
+                      }
+                    ]
+                  }
+                }
+                """);
+
+            DotNetRuntimeConfig config = await DotNetRuntimeConfig.ReadAsync(path);
+            Assert.Equal(1, config.Frameworks.Count);
+            Assert.Equal("Microsoft.NETCore.App", config.Frameworks[0].Name);
+            Assert.Equal(new Version(3, 1, 0), config.Frameworks[0].Version);
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task RuntimeConfigConvertsIncludedFrameworksAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string path = Path.Combine(root, "UnrealBuildTool.runtimeconfig.json");
+            await File.WriteAllTextAsync(path, """
+                {
+                  "runtimeOptions": {
+                    "tfm": "netcoreapp3.1",
+                    "includedFrameworks": [
+                      {
+                        "name": "Microsoft.NETCore.App",
+                        "version": "3.1.0"
+                      }
+                    ]
+                  }
+                }
+                """);
+
+            await DotNetRuntimeConfig.PinFrameworkVersionAsync(path, new Version(8, 0, 29));
+            string rewritten = await File.ReadAllTextAsync(path);
+            Assert.False(rewritten.Contains("includedFrameworks", StringComparison.Ordinal));
+            Assert.True(rewritten.Contains("\"framework\"", StringComparison.Ordinal));
+            Assert.True(rewritten.Contains("\"version\": \"8.0.29\"", StringComparison.Ordinal));
+
+            DotNetRuntimeConfig config = await DotNetRuntimeConfig.ReadAsync(path);
+            Assert.Equal(new Version(8, 0, 29), config.Frameworks[0].Version);
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task RuntimeConfigSynthesizesFrameworkAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string path = Path.Combine(root, "UnrealBuildTool.runtimeconfig.json");
+            await File.WriteAllTextAsync(path, """
+                {
+                  "runtimeOptions": {
+                    "tfm": "netcoreapp3.1"
+                  }
+                }
+                """);
+
+            await DotNetRuntimeConfig.PinFrameworkVersionAsync(path, new Version(8, 0, 29));
+            DotNetRuntimeConfig config = await DotNetRuntimeConfig.ReadAsync(path);
+            Assert.Equal(1, config.Frameworks.Count);
+            Assert.Equal("Microsoft.NETCore.App", config.Frameworks[0].Name);
+            Assert.Equal(new Version(8, 0, 29), config.Frameworks[0].Version);
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
     private static Task BundledDotNetResolverAsync()
     {
         var files = new Dictionary<string, GitDependencyFile>(StringComparer.Ordinal)
@@ -1988,6 +2084,34 @@ internal static class Program
         }
     }
 
+
+    private static Task LegacyLinuxCompilerRequirementsAsync()
+    {
+        UnrealLegacyLinuxCompilerRequirement? ue46 = UnrealLegacyLinuxCompilerRequirement.ForEngine(
+            new UnrealEngineVersion(4, 6, 1));
+        Assert.True(ue46 is not null);
+        Assert.Equal(3, ue46!.ClangMajor);
+        Assert.Equal(5, ue46.ClangMinor);
+        Assert.Equal("3.5.2", ue46.PreferredRelease);
+        Assert.True(ue46.PortableArchiveUri is not null);
+        Assert.Equal("releases.llvm.org", ue46.PortableArchiveUri!.Host);
+
+        UnrealLegacyLinuxCompilerRequirement? ue414 = UnrealLegacyLinuxCompilerRequirement.ForEngine(
+            new UnrealEngineVersion(4, 14, 3));
+        Assert.True(ue414 is not null);
+        Assert.Equal(3, ue414!.ClangMajor);
+        Assert.Equal(9, ue414.ClangMinor);
+
+        UnrealLegacyLinuxCompilerRequirement? ue419 = UnrealLegacyLinuxCompilerRequirement.ForEngine(
+            new UnrealEngineVersion(4, 19, 2));
+        Assert.True(ue419 is not null);
+        Assert.Equal(5, ue419!.ClangMajor);
+        Assert.Equal(0, ue419.ClangMinor);
+
+        Assert.True(UnrealLegacyLinuxCompilerRequirement.ForEngine(new UnrealEngineVersion(4, 20, 3)) is null);
+        Assert.True(UnrealLegacyLinuxCompilerRequirement.ForEngine(new UnrealEngineVersion(5, 0, 3)) is null);
+        return Task.CompletedTask;
+    }
 
     private static async Task LinuxToolchainDescriptorAsync()
     {

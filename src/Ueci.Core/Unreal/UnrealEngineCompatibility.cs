@@ -178,9 +178,10 @@ public sealed class UnrealEngineCompatibility
         }
 
         // The Linux SDK selection code moved several times across UE4. Read the bounded platform
-        // subtree from the exact commit and use the environment-variable names it actually references
-        // instead of guessing from the release number. This is especially important for UE4.20 where
-        // native Setup.sh toolchains and Windows cross-toolchains coexist.
+        // subtree from the exact commit and retain the environment-variable names it references as
+        // compatibility evidence. These tokens are advisory on native Linux: mounted builds can retry
+        // a bounded set of historical SDK layouts instead of assuming that a token in source is active
+        // on the current host. This matters for UE4.20 where native and cross-toolchain code coexist.
         string linuxPlatformRoot = Path.Combine(ubtRoot, "Platform", "Linux");
         string linuxPlatformSource = Directory.Exists(linuxPlatformRoot)
             ? await ReadLinuxPlatformSourceCorpusAsync(linuxPlatformRoot, cancellationToken).ConfigureAwait(false)

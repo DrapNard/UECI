@@ -257,7 +257,7 @@ public sealed class UnrealPluginBuilder
                 && ex is FileNotFoundException or InvalidDataException)
             {
                 options.Progress?.Invoke(
-                    $"[compat] UE {bootstrap.EngineVersion}: no restorable Epic Linux toolchain projection ({ex.Message}); using the runner toolchain until UBT requests a platform SDK.");
+                    $"[compat] UE {bootstrap.EngineVersion}: no restorable Epic Linux toolchain projection ({ex.Message}); legacy native compiler compatibility will be resolved separately when required.");
             }
         }
 
@@ -296,7 +296,44 @@ public sealed class UnrealPluginBuilder
             bootstrap.EngineRoot,
             options.GitRef,
             cancellationToken).ConfigureAwait(false);
+
+        UnrealLinuxNativeToolchainResult? compatibilityToolchain = null;
+        var compatibilityToolchainInstaller = new UnrealLinuxNativeToolchainInstaller();
+        if (OperatingSystem.IsLinux()
+            && options.Platform.Equals("Linux", StringComparison.OrdinalIgnoreCase)
+            && options.RuntimeIdentifier.Equals("linux-x64", StringComparison.OrdinalIgnoreCase)
+            && compatibility.Version.Major == 4
+            && compatibility.Version.Minor >= 20)
+        {
+            compatibilityToolchain = await compatibilityToolchainInstaller.EnsureAsync(
+                bootstrap.EngineRoot,
+                options.FetchOptions.CacheDirectory,
+                cacheArchive: options.FetchOptions.CacheCompressedPacks,
+                progress: options.Progress,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            downloaded += compatibilityToolchain.DownloadedBytes;
+        }
+
         var runner = new UnrealBuildToolRunner();
+        UnrealLegacyLinuxCompiler? legacyCompiler = null;
+        if (OperatingSystem.IsLinux()
+            && options.Platform.Equals("Linux", StringComparison.OrdinalIgnoreCase)
+            && options.RuntimeIdentifier.Equals("linux-x64", StringComparison.OrdinalIgnoreCase)
+            && UnrealLegacyLinuxCompilerRequirement.ForEngine(compatibility.Version) is { } legacyRequirement)
+        {
+            legacyCompiler = await new UnrealLegacyLinuxCompilerResolver().ResolveAsync(
+                compatibility.Version,
+                options.FetchOptions.CacheDirectory,
+                options.Progress,
+                cancellationToken).ConfigureAwait(false);
+            if (legacyCompiler is null)
+            {
+                throw new InvalidOperationException(
+                    $"UE {compatibility.Version} requires {legacyRequirement}, but no compatible native compiler could be resolved. " +
+                    "Set UECI_LEGACY_CLANG to clang or UECI_LEGACY_CLANG_ROOT to an era-compatible LLVM installation.");
+            }
+            downloaded += legacyCompiler.DownloadedBytes;
+        }
 
         string logsDirectory = Path.Combine(host.Root, "Logs");
         Directory.CreateDirectory(logsDirectory);
@@ -321,13 +358,30 @@ public sealed class UnrealPluginBuilder
                     phase.Modules,
                     options.RuntimeIdentifier,
                     compatibility);
-                last = await runner.RunAsync(
+                if (compatibilityToolchain is not null)
+                {
+                    await compatibilityToolchainInstaller.TryRestoreProjectionAsync(
+                        bootstrap.EngineRoot,
+                        options.Progress,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                UnrealBuildToolAdaptiveRunResult adaptive = await runner.RunWithLegacyLinuxSdkRetriesAsync(
                     bootstrap.BuildToolPaths,
                     ubtArguments,
-                    cancellationToken,
-                    compatibility).ConfigureAwait(false);
+                    compatibility,
+                    legacyLinuxToolchainRoot: compatibilityToolchain?.ToolchainDirectory,
+                    legacyLinuxCompilerBin: legacyCompiler?.BinDirectory,
+                    progress: options.Progress,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                last = adaptive.Result;
 
                 string diagnostics = CombineDiagnostics(last, bootstrap.EngineRoot);
+                string previousAttempts = adaptive.FormatPreviousAttemptDiagnostics();
+                if (previousAttempts.Length != 0)
+                {
+                    diagnostics = previousAttempts + Environment.NewLine + Environment.NewLine + diagnostics;
+                }
                 string logPath = Path.Combine(logsDirectory, $"{phase.Target}-pass-{pass:D2}.log");
                 await File.WriteAllTextAsync(logPath, diagnostics, cancellationToken).ConfigureAwait(false);
 

@@ -50,7 +50,7 @@ Engine/Binaries/ThirdParty/DotNet/<bundle>/<host-rid>/sdk/<sdk-version>/
 
 and materializes that host bundle from GitDependencies. This deliberately prefers correctness over micro-optimizing individual SDK files. The SDK is still tiny compared with a complete Unreal installation and remains content-addressed by the normal UECI cache.
 
-After UBT is compiled, UECI discovers the runnable `UnrealBuildTool.dll` + `UnrealBuildTool.runtimeconfig.json` pair. It prefers the canonical Engine binary directory, but accepts a project-local `bin/**` output when that is what the selected Unreal commit/MSBuild configuration produced. UECI then verifies that the runtime config's required shared frameworks resolve inside the same Epic .NET bundle used for compilation.
+After UBT is compiled, UECI discovers the runnable `UnrealBuildTool.dll` + `UnrealBuildTool.runtimeconfig.json` pair. It prefers the canonical Engine binary directory, but accepts a project-local `bin/**` output when that is what the selected Unreal commit/MSBuild configuration produced. UECI normally verifies that the runtime config's required shared frameworks resolve inside the same Epic .NET bundle used for compilation. If the historical Epic host itself cannot execute on the current distro and compilation falls back to the runner SDK, UECI also understands `includedFrameworks` self-contained metadata, converts it to a framework-dependent `Microsoft.NETCore.App` declaration when necessary, and pins execution to the runtime already hosting UECI.
 
 ## Source seed
 

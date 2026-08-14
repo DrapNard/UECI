@@ -1,5 +1,40 @@
 namespace Ueci.Unreal;
 
+public enum LegacyLinuxSdkEnvironmentMode
+{
+    SourceDetected,
+    NativeOnly,
+    AutoSdk,
+    LegacyCross,
+    LegacyAll,
+}
+
+public sealed record UnrealBuildToolRunAttempt(
+    LegacyLinuxSdkEnvironmentMode EnvironmentMode,
+    ExternalProcessResult Result);
+
+public sealed record UnrealBuildToolAdaptiveRunResult(
+    ExternalProcessResult Result,
+    IReadOnlyList<UnrealBuildToolRunAttempt> Attempts)
+{
+    public string FormatPreviousAttemptDiagnostics()
+    {
+        if (Attempts.Count <= 1) return string.Empty;
+
+        return string.Join(
+            Environment.NewLine + Environment.NewLine,
+            Attempts.Take(Attempts.Count - 1).Select(attempt =>
+            {
+                string diagnostics = string.Join(
+                    Environment.NewLine,
+                    new[] { attempt.Result.StandardOutput.Trim(), attempt.Result.StandardError.Trim() }
+                        .Where(value => value.Length != 0));
+                return $"===== UECI legacy Linux SDK attempt: {UnrealBuildToolRunner.DescribeLegacyLinuxSdkMode(attempt.EnvironmentMode)} =====" +
+                    (diagnostics.Length == 0 ? string.Empty : Environment.NewLine + diagnostics);
+            }));
+    }
+}
+
 public sealed class UnrealBuildToolRunner
 {
     public Task<ExternalProcessResult> RunAsync(
@@ -40,12 +75,86 @@ public sealed class UnrealBuildToolRunner
         return RunAsync(configured, arguments, cancellationToken);
     }
 
+    public async Task<UnrealBuildToolAdaptiveRunResult> RunWithLegacyLinuxSdkRetriesAsync(
+        UnrealBuildToolPaths ubt,
+        IReadOnlyList<string> arguments,
+        UnrealEngineCompatibility compatibility,
+        string? legacyLinuxToolchainRoot = null,
+        string? legacyLinuxCompilerBin = null,
+        Action<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(ubt);
+        ArgumentNullException.ThrowIfNull(compatibility);
+
+        string? toolchainRoot = string.IsNullOrWhiteSpace(legacyLinuxToolchainRoot)
+            ? await TryResolveProjectedLinuxToolchainRootAsync(ubt.EngineRoot, cancellationToken).ConfigureAwait(false)
+            : Path.TrimEndingDirectorySeparator(Path.GetFullPath(legacyLinuxToolchainRoot));
+
+        LegacyLinuxSdkEnvironmentMode[] modes = OperatingSystem.IsLinux()
+            && compatibility.Version.Major == 4
+            && ubt.RuntimeKind == UnrealBuildToolRuntimeKind.Mono
+                ? toolchainRoot is null
+                    ? [LegacyLinuxSdkEnvironmentMode.NativeOnly]
+                    :
+                    [
+                        LegacyLinuxSdkEnvironmentMode.NativeOnly,
+                        LegacyLinuxSdkEnvironmentMode.AutoSdk,
+                        LegacyLinuxSdkEnvironmentMode.LegacyCross,
+                        LegacyLinuxSdkEnvironmentMode.LegacyAll,
+                    ]
+                : [LegacyLinuxSdkEnvironmentMode.SourceDetected];
+
+        var attempts = new List<UnrealBuildToolRunAttempt>(modes.Length);
+        foreach (LegacyLinuxSdkEnvironmentMode mode in modes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (modes.Length > 1 || (OperatingSystem.IsLinux() && compatibility.Version.Major == 4))
+            {
+                progress?.Invoke($"[compat] Legacy Linux SDK attempt: {DescribeLegacyLinuxSdkMode(mode)}.");
+            }
+
+            ExternalProcessResult result = await RunAsync(
+                ubt,
+                arguments,
+                cancellationToken,
+                compatibility,
+                toolchainRoot,
+                mode,
+                legacyLinuxCompilerBin).ConfigureAwait(false);
+            attempts.Add(new UnrealBuildToolRunAttempt(mode, result));
+
+            if (result.Succeeded)
+            {
+                return new UnrealBuildToolAdaptiveRunResult(result, attempts);
+            }
+
+            string processDiagnostics = result.StandardOutput + Environment.NewLine + result.StandardError;
+            if (!IsLinuxPlatformRegistrationFailure(processDiagnostics))
+            {
+                break;
+            }
+
+            int nextIndex = Array.IndexOf(modes, mode) + 1;
+            if (nextIndex < modes.Length)
+            {
+                progress?.Invoke(
+                    $"[compat] UBT did not register Linux with {DescribeLegacyLinuxSdkMode(mode)}; " +
+                    $"retrying with {DescribeLegacyLinuxSdkMode(modes[nextIndex])}.");
+            }
+        }
+
+        return new UnrealBuildToolAdaptiveRunResult(attempts[^1].Result, attempts);
+    }
+
     public async Task<ExternalProcessResult> RunAsync(
         UnrealBuildToolPaths ubt,
         IReadOnlyList<string> arguments,
         CancellationToken cancellationToken = default,
         UnrealEngineCompatibility? compatibility = null,
-        string? legacyLinuxToolchainRoot = null)
+        string? legacyLinuxToolchainRoot = null,
+        LegacyLinuxSdkEnvironmentMode legacyLinuxSdkMode = LegacyLinuxSdkEnvironmentMode.SourceDetected,
+        string? legacyLinuxCompilerBin = null)
     {
         ArgumentNullException.ThrowIfNull(ubt);
 
@@ -114,44 +223,59 @@ public sealed class UnrealBuildToolRunner
 
             case UnrealBuildToolRuntimeKind.Mono:
                 // Legacy UE4 UBT predates UBA and its XML schema differs substantially. Do not
-                // inject modern BuildConfiguration fields. Keep the projected immutable compiler
-                // first in PATH; only Windows cross-builds receive the historical LINUX_* variables.
-                // Native Linux releases validate the Setup.sh-style Engine SDK projection directly.
+                // inject modern BuildConfiguration fields. Keep the selected era-compatible compiler
+                // first in PATH. Legacy Linux SDK environment variables are applied by an explicit
+                // compatibility mode; callers can retry the small set of historical layouts when UBT
+                // refuses to register Linux.
                 executable = runtimeHost;
                 processArguments = [ubt.AssemblyPath, .. arguments];
                 environment["MONO_ENV_OPTIONS"] = "--debug";
-                if (!string.IsNullOrWhiteSpace(legacyLinuxToolchainRoot))
-                {
-                    string toolchainRoot = Path.TrimEndingDirectorySeparator(
-                        Path.GetFullPath(legacyLinuxToolchainRoot));
+                string? toolchainRoot = string.IsNullOrWhiteSpace(legacyLinuxToolchainRoot)
+                    ? null
+                    : Path.TrimEndingDirectorySeparator(Path.GetFullPath(legacyLinuxToolchainRoot));
+                string? compilerBin = !string.IsNullOrWhiteSpace(legacyLinuxCompilerBin)
+                    ? Path.TrimEndingDirectorySeparator(Path.GetFullPath(legacyLinuxCompilerBin))
+                    : toolchainRoot is null
+                        ? null
+                        : Path.Combine(toolchainRoot, "x86_64-unknown-linux-gnu", "bin");
 
-                    string compilerBin = Path.Combine(
-                        toolchainRoot, "x86_64-unknown-linux-gnu", "bin");
+                if (compilerBin is not null && Directory.Exists(compilerBin))
+                {
+                    string inheritedPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+                    environment["PATH"] = compilerBin +
+                        (inheritedPath.Length == 0 ? string.Empty : Path.PathSeparator + inheritedPath);
+
                     string clang = Path.Combine(compilerBin, OperatingSystem.IsWindows() ? "clang.exe" : "clang");
                     string clangxx = Path.Combine(compilerBin, OperatingSystem.IsWindows() ? "clang++.exe" : "clang++");
-                    if (Directory.Exists(compilerBin))
-                    {
-                        string inheritedPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-                        environment["PATH"] = compilerBin +
-                            (inheritedPath.Length == 0 ? string.Empty : Path.PathSeparator + inheritedPath);
-                    }
                     if (File.Exists(clang)) environment["CC"] = clang;
                     if (File.Exists(clangxx)) environment["CXX"] = clangxx;
 
-                    bool useLinuxRoot = OperatingSystem.IsWindows()
-                        || compatibility?.LegacyLinuxUsesLinuxRoot == true;
-                    bool useMultiarchRoot = OperatingSystem.IsWindows()
-                        || compatibility?.LegacyLinuxUsesLinuxMultiarchRoot == true;
-                    bool useAutoSdkRoot = compatibility?.LegacyLinuxUsesAutoSdkRoot == true;
+                    string compilerRoot = Directory.GetParent(compilerBin)?.FullName ?? compilerBin;
+                    string compilerLib = Path.Combine(compilerRoot, "lib");
+                    if (Directory.Exists(compilerLib) && !OperatingSystem.IsWindows())
+                    {
+                        string inheritedLibraries = Environment.GetEnvironmentVariable("LD_LIBRARY_PATH") ?? string.Empty;
+                        environment["LD_LIBRARY_PATH"] = compilerLib +
+                            (inheritedLibraries.Length == 0 ? string.Empty : Path.PathSeparator + inheritedLibraries);
+                    }
+                }
 
-                    if (useLinuxRoot)
+                if (toolchainRoot is not null)
+                {
+                    (bool useLinuxRoot, bool useMultiarchRoot, bool useAutoSdkRoot) = legacyLinuxSdkMode switch
                     {
-                        environment["LINUX_ROOT"] = toolchainRoot;
-                    }
-                    if (useMultiarchRoot)
-                    {
-                        environment["LINUX_MULTIARCH_ROOT"] = toolchainRoot + Path.DirectorySeparatorChar;
-                    }
+                        LegacyLinuxSdkEnvironmentMode.NativeOnly => (false, false, false),
+                        LegacyLinuxSdkEnvironmentMode.AutoSdk => (false, false, true),
+                        LegacyLinuxSdkEnvironmentMode.LegacyCross => (true, true, false),
+                        LegacyLinuxSdkEnvironmentMode.LegacyAll => (true, true, true),
+                        _ => (
+                            OperatingSystem.IsWindows() || compatibility?.LegacyLinuxUsesLinuxRoot == true,
+                            OperatingSystem.IsWindows() || compatibility?.LegacyLinuxUsesLinuxMultiarchRoot == true,
+                            compatibility?.LegacyLinuxUsesAutoSdkRoot == true),
+                    };
+
+                    if (useLinuxRoot) environment["LINUX_ROOT"] = toolchainRoot;
+                    if (useMultiarchRoot) environment["LINUX_MULTIARCH_ROOT"] = toolchainRoot + Path.DirectorySeparatorChar;
                     if (useAutoSdkRoot)
                     {
                         environment["UE_SDKS_ROOT"] = Path.Combine(
@@ -180,6 +304,42 @@ public sealed class UnrealBuildToolRunner
             environment,
             unsetEnvironment: unsetEnvironment,
             cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static bool IsLinuxPlatformRegistrationFailure(string diagnostics)
+        => diagnostics.Contains("No BuildPlatform found for Linux", StringComparison.OrdinalIgnoreCase);
+
+    internal static string DescribeLegacyLinuxSdkMode(LegacyLinuxSdkEnvironmentMode mode)
+        => mode switch
+        {
+            LegacyLinuxSdkEnvironmentMode.NativeOnly => "native PATH/CC/CXX",
+            LegacyLinuxSdkEnvironmentMode.AutoSdk => "native + UE_SDKS_ROOT",
+            LegacyLinuxSdkEnvironmentMode.LegacyCross => "native + LINUX_ROOT/LINUX_MULTIARCH_ROOT",
+            LegacyLinuxSdkEnvironmentMode.LegacyAll => "native + AutoSDK + legacy cross variables",
+            _ => "source-detected legacy environment",
+        };
+
+    private static async Task<string?> TryResolveProjectedLinuxToolchainRootAsync(
+        string engineRoot,
+        CancellationToken cancellationToken)
+    {
+        if (!OperatingSystem.IsLinux()) return null;
+
+        try
+        {
+            UnrealLinuxNativeToolchainDescriptor descriptor = await UnrealLinuxNativeToolchainDescriptor.ReadAsync(
+                engineRoot,
+                cancellationToken).ConfigureAwait(false);
+            string candidate = Path.Combine(
+                Path.GetFullPath(engineRoot),
+                "Engine", "Extras", "ThirdPartyNotUE", "SDKs", "HostLinux", "Linux_x64", descriptor.Version);
+            string compiler = Path.Combine(candidate, "x86_64-unknown-linux-gnu", "bin", "clang++");
+            return File.Exists(compiler) ? candidate : null;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or InvalidDataException)
+        {
+            return null;
+        }
     }
 
     private static string FormatCurrentRuntimeVersion()

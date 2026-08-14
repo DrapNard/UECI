@@ -311,21 +311,48 @@ internal sealed class UnrealMountedPluginBuilder
                     catch (Exception ex) when (compatibility.Version.Major == 4
                         && ex is FileNotFoundException or InvalidDataException or HttpRequestException)
                     {
-                        // Very old UE4 branches predate Linux_SDK.json and some do not advertise a
-                        // downloadable native bundle in a machine-readable form. Let their UBT use
-                        // the runner's native clang rather than rejecting the Engine before UBT can
-                        // perform its own toolchain validation.
+                        // Very old UE4 branches predate Linux_SDK.json. They need an era-compatible
+                        // native clang rather than whatever modern compiler happens to be on PATH;
+                        // the dedicated legacy resolver runs in parallel below.
                         options.Progress?.Invoke(
-                            $"[compat] UE {compatibility.Version}: no machine-readable Epic Linux toolchain descriptor ({ex.Message}); using the runner toolchain.");
+                            $"[compat] UE {compatibility.Version}: no machine-readable Epic Linux toolchain descriptor ({ex.Message}); resolving a legacy native compiler instead.");
                         return null;
                     }
                 });
 
-            await Task.WhenAll(compileTask, hostTask, toolchainTask).ConfigureAwait(false);
+            Task<UnrealLegacyLinuxCompiler?> legacyCompilerTask = compatibility.Version.Major == 4
+                && compatibility.Version.Minor < 20
+                    ? timings.MeasureAsync(
+                        "legacy-compiler.ensure",
+                        () => new UnrealLegacyLinuxCompilerResolver().ResolveAsync(
+                            compatibility.Version,
+                            options.FetchOptions.CacheDirectory,
+                            options.Progress,
+                            cancellationToken))
+                    : Task.FromResult<UnrealLegacyLinuxCompiler?>(null);
+
+            await Task.WhenAll(compileTask, hostTask, toolchainTask, legacyCompilerTask).ConfigureAwait(false);
             UnrealBuildToolCompileResult compile = await compileTask.ConfigureAwait(false);
             UnrealPluginHostLayout host = await hostTask.ConfigureAwait(false);
             UnrealLinuxNativeToolchainResult? toolchain = await toolchainTask.ConfigureAwait(false);
+            UnrealLegacyLinuxCompiler? legacyCompiler = await legacyCompilerTask.ConfigureAwait(false);
+
+            UnrealLegacyLinuxCompilerRequirement? legacyRequirement =
+                UnrealLegacyLinuxCompilerRequirement.ForEngine(compatibility.Version);
+            if (compatibility.Version.Major == 4
+                && toolchain is null
+                && legacyRequirement is not null
+                && legacyCompiler is null)
+            {
+                throw new InvalidOperationException(
+                    $"UE {compatibility.Version} requires {legacyRequirement}, but no compatible native compiler could be resolved. " +
+                    "Set UECI_LEGACY_CLANG or UECI_LEGACY_CLANG_ROOT to an era-compatible clang installation.");
+            }
             long downloaded = 0;
+            if (legacyCompiler is not null)
+            {
+                downloaded += legacyCompiler.DownloadedBytes;
+            }
             if (toolchain is not null)
             {
                 downloaded += toolchain.DownloadedBytes;
@@ -405,8 +432,10 @@ internal sealed class UnrealMountedPluginBuilder
                 if (compatibility.LegacyLinuxUsesLinuxMultiarchRoot) legacySdkVariables.Add("LINUX_MULTIARCH_ROOT");
                 if (compatibility.LegacyLinuxUsesAutoSdkRoot) legacySdkVariables.Add("UE_SDKS_ROOT");
                 options.Progress?.Invoke(
-                    "[compat] Exact legacy Linux SDK source requests: " +
-                    (legacySdkVariables.Count == 0 ? "PATH/CC/CXX only" : string.Join(", ", legacySdkVariables)));
+                    "[compat] Legacy Linux SDK tokens observed in UBT source (advisory only): " +
+                    (legacySdkVariables.Count == 0 ? "none" : string.Join(", ", legacySdkVariables)));
+                options.Progress?.Invoke(
+                    "[compat] Linux SDK registration will retry bounded native/AutoSDK/cross layouts only when UBT reports that Linux was not registered.");
             }
 
             IReadOnlyList<MountedBuildPhase> phases = CreatePhases(plugin, host);
@@ -434,16 +463,19 @@ internal sealed class UnrealMountedPluginBuilder
                     phase.Modules,
                     options.RuntimeIdentifier,
                     compatibility);
-                ExternalProcessResult result = await timings.MeasureAsync(
+                (ExternalProcessResult result, string diagnostics) = await timings.MeasureAsync(
                     $"ubt.build.{phase.Target}",
-                    () => runner.RunAsync(
+                    () => RunMountedUbtWithLegacySdkRetriesAsync(
+                        runner,
                         compile.Paths,
                         arguments,
-                        cancellationToken,
                         compatibility,
-                        compatibility.Version.Major == 4 ? toolchain?.ToolchainDirectory : null)).ConfigureAwait(false);
+                        toolchain?.ToolchainDirectory,
+                        legacyCompiler?.BinDirectory,
+                        virtualEngineRoot,
+                        options.Progress,
+                        cancellationToken)).ConfigureAwait(false);
 
-                string diagnostics = CombineDiagnostics(result, virtualEngineRoot);
                 string logPath = Path.Combine(logsDirectory, $"{phase.Target}-mounted.log");
                 await File.WriteAllTextAsync(logPath, diagnostics, cancellationToken).ConfigureAwait(false);
                 if (!result.Succeeded)
@@ -665,6 +697,35 @@ internal sealed class UnrealMountedPluginBuilder
             text.Contains(indicator, StringComparison.OrdinalIgnoreCase));
     }
 
+    private static async Task<(ExternalProcessResult Result, string Diagnostics)> RunMountedUbtWithLegacySdkRetriesAsync(
+        UnrealBuildToolRunner runner,
+        UnrealBuildToolPaths paths,
+        IReadOnlyList<string> arguments,
+        UnrealEngineCompatibility compatibility,
+        string? legacyLinuxToolchainRoot,
+        string? legacyLinuxCompilerBin,
+        string engineRoot,
+        Action<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        UnrealBuildToolAdaptiveRunResult adaptive = await runner.RunWithLegacyLinuxSdkRetriesAsync(
+            paths,
+            arguments,
+            compatibility,
+            legacyLinuxToolchainRoot,
+            legacyLinuxCompilerBin,
+            progress,
+            cancellationToken).ConfigureAwait(false);
+
+        string diagnostics = CombineDiagnostics(adaptive.Result, engineRoot);
+        string previousAttempts = adaptive.FormatPreviousAttemptDiagnostics();
+        if (previousAttempts.Length != 0)
+        {
+            diagnostics = previousAttempts + Environment.NewLine + Environment.NewLine + diagnostics;
+        }
+        return (adaptive.Result, diagnostics);
+    }
+
     private static IReadOnlyList<MountedBuildPhase> CreatePhases(
         UnrealPluginDescriptor plugin,
         UnrealPluginHostLayout host)
@@ -743,6 +804,7 @@ internal sealed class UnrealMountedPluginBuilder
             "ubt.compile",
             "host.prepare",
             "toolchain.ensure",
+            "legacy-compiler.ensure",
             "toolchain.download",
             "toolchain.extract",
             "ubt.build.UECIHost",

@@ -2,7 +2,7 @@
 
 **UECI is an experimental, minimal Unreal Engine substrate for CI/CD.** Its goal is to build Unreal Engine code plugins without installing a full Unreal Engine tree on every runner.
 
-> Status: **v0.5 alpha / technical prototype (alpha.24).** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, the materialized lazy plugin-build fallback, and a real Linux/FUSE3 virtual Engine mount now exist. `build-plugin --backend fuse` can compile UBT and the plugin directly through that mounted Engine on Linux x64. Windows/macOS mounted backends remain roadmap items.
+> Status: **v0.5 alpha / technical prototype (alpha.25).** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, the materialized lazy plugin-build fallback, and a real Linux/FUSE3 virtual Engine mount now exist. `build-plugin --backend fuse` can compile UBT and the plugin directly through that mounted Engine on Linux x64. Windows/macOS mounted backends remain roadmap items.
 
 ## Why
 
@@ -56,7 +56,7 @@ The long-term design supports both **materialized mode** (portable, no special p
 - Converts missing-module/path/SDK diagnostics into bounded lazy Epic Git/GitDependencies materialization passes, including unresolved third-party library paths emitted by UBT.
 - Batches up to two levels of small `.Build.cs` dependency hints between UBT passes while refusing large hinted subtrees until UBT explicitly requires them.
 - Treats an explicit UBT missing-module diagnostic as authoritative over speculative prefetch: UECI force-refreshes the exact `*.Build.cs` from the pinned Epic commit and invalidates the generated Engine rules assembly before retrying.
-- On native Linux x86_64, resolves `Linux_SDK.json` and lazily downloads/extracts Epic's matching native clang/sysroot toolchain only when UBT reports that the Linux SDK is missing.
+- On native Linux x86_64, resolves Epic's generation-matched Linux SDK/toolchain; UE4.20–4.27 can pre-project the historical Epic clang/sysroot, while pre-4.20 UE4 resolves an era-compatible native clang instead of silently accepting the runner's modern compiler.
 - Packages the built plugin with `Binaries` plus a machine-readable `ueci-build.json` report.
 - Ships a minimal Runtime plugin fixture and an opt-in real plugin smoke test that runs on a normal workstation.
 - Provides a future-proof VFS contract without making FUSE/WinFsp mandatory.
@@ -266,7 +266,7 @@ dotnet run --project src/Ueci.Cli -- \
   -- -help
 ```
 
-UECI itself still targets .NET 8 for easy development. UBT is compiled with the .NET SDK shipped by the selected Unreal commit; after compilation UECI validates the generated `UnrealBuildTool.runtimeconfig.json` against that same bundle. No Unreal/.NET version pair is hard-coded. See [`docs/ubt-bootstrap.md`](docs/ubt-bootstrap.md).
+UECI itself still targets .NET 8 for easy development. UBT is normally compiled with the .NET SDK shipped by the selected Unreal commit. When a historical Epic host cannot run on the current distro and UECI deliberately falls back to the runner SDK, it normalizes legacy/self-contained `runtimeconfig.json` metadata to the runner's `Microsoft.NETCore.App` version and enables major roll-forward. See [`docs/ubt-bootstrap.md`](docs/ubt-bootstrap.md).
 
 For the Epic Git source seed, Git 2.49+ is strongly recommended. UECI creates a cone-mode sparse checkout for the UBT source seed and uses `git backfill --sparse` when available to batch missing blobs from the `--filter=blob:none` repository before populating the worktree. Older Git versions still fall back to lazy checkout, but that path can be dramatically slower on Unreal's source tree.
 
@@ -350,8 +350,9 @@ The shared cache is intentionally separate from `--engine-dir`:
 ├── epic-metadata/               # blobless Git metadata stores
 ├── git-blobs/                   # content-addressed lazy Epic Git blobs
 ├── native/fuse3/                # compiled tiny FUSE helper
-└── toolchains/installed/
-    └── linux-x64/<version>/      # extracted Epic native clang/sysroot
+└── toolchains/
+    ├── installed/linux-x64/<version>/ # extracted Epic native clang/sysroot
+    └── legacy-clang/linux-x64/<version>/ # pre-UE4.20 era-compatible LLVM compiler
 ```
 
 The disposable Engine workspace still contains COW/generated state for the current job only. UECI deliberately does **not** require a previous job's native Core/plugin object files for this optimization pass. Every mounted build also prints a timing table so cold-runner regressions can be attributed to metadata, toolchain, UBT, native compilation, collection, or packaging instead of being inferred from total wall time.
@@ -363,7 +364,7 @@ The composite Action persists this cold-start cache under an exact Epic-commit k
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the lazy plugin build and package the result. Alpha.17 resolves the exact Epic ref object id first and keys the GitHub Actions cold-start cache with it, so moving refs such as `release` cannot accidentally reuse a cache as if the Engine commit were unchanged.
 
 ```yaml
-- uses: your-org/ueci@v0.5.0-alpha.24
+- uses: your-org/ueci@v0.5.0-alpha.25
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release
