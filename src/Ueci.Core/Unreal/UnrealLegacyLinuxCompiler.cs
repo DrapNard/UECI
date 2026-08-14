@@ -149,6 +149,11 @@ public sealed class UnrealLegacyLinuxCompilerResolver
                     cancellationToken).ConfigureAwait(false);
                 if (completed is not null)
                 {
+                    completed = await EnsureRemovedSystemHeaderCompatibilityAsync(
+                        completed,
+                        cacheDirectory,
+                        progress,
+                        cancellationToken).ConfigureAwait(false);
                     progress?.Invoke($"[compat] Legacy compiler selected: clang {completed.Version} ({completed.Source}).");
                     return completed;
                 }
@@ -177,6 +182,11 @@ public sealed class UnrealLegacyLinuxCompilerResolver
             cancellationToken).ConfigureAwait(false);
         if (completedProvisioned is not null)
         {
+            completedProvisioned = await EnsureRemovedSystemHeaderCompatibilityAsync(
+                completedProvisioned,
+                cacheDirectory,
+                progress,
+                cancellationToken).ConfigureAwait(false);
             progress?.Invoke(
                 $"[compat] Legacy compiler selected: clang {completedProvisioned.Version} ({completedProvisioned.Source}).");
         }
@@ -416,6 +426,110 @@ public sealed class UnrealLegacyLinuxCompilerResolver
                 compiler.ClangxxPath,
                 root,
                 ["-std=c++11", "-fsyntax-only", source],
+                environment,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            return probe.Succeeded;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+            or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+        finally
+        {
+            TryDelete(source);
+        }
+    }
+
+    private static async Task<UnrealLegacyLinuxCompiler> EnsureRemovedSystemHeaderCompatibilityAsync(
+        UnrealLegacyLinuxCompiler compiler,
+        string cacheDirectory,
+        Action<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (!OperatingSystem.IsLinux()) return compiler;
+
+        IReadOnlyList<string> currentIncludes = compiler.CxxIncludeDirectories ?? Array.Empty<string>();
+        if (await CanCompileLegacySystemHeaderAsync(
+                compiler,
+                currentIncludes,
+                cancellationToken).ConfigureAwait(false))
+        {
+            return compiler;
+        }
+
+        string shimRoot = Path.Combine(
+            Path.GetFullPath(cacheDirectory),
+            "toolchains",
+            "legacy-system-headers",
+            "linux-x64",
+            "glibc-removed-v1");
+        string sysDirectory = Path.Combine(shimRoot, "sys");
+        string sysctlHeader = Path.Combine(sysDirectory, "sysctl.h");
+        Directory.CreateDirectory(sysDirectory);
+        if (!File.Exists(sysctlHeader))
+        {
+            await File.WriteAllTextAsync(
+                sysctlHeader,
+                "#pragma once\n" +
+                "/* UECI compatibility shim: glibc removed <sys/sysctl.h>. " +
+                "Legacy UE includes it globally, but the synthetic UHT/plugin path does not require the obsolete sysctl API. */\n",
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        string[] includes = new[] { shimRoot }
+            .Concat(currentIncludes)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (!await CanCompileLegacySystemHeaderAsync(
+                compiler,
+                includes,
+                cancellationToken).ConfigureAwait(false))
+        {
+            progress?.Invoke(
+                "[compat] Generated <sys/sysctl.h> compatibility shim could not be consumed by the legacy compiler; continuing without the shim.");
+            return compiler;
+        }
+
+        progress?.Invoke(
+            "[compat] Legacy system-header shim enabled for removed/deprecated <sys/sysctl.h> on the modern Linux host.");
+        return compiler with { CxxIncludeDirectories = includes };
+    }
+
+    private static async Task<bool> CanCompileLegacySystemHeaderAsync(
+        UnrealLegacyLinuxCompiler compiler,
+        IReadOnlyList<string> includeDirectories,
+        CancellationToken cancellationToken)
+    {
+        string root = Directory.GetParent(compiler.BinDirectory)?.FullName ?? compiler.BinDirectory;
+        string probeDirectory = Path.Combine(Path.GetTempPath(), "ueci-legacy-system-header-probe");
+        Directory.CreateDirectory(probeDirectory);
+        string source = Path.Combine(probeDirectory, $"probe-{Guid.NewGuid():N}.cpp");
+        try
+        {
+            await File.WriteAllTextAsync(
+                source,
+                "#include <sys/sysctl.h>\nint main() { return 0; }\n",
+                cancellationToken).ConfigureAwait(false);
+            var environment = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (includeDirectories.Count != 0)
+            {
+                string inherited = Environment.GetEnvironmentVariable("CPLUS_INCLUDE_PATH") ?? string.Empty;
+                environment["CPLUS_INCLUDE_PATH"] = string.Join(Path.PathSeparator.ToString(), includeDirectories) +
+                    (inherited.Length == 0 ? string.Empty : Path.PathSeparator + inherited);
+            }
+            string lib = Path.Combine(root, "lib");
+            if (Directory.Exists(lib))
+            {
+                string inheritedLibraries = Environment.GetEnvironmentVariable("LD_LIBRARY_PATH") ?? string.Empty;
+                environment["LD_LIBRARY_PATH"] = lib +
+                    (inheritedLibraries.Length == 0 ? string.Empty : Path.PathSeparator + inheritedLibraries);
+            }
+
+            ExternalProcessResult probe = await ExternalProcess.RunAsync(
+                compiler.ClangxxPath,
+                root,
+                ["-Werror", "-fsyntax-only", source],
                 environment,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
             return probe.Succeeded;

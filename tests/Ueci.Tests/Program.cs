@@ -56,6 +56,7 @@ internal static class Program
         ("Engine compatibility requires declarations for synthetic TargetRules assignments", EngineCompatibilityRequiresDeclaredTargetMembersAsync),
         ("plugin host requires an overridable TargetRules method before emitting monolithic override", PluginHostRejectsStaleMonolithicMethodAsync),
         ("plugin host adapts modern module PCH and C++ standard validation", PluginHostModernModuleValidationAsync),
+        ("plugin host learns moved module validation from UBT diagnostics", PluginHostDiagnosticModuleValidationAsync),
         ("Epic bundled UBA resolver selects managed + native host payload", BundledUbaResolverAsync),
         ("UBT locator requires compiled bootstrap files", UnrealBuildToolLocatorAsync),
         ("UBT locator discovers legacy UnrealBuildTool.exe", UnrealBuildToolLocatorLegacyAsync),
@@ -1701,6 +1702,85 @@ internal static class Program
             Assert.True(originalRules.Contains(
                 "PCHUsage = PCHUsageMode.UseSharedPCHs;",
                 StringComparison.Ordinal));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
+    private static async Task PluginHostDiagnosticModuleValidationAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string engine = Path.Combine(root, "Engine");
+            await WriteCompatibilityFixtureAsync(engine, 5, 8, modern: true);
+            // Deliberately do not place the validation text in UEBuildModuleCPP.cs. This models
+            // UE5.8 where the real validator moved and pre-build source detection misses it.
+            UnrealEngineCompatibility compatibility = await UnrealEngineCompatibility.DetectAsync(engine, "5.8");
+            Assert.False(compatibility.RejectsCpp17ModuleStandard);
+            Assert.True(compatibility.SupportsCpp20ModuleStandard);
+
+            string pluginSource = Path.Combine(root, "PluginSource");
+            string moduleDirectory = Path.Combine(pluginSource, "Source", "Fixture");
+            Directory.CreateDirectory(moduleDirectory);
+            string descriptor = Path.Combine(pluginSource, "Fixture.uplugin");
+            await File.WriteAllTextAsync(
+                descriptor,
+                "{ \"FileVersion\": 3, \"Modules\": [{ \"Name\": \"Fixture\", \"Type\": \"Runtime\" }] }");
+            await File.WriteAllTextAsync(
+                Path.Combine(moduleDirectory, "Fixture.Build.cs"),
+                "using UnrealBuildTool; public class Fixture : ModuleRules { " +
+                "public Fixture(ReadOnlyTargetRules Target) : base(Target) { " +
+                "CppStandard = CppStandardVersion.Cpp17; PrivateDependencyModuleNames.Add(\"Core\"); } }");
+            UnrealPluginDescriptor plugin = await UnrealPluginDescriptor.ReadAsync(descriptor);
+            UnrealPluginHostLayout host = await UnrealPluginHostProject.PrepareAsync(
+                engine,
+                plugin,
+                workspaceBaseDirectory: null,
+                compatibility: compatibility);
+
+            string copiedPath = Path.Combine(host.PluginRoot, "Source", "Fixture", "Fixture.Build.cs");
+            string hostPath = Path.Combine(host.Root, "Source", "UECIHost", "UECIHost.Build.cs");
+            Assert.True((await File.ReadAllTextAsync(copiedPath)).Contains(
+                "CppStandardVersion.Cpp17",
+                StringComparison.Ordinal));
+            Assert.False((await File.ReadAllTextAsync(hostPath)).Contains(
+                "CppStandard =",
+                StringComparison.Ordinal));
+
+            string buildRulesCache = Path.Combine(host.Root, "Intermediate", "Build", "BuildRules");
+            Directory.CreateDirectory(buildRulesCache);
+            await File.WriteAllTextAsync(Path.Combine(buildRulesCache, "UECIHostModuleRules.dll"), "stale");
+
+            const string diagnostics =
+                "UECIHost CppStandard CppStandardVersion.Cpp17 is no longer supported.\n" +
+                "Fixture CppStandard CppStandardVersion.Cpp17 is no longer supported.";
+            bool changed = await UnrealPluginHostProject.ApplyBuildDiagnosticCompatibilityAsync(
+                host,
+                plugin,
+                compatibility,
+                diagnostics);
+            Assert.True(changed);
+            Assert.False(Directory.Exists(buildRulesCache));
+            Assert.True((await File.ReadAllTextAsync(copiedPath)).Contains(
+                "CppStandard = CppStandardVersion.Cpp20;",
+                StringComparison.Ordinal));
+            Assert.True((await File.ReadAllTextAsync(hostPath)).Contains(
+                "CppStandard = CppStandardVersion.Cpp20;",
+                StringComparison.Ordinal));
+
+            bool changedAgain = await UnrealPluginHostProject.ApplyBuildDiagnosticCompatibilityAsync(
+                host,
+                plugin,
+                compatibility,
+                diagnostics);
+            Assert.False(changedAgain);
+
+            string originalRules = await File.ReadAllTextAsync(
+                Path.Combine(moduleDirectory, "Fixture.Build.cs"));
+            Assert.True(originalRules.Contains("CppStandardVersion.Cpp17", StringComparison.Ordinal));
         }
         finally
         {

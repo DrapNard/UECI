@@ -2,7 +2,7 @@
 
 **UECI is an experimental, minimal Unreal Engine substrate for CI/CD.** Its goal is to build Unreal Engine code plugins without installing a full Unreal Engine tree on every runner.
 
-> Status: **v0.5 alpha / technical prototype (alpha.30).** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, the materialized lazy plugin-build fallback, and a real Linux/FUSE3 virtual Engine mount now exist. `build-plugin --backend fuse` can compile UBT and the plugin directly through that mounted Engine on Linux x64. Windows/macOS mounted backends remain roadmap items.
+> Status: **v0.5 alpha / technical prototype (alpha.31).** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, the materialized lazy plugin-build fallback, and a real Linux/FUSE3 virtual Engine mount now exist. `build-plugin --backend fuse` can compile UBT and the plugin directly through that mounted Engine on Linux x64. Windows/macOS mounted backends remain roadmap items.
 
 ## Why
 
@@ -353,7 +353,8 @@ The shared cache is intentionally separate from `--engine-dir`:
 └── toolchains/
     ├── installed/linux-x64/<version>/ # extracted Epic native clang/sysroot
     ├── legacy-clang/linux-x64/<version>/ # pre-UE4.20 era-compatible LLVM compiler
-    └── legacy-stdlib/linux-x64/<version>/ # isolated era-compatible C++ headers
+    ├── legacy-stdlib/linux-x64/<version>/ # isolated era-compatible C++ headers
+    └── legacy-system-headers/linux-x64/   # modern-host shims for headers removed by glibc
 ```
 
 The disposable Engine workspace still contains COW/generated state for the current job only. UECI deliberately does **not** require a previous job's native Core/plugin object files for this optimization pass. Every mounted build also prints a timing table so cold-runner regressions can be attributed to metadata, toolchain, UBT, native compilation, collection, or packaging instead of being inferred from total wall time.
@@ -365,7 +366,7 @@ The composite Action persists this cold-start cache under an exact Epic-commit k
 The root `action.yml` can either bootstrap UBT only or, when `plugin-path` is supplied, run the lazy plugin build and package the result. Alpha.17 resolves the exact Epic ref object id first and keys the GitHub Actions cold-start cache with it, so moving refs such as `release` cannot accidentally reuse a cache as if the Engine commit were unchanged.
 
 ```yaml
-- uses: your-org/ueci@v0.5.0-alpha.30
+- uses: your-org/ueci@v0.5.0-alpha.31
   with:
     epic-token: ${{ secrets.EPIC_GITHUB_TOKEN }}
     engine-ref: release

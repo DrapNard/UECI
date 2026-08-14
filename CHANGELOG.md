@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0-alpha.31] - 2026-08-14
+
+### Fixed
+
+- Add a probe-driven modern-host compatibility shim for legacy UE4's global `<sys/sysctl.h>` include. The legacy compiler resolver now tests that header with `-Werror`; when modern glibc has removed it or only exposes a deprecation diagnostic, UECI injects an isolated empty compatibility header ahead of the host include path. This mirrors the established old-UE workaround without replacing the runner's libc/sysroot or modifying the Engine source tree.
+- Make modern module-standard recovery diagnostic-driven as well as source-driven. If the exact UBT invocation reports `CppStandardVersion.Cpp17 is no longer supported`, UECI rewrites only the ephemeral copied plugin rules plus `UECIHost.Build.cs` to `Cpp20`, invalidates the synthetic project's cached Rules assembly, and retries the same filtered build. This works even when Epic moves the validator away from the source file UECI indexed during preflight.
+- Apply the learned module-validation retry in both FUSE and materialized plugin backends. The retry is naturally bounded because the rewrite is idempotent and only repeats when it changed an ephemeral `Build.cs`.
+
+### Added
+
+- Regression coverage for the UE5.8-style case where pre-build source detection cannot see the C++17 validator but the real UBT diagnostic exposes it after Rules evaluation. The test also verifies Rules-cache invalidation, retry idempotence, and that the original plugin source remains untouched.
+- Legacy system-header probing/cache namespace for compatibility shims that are required only because modern Linux libc headers removed APIs still globally included by old UE branches.
+
+### Validation
+
+- The alpha.30 runner built UECI cleanly and executed all 64 registered tests successfully. UE4.20, UE5.0, UE5.1, and UE5.7 remain green.
+- UE4.6 now passes the GCC 4.8 C++ header boundary and reaches UnrealHeaderTool/Core compilation; its alpha.30 failure moved to the removed `<sys/sysctl.h>` glibc header. Alpha.31 probes and shims only that modern-host boundary.
+- UE5.8 now passes target/PCH validation and fails solely because C++17 rejection moved outside the preflight source location. Alpha.31 learns that rule from the real UBT failure and retries the ephemeral host at C++20.
+- This sandbox still has no usable .NET SDK/Roslyn compiler, so the new 65-test managed suite and private Epic matrix require the normal runner for runtime validation.
+- CLI version advanced to `0.5.0-alpha.31`.
+
 ## [0.5.0-alpha.30] - 2026-08-14
 
 ### Fixed

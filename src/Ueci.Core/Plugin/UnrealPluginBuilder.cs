@@ -396,6 +396,19 @@ public sealed class UnrealPluginBuilder
                     break;
                 }
 
+                if (await UnrealPluginHostProject.ApplyBuildDiagnosticCompatibilityAsync(
+                        host,
+                        plugin,
+                        compatibility,
+                        diagnostics,
+                        cancellationToken).ConfigureAwait(false))
+                {
+                    options.Progress?.Invoke(
+                        "[compat] UBT module validation exposed a newer synthetic-host boundary; " +
+                        "updated the ephemeral Build.cs rules and retrying once with the learned policy.");
+                    continue;
+                }
+
                 if (compatibility.Version.Major == 4)
                 {
                     string[] freshLinkModules = UnrealBuildDiagnostics

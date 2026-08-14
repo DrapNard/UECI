@@ -218,21 +218,82 @@ public static class UnrealPluginHostProject
         return text.ToString().TrimEnd();
     }
 
-    private static async Task NormalizeCopiedPluginModuleRulesAsync(
+    /// <summary>
+    /// Applies compatibility rules learned from a real UBT validation failure to the ephemeral
+    /// synthetic host. Source feature detection is preferred during PrepareAsync, but modern UBT
+    /// has moved some validators between files; the diagnostic is the authoritative final boundary.
+    /// The user's plugin source is never modified.
+    /// </summary>
+    public static async Task<bool> ApplyBuildDiagnosticCompatibilityAsync(
+        UnrealPluginHostLayout host,
+        UnrealPluginDescriptor plugin,
+        UnrealEngineCompatibility compatibility,
+        string diagnostics,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        ArgumentNullException.ThrowIfNull(plugin);
+        ArgumentNullException.ThrowIfNull(compatibility);
+        diagnostics ??= string.Empty;
+
+        bool forceCpp20 = diagnostics.Contains(
+                "CppStandard CppStandardVersion.Cpp17 is no longer supported",
+                StringComparison.OrdinalIgnoreCase)
+            && compatibility.SupportsCpp20ModuleStandard;
+        bool forcePchMode = diagnostics.Contains(
+                "must specify an explicit precompiled header for PCHUsage",
+                StringComparison.OrdinalIgnoreCase)
+            && compatibility.SupportsExplicitOrSharedPchUsage;
+        if (!forceCpp20 && !forcePchMode) return false;
+
+        bool changed = await NormalizeCopiedPluginModuleRulesAsync(
+            host.PluginRoot,
+            plugin,
+            compatibility,
+            cancellationToken,
+            forceCpp20,
+            forcePchMode).ConfigureAwait(false);
+
+        string hostRules = Path.Combine(
+            host.Root,
+            "Source",
+            GameTargetName,
+            GameTargetName + ".Build.cs");
+        changed |= await NormalizeModuleRulesFileAsync(
+            hostRules,
+            GameTargetName,
+            forceCpp20,
+            forcePchMode,
+            cancellationToken).ConfigureAwait(false);
+
+        if (changed)
+        {
+            // UBT caches project/module rule assemblies. A retry after changing Build.cs must not
+            // reuse the assembly produced by the failed pass, especially on filesystems with coarse
+            // timestamp resolution.
+            DeleteDirectoryIfExists(Path.Combine(host.Root, "Intermediate", "Build", "BuildRules"));
+        }
+        return changed;
+    }
+
+    private static async Task<bool> NormalizeCopiedPluginModuleRulesAsync(
         string pluginRoot,
         UnrealPluginDescriptor plugin,
         UnrealEngineCompatibility compatibility,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool forceCpp20 = false,
+        bool forcePchMode = false)
     {
-        bool needsCppStandard = compatibility.RejectsCpp17ModuleStandard
-            && compatibility.SupportsCpp20ModuleStandard;
-        bool needsPchMode = compatibility.RequiresExplicitModulePch
-            && compatibility.SupportsExplicitOrSharedPchUsage;
-        if (!needsCppStandard && !needsPchMode) return;
+        bool needsCppStandard = forceCpp20 || (compatibility.RejectsCpp17ModuleStandard
+            && compatibility.SupportsCpp20ModuleStandard);
+        bool needsPchMode = forcePchMode || (compatibility.RequiresExplicitModulePch
+            && compatibility.SupportsExplicitOrSharedPchUsage);
+        if (!needsCppStandard && !needsPchMode) return false;
 
         string sourceRoot = Path.Combine(pluginRoot, "Source");
-        if (!Directory.Exists(sourceRoot)) return;
+        if (!Directory.Exists(sourceRoot)) return false;
 
+        bool changed = false;
         foreach (string moduleName in plugin.Modules
                      .Select(module => module.Name)
                      .Distinct(StringComparer.Ordinal))
@@ -243,54 +304,87 @@ public static class UnrealPluginHostProject
                 .FirstOrDefault();
             if (buildRules is null) continue;
 
-            string source = await File.ReadAllTextAsync(buildRules, cancellationToken).ConfigureAwait(false);
-            string updated = source;
+            changed |= await NormalizeModuleRulesFileAsync(
+                buildRules,
+                moduleName,
+                needsCppStandard,
+                needsPchMode,
+                cancellationToken).ConfigureAwait(false);
+        }
+        return changed;
+    }
 
-            if (needsCppStandard)
-            {
-                updated = Regex.Replace(
-                    updated,
-                    @"(?m)(\bCppStandard\s*=\s*CppStandardVersion\.)Cpp17\b",
-                    "$1Cpp20",
-                    RegexOptions.CultureInvariant);
-            }
+    private static async Task<bool> NormalizeModuleRulesFileAsync(
+        string buildRules,
+        string moduleName,
+        bool needsCppStandard,
+        bool needsPchMode,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(buildRules)) return false;
 
-            var assignments = new List<string>(2);
-            if (needsPchMode && !Regex.IsMatch(
+        string source = await File.ReadAllTextAsync(buildRules, cancellationToken).ConfigureAwait(false);
+        string updated = source;
+
+        if (needsCppStandard)
+        {
+            updated = Regex.Replace(
+                updated,
+                @"(?m)(\bCppStandard\s*=\s*CppStandardVersion\.)Cpp17\b",
+                "$1Cpp20",
+                RegexOptions.CultureInvariant);
+        }
+
+        var assignments = new List<string>(2);
+        if (needsPchMode && !Regex.IsMatch(
+                updated,
+                @"(?m)\bPrivatePCHHeaderFile\s*=",
+                RegexOptions.CultureInvariant))
+        {
+            updated = Regex.Replace(
+                updated,
+                @"(?m)(\bPCHUsage\s*=\s*(?:ModuleRules\.)?PCHUsageMode\.)(?:NoSharedPCHs|UseSharedPCHs)\b",
+                "$1UseExplicitOrSharedPCHs",
+                RegexOptions.CultureInvariant);
+            if (!Regex.IsMatch(
                     updated,
-                    @"(?m)\bPrivatePCHHeaderFile\s*=",
+                    @"(?m)\bPCHUsage\s*=",
                     RegexOptions.CultureInvariant))
             {
-                updated = Regex.Replace(
-                    updated,
-                    @"(?m)(\bPCHUsage\s*=\s*(?:ModuleRules\.)?PCHUsageMode\.)(?:NoSharedPCHs|UseSharedPCHs)\b",
-                    "$1UseExplicitOrSharedPCHs",
-                    RegexOptions.CultureInvariant);
-                if (!Regex.IsMatch(
-                        updated,
-                        @"(?m)\bPCHUsage\s*=",
-                        RegexOptions.CultureInvariant))
-                {
-                    assignments.Add("PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;");
-                }
+                assignments.Add("PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;");
             }
-            if (needsCppStandard && !Regex.IsMatch(
-                    updated,
-                    @"(?m)\bCppStandard\s*=",
-                    RegexOptions.CultureInvariant))
-            {
-                assignments.Add("CppStandard = CppStandardVersion.Cpp20;");
-            }
+        }
+        if (needsCppStandard && !Regex.IsMatch(
+                updated,
+                @"(?m)\bCppStandard\s*=",
+                RegexOptions.CultureInvariant))
+        {
+            assignments.Add("CppStandard = CppStandardVersion.Cpp20;");
+        }
 
-            if (assignments.Count != 0)
-            {
-                updated = InsertModuleConstructorAssignments(updated, moduleName, assignments);
-            }
+        if (assignments.Count != 0)
+        {
+            updated = InsertModuleConstructorAssignments(updated, moduleName, assignments);
+        }
 
-            if (!string.Equals(source, updated, StringComparison.Ordinal))
-            {
-                await File.WriteAllTextAsync(buildRules, updated, cancellationToken).ConfigureAwait(false);
-            }
+        if (string.Equals(source, updated, StringComparison.Ordinal)) return false;
+        await File.WriteAllTextAsync(buildRules, updated, cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
+    private static void DeleteDirectoryIfExists(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+        }
+        catch (IOException)
+        {
+            // UBT will still perform its own timestamp/dependency validation on the retry.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Same as above; cache invalidation is a hardening step, not a reason to lose the build.
         }
     }
 
