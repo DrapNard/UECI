@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.0-alpha.29] - 2026-08-14
+
+### Fixed
+
+- Keep legacy `SetupBinaries` ownership unambiguous. On pre-`ExtraModuleNames` UE4, the synthetic project target now registers only `UECIHost` as a project module; enabled plugin modules remain owned by their `.uplugin` and are selected by UECI's existing `-Module` filters. This removes UE4.6's `Module "UECIMinimal" linked into both .../Plugins/.../Binaries and ../Binaries` failure without changing modern UE4/UE5 module graphs.
+- Emit the legacy `ShouldCompileMonolithic(...)` override only when the exact authoritative `TargetRules.cs` still declares an overridable `virtual`/`abstract` method. UE5.8 can retain the historical identifier after removing the override point; alpha.29 no longer turns that stale token into a `CS0115` synthetic target error.
+
+### Added
+
+- Regression coverage for modern `TargetRules` sources that still contain `ShouldCompileMonolithic` as a non-virtual API while no longer exposing `TargetLinkType`, plus legacy host coverage asserting plugin modules are not duplicated into `SetupBinaries`.
+
+### Validation
+
+- The alpha.28 runner built UECI cleanly and executed all 62 registered tests successfully. Its boundary matrix is green on UE4.20, UE5.0, UE5.1, and UE5.7.
+- UE4.6 now reaches UBT binary placement and fails only because the plugin module is simultaneously classified as a project and plugin output; alpha.29 removes the duplicate project declaration. UE5.8 reaches Rules compilation and fails only on the stale `ShouldCompileMonolithic` override; alpha.29 requires a real overridable declaration before generating it.
+- CLI version advanced to `0.5.0-alpha.29`.
+
 ## [0.5.0-alpha.28] - 2026-08-14
 
 ### Fixed

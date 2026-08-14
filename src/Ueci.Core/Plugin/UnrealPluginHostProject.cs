@@ -299,13 +299,16 @@ public static class UnrealPluginHostProject
 
         if (!compatibility.SupportsExtraModuleNames)
         {
-            // UE4's original TargetRules API populated modules through SetupBinaries rather than
-            // the later ExtraModuleNames property.
+            // UE4's original TargetRules API populated *project* modules through SetupBinaries.
+            // Plugin modules are already discovered from the enabled .uplugin and are selected by
+            // UECI's -Module filters. Adding them here too makes old UBT classify the same plugin
+            // module as both a project binary and a plugin binary (UE4.6 reports "linked into both
+            // .../Plugins/<Name>/Binaries and ../Binaries"). Keep only the synthetic host module in
+            // the project's legacy module list and let UBT own plugin-module placement.
             text.AppendLine();
             text.AppendLine("    public override void SetupBinaries(TargetInfo Target, ref List<UEBuildBinaryConfiguration> OutBuildBinaryConfigurations, ref List<string> OutExtraModuleNames)");
             text.AppendLine("    {");
-            foreach (string module in modules)
-                text.AppendLine($"        OutExtraModuleNames.Add({ToCSharpStringLiteral(module)});");
+            text.AppendLine($"        OutExtraModuleNames.Add({ToCSharpStringLiteral(GameTargetName)});");
             text.AppendLine("    }");
         }
         text.AppendLine("}");

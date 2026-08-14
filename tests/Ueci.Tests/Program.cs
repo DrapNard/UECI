@@ -54,6 +54,7 @@ internal static class Program
         ("Engine compatibility feature-detects UE4 legacy and UE5 modern rules", EngineCompatibilityDetectsAsync),
         ("Engine compatibility ignores non-authoritative fallback TargetRules members", EngineCompatibilityRejectsFallbackMemberFalsePositivesAsync),
         ("Engine compatibility requires declarations for synthetic TargetRules assignments", EngineCompatibilityRequiresDeclaredTargetMembersAsync),
+        ("plugin host requires an overridable TargetRules method before emitting monolithic override", PluginHostRejectsStaleMonolithicMethodAsync),
         ("Epic bundled UBA resolver selects managed + native host payload", BundledUbaResolverAsync),
         ("UBT locator requires compiled bootstrap files", UnrealBuildToolLocatorAsync),
         ("UBT locator discovers legacy UnrealBuildTool.exe", UnrealBuildToolLocatorLegacyAsync),
@@ -1587,6 +1588,53 @@ internal static class Program
         }
     }
 
+    private static async Task PluginHostRejectsStaleMonolithicMethodAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string engine = Path.Combine(root, "Engine");
+            await WriteCompatibilityFixtureAsync(engine, 5, 8, modern: true);
+            string targetRules = Path.Combine(
+                engine, "Engine", "Source", "Programs", "UnrealBuildTool", "Configuration", "TargetRules.cs");
+            // Model the UE5.8 boundary from the runner: LinkType is no longer a writable TargetRules
+            // member, while the historical method name can still exist in source without being an
+            // overridable virtual API.
+            string source = await File.ReadAllTextAsync(targetRules);
+            source = source.Replace("public TargetLinkType LinkType; ", string.Empty, StringComparison.Ordinal);
+            source = source.Replace(
+                "public bool bCompileAgainstEngine;",
+                "public bool ShouldCompileMonolithic(UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration) { return false; } public bool bCompileAgainstEngine;",
+                StringComparison.Ordinal);
+            source = "public enum UnrealTargetPlatform {} public enum UnrealTargetConfiguration {} " + source;
+            await File.WriteAllTextAsync(targetRules, source);
+
+            UnrealEngineCompatibility compatibility = await UnrealEngineCompatibility.DetectAsync(engine, "5.8");
+            Assert.False(compatibility.SupportsTargetLinkType);
+            Assert.False(compatibility.SupportsShouldCompileMonolithic);
+
+            string pluginSource = Path.Combine(root, "PluginSource");
+            Directory.CreateDirectory(Path.Combine(pluginSource, "Source", "Fixture"));
+            string descriptor = Path.Combine(pluginSource, "Fixture.uplugin");
+            await File.WriteAllTextAsync(
+                descriptor,
+                "{ \"FileVersion\": 3, \"Modules\": [{ \"Name\": \"Fixture\", \"Type\": \"Runtime\" }] }");
+            await File.WriteAllTextAsync(Path.Combine(pluginSource, "Source", "Fixture", "Fixture.Build.cs"), "// fixture");
+            UnrealPluginDescriptor plugin = await UnrealPluginDescriptor.ReadAsync(descriptor);
+            UnrealPluginHostLayout host = await UnrealPluginHostProject.PrepareAsync(
+                engine,
+                plugin,
+                workspaceBaseDirectory: null,
+                compatibility: compatibility);
+            string generated = await File.ReadAllTextAsync(Path.Combine(host.Root, "Source", "UECIHost.Target.cs"));
+            Assert.False(generated.Contains("override bool ShouldCompileMonolithic", StringComparison.Ordinal));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
     private static Task BundledUbaResolverAsync()
     {
         const string libraryProps = EpicBundledUbaResolver.LibraryPropsPath;
@@ -1826,7 +1874,8 @@ internal static class Program
             string target = await File.ReadAllTextAsync(Path.Combine(host.Root, "Source", "UECIHost.Target.cs"));
             string rules = await File.ReadAllTextAsync(Path.Combine(host.Root, "Source", "UECIHost", "UECIHost.Build.cs"));
             Assert.True(target.Contains("SetupBinaries", StringComparison.Ordinal));
-            Assert.True(target.Contains("OutExtraModuleNames.Add(\"Fixture\")", StringComparison.Ordinal));
+            Assert.True(target.Contains("OutExtraModuleNames.Add(\"UECIHost\")", StringComparison.Ordinal));
+            Assert.False(target.Contains("OutExtraModuleNames.Add(\"Fixture\")", StringComparison.Ordinal));
             Assert.False(target.Contains("        ExtraModuleNames.Add(", StringComparison.Ordinal));
             Assert.False(target.Contains("bCompileICU", StringComparison.Ordinal));
             Assert.False(target.Contains("TargetLinkType.Modular", StringComparison.Ordinal));

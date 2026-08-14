@@ -83,7 +83,7 @@ public sealed class UnrealEngineCompatibility
     public bool SupportsExtraModuleNames => HasTargetMemberDeclaration("ExtraModuleNames") || Version.AtLeast(4, 16);
     public bool SupportsTargetInfoBaseConstructor => HasTargetToken("TargetRules(TargetInfo") || Version.AtLeast(4, 16);
     public bool SupportsTargetLinkType => HasTargetMemberDeclaration("LinkType") && HasTargetToken("TargetLinkType");
-    public bool SupportsShouldCompileMonolithic => HasTargetToken("ShouldCompileMonolithic");
+    public bool SupportsShouldCompileMonolithic => HasTargetVirtualMethodDeclaration("ShouldCompileMonolithic");
     public bool SupportsLaunchModuleName => HasTargetMemberDeclaration("LaunchModuleName");
     public bool SupportsUniqueBuildEnvironment
         => HasTargetMemberDeclaration("BuildEnvironment") && HasTargetToken("TargetBuildEnvironment") && HasTargetToken("Unique");
@@ -265,6 +265,22 @@ public sealed class UnrealEngineCompatibility
         return Regex.IsMatch(
             _targetRulesSource,
             $@"(?m)(?:^|[;{{}}])\s*(?:public|protected|internal)\s+(?:(?:static|readonly|virtual|override|new)\s+)*[^\r\n;{{}}]+?\b{Regex.Escape(token)}\b\s*(?:[;={{])",
+            RegexOptions.CultureInvariant);
+    }
+
+    private bool HasTargetVirtualMethodDeclaration(string token)
+    {
+        if (!_targetRulesAuthoritative
+            || string.IsNullOrWhiteSpace(_targetRulesSource)
+            || string.IsNullOrWhiteSpace(token)) return false;
+
+        // Synthetic Target.cs can only emit an override when the exact TargetRules API still
+        // exposes an overridable method. Newer UBT sources may keep the old method name in calls,
+        // comments, migration helpers, or diagnostics after removing the virtual itself. A raw
+        // identifier probe made UE5.8 generate an invalid ShouldCompileMonolithic override.
+        return Regex.IsMatch(
+            _targetRulesSource,
+            $@"(?m)(?:^|[;{{}}])\s*(?:public|protected|internal)\s+(?:(?:new|sealed)\s+)*(?:virtual|abstract)\s+[^\r\n;{{}}()=]+?\b{Regex.Escape(token)}\b\s*\(",
             RegexOptions.CultureInvariant);
     }
 
