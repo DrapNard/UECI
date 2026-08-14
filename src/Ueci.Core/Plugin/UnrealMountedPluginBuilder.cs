@@ -337,6 +337,31 @@ internal sealed class UnrealMountedPluginBuilder
                     $"download={FormatDuration(toolchain.DownloadDuration)}, " +
                     $"extract={FormatDuration(toolchain.ExtractionDuration)} ({toolchain.ExtractionBackend}), " +
                     $"projection={FormatDuration(toolchain.ProjectionDuration)}.");
+
+                if (compatibility.Version.Major == 4 && OperatingSystem.IsLinux())
+                {
+                    try
+                    {
+                        ExternalProcessResult probe = await UnrealLinuxNativeToolchainInstaller.ProbeCompilerAsync(
+                            toolchain.ToolchainDirectory,
+                            cancellationToken).ConfigureAwait(false);
+                        string probeText = string.Join(
+                            " ",
+                            new[] { probe.StandardOutput, probe.StandardError }
+                                .SelectMany(value => value.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                                .Select(value => value.Trim())
+                                .Where(value => value.Length != 0)
+                                .Take(2));
+                        options.Progress?.Invoke(probe.Succeeded
+                            ? $"[toolchain] legacy compiler probe OK: {probeText}"
+                            : $"[toolchain] legacy compiler probe FAILED ({probe.ExitCode}): {probeText}");
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                        or System.ComponentModel.Win32Exception)
+                    {
+                        options.Progress?.Invoke($"[toolchain] legacy compiler probe could not start: {ex.Message}");
+                    }
+                }
             }
 
             if (compile.Paths.RuntimeKind == UnrealBuildToolRuntimeKind.DotNet
@@ -372,6 +397,17 @@ internal sealed class UnrealMountedPluginBuilder
             options.Progress?.Invoke(compatibility.Version.Major >= 5
                 ? "Using version-filtered hermetic local UBT executor configuration."
                 : "Using legacy UE4 local UBT execution without modern executor XML injection.");
+
+            if (compatibility.Version.Major == 4 && toolchain is not null)
+            {
+                var legacySdkVariables = new List<string>(3);
+                if (compatibility.LegacyLinuxUsesLinuxRoot) legacySdkVariables.Add("LINUX_ROOT");
+                if (compatibility.LegacyLinuxUsesLinuxMultiarchRoot) legacySdkVariables.Add("LINUX_MULTIARCH_ROOT");
+                if (compatibility.LegacyLinuxUsesAutoSdkRoot) legacySdkVariables.Add("UE_SDKS_ROOT");
+                options.Progress?.Invoke(
+                    "[compat] Exact legacy Linux SDK source requests: " +
+                    (legacySdkVariables.Count == 0 ? "PATH/CC/CXX only" : string.Join(", ", legacySdkVariables)));
+            }
 
             IReadOnlyList<MountedBuildPhase> phases = CreatePhases(plugin, host);
             var phaseResults = new List<UnrealPluginBuildPhaseResult>();

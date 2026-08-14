@@ -41,6 +41,7 @@ internal static class Program
         ("pack extractor rejects unknown magic", PackExtractorRejectsUnknownMagicAsync),
         ("runtimeconfig parser reads shared framework", RuntimeConfigParsesAsync),
         ("runtimeconfig writer pins runner roll-forward", RuntimeConfigRollForwardAsync),
+        ("runtimeconfig writer pins runner framework version", RuntimeConfigPinFrameworkAsync),
         ("Epic bundled dotnet resolver selects host runtime", BundledDotNetResolverAsync),
         ("Epic bundled dotnet SDK resolver selects latest SDK", BundledDotNetSdkResolverAsync),
         ("Epic bundled dotnet resolver accepts historical Linux bundle layouts", BundledDotNetHistoricalLayoutAsync),
@@ -1057,6 +1058,38 @@ internal static class Program
         }
     }
 
+    private static async Task RuntimeConfigPinFrameworkAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string path = Path.Combine(root, "UnrealBuildTool.runtimeconfig.json");
+            await File.WriteAllTextAsync(path, """
+                {
+                  "runtimeOptions": {
+                    "tfm": "netcoreapp3.1",
+                    "framework": {
+                      "name": "Microsoft.NETCore.App",
+                      "version": "3.1.0"
+                    }
+                  }
+                }
+                """);
+
+            await DotNetRuntimeConfig.PinFrameworkVersionAsync(path, new Version(8, 0, 19));
+            string rewritten = await File.ReadAllTextAsync(path);
+            Assert.True(rewritten.Contains("\"version\": \"8.0.19\"", StringComparison.Ordinal));
+            Assert.True(rewritten.Contains("\"rollForward\": \"LatestMajor\"", StringComparison.Ordinal));
+
+            DotNetRuntimeConfig config = await DotNetRuntimeConfig.ReadAsync(path);
+            Assert.Equal(new Version(8, 0, 19), config.Frameworks[0].Version);
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
+    }
+
     private static Task BundledDotNetResolverAsync()
     {
         var files = new Dictionary<string, GitDependencyFile>(StringComparer.Ordinal)
@@ -1257,6 +1290,9 @@ internal static class Program
             Assert.False(ue414.SupportsExtraModuleNames);
             Assert.False(ue414.SupportsTargetLinkType);
             Assert.True(ue414.SupportsShouldCompileMonolithic);
+            Assert.True(ue414.LegacyLinuxUsesLinuxRoot);
+            Assert.True(ue414.LegacyLinuxUsesLinuxMultiarchRoot);
+            Assert.False(ue414.LegacyLinuxUsesAutoSdkRoot);
 
             string headerOnly = Path.Combine(root, "header-only");
             await WriteCompatibilityFixtureAsync(headerOnly, 4, 5, modern: false);
@@ -2220,6 +2256,11 @@ internal static class Program
             await File.WriteAllTextAsync(
                 Path.Combine(configuration, "BuildConfiguration.cs"),
                 "public class BuildConfiguration { }");
+            string linuxPlatform = Path.Combine(ubt, "Platform", "Linux");
+            Directory.CreateDirectory(linuxPlatform);
+            await File.WriteAllTextAsync(
+                Path.Combine(linuxPlatform, "LinuxPlatformSDK.cs"),
+                "class LinuxPlatformSDK { string A = Environment.GetEnvironmentVariable(\"LINUX_MULTIARCH_ROOT\"); string B = Environment.GetEnvironmentVariable(\"LINUX_ROOT\"); }");
         }
     }
 

@@ -109,7 +109,7 @@ public sealed class UnrealBuildToolRunner
                 executable = runtimeHost;
                 processArguments = IsEngineBundledDotNet(ubt.EngineRoot, runtimeHost)
                     ? [ubt.AssemblyPath, .. arguments]
-                    : ["--roll-forward", "LatestMajor", ubt.AssemblyPath, .. arguments];
+                    : ["--fx-version", FormatCurrentRuntimeVersion(), ubt.AssemblyPath, .. arguments];
                 break;
 
             case UnrealBuildToolRuntimeKind.Mono:
@@ -138,14 +138,24 @@ public sealed class UnrealBuildToolRunner
                     if (File.Exists(clang)) environment["CC"] = clang;
                     if (File.Exists(clangxx)) environment["CXX"] = clangxx;
 
-                    if (OperatingSystem.IsWindows())
+                    bool useLinuxRoot = OperatingSystem.IsWindows()
+                        || compatibility?.LegacyLinuxUsesLinuxRoot == true;
+                    bool useMultiarchRoot = OperatingSystem.IsWindows()
+                        || compatibility?.LegacyLinuxUsesLinuxMultiarchRoot == true;
+                    bool useAutoSdkRoot = compatibility?.LegacyLinuxUsesAutoSdkRoot == true;
+
+                    if (useLinuxRoot)
                     {
-                        // These variables describe Epic's Windows -> Linux cross compiler. Native
-                        // Linux UBT uses the Setup.sh-projected toolchain directly and can treat an
-                        // injected UE_SDKS_ROOT/LINUX_MULTIARCH_ROOT as an incomplete AutoSDK, which
-                        // prevents LinuxPlatformFactory from registering the platform.
                         environment["LINUX_ROOT"] = toolchainRoot;
+                    }
+                    if (useMultiarchRoot)
+                    {
                         environment["LINUX_MULTIARCH_ROOT"] = toolchainRoot + Path.DirectorySeparatorChar;
+                    }
+                    if (useAutoSdkRoot)
+                    {
+                        environment["UE_SDKS_ROOT"] = Path.Combine(
+                            ubt.EngineRoot, "Engine", "Extras", "ThirdPartyNotUE", "SDKs");
                     }
                 }
                 break;
@@ -159,11 +169,10 @@ public sealed class UnrealBuildToolRunner
                 throw new NotSupportedException($"Unsupported UBT runtime '{ubt.RuntimeKind}'.");
         }
 
-        bool exposeCrossLinuxSdkVariables = !string.IsNullOrWhiteSpace(legacyLinuxToolchainRoot)
-            && OperatingSystem.IsWindows();
-        IReadOnlyList<string> unsetEnvironment = exposeCrossLinuxSdkVariables
-            ? ["UE_SDKS_ROOT"]
-            : ["LINUX_ROOT", "LINUX_MULTIARCH_ROOT", "UE_SDKS_ROOT"];
+        var unsetEnvironment = new List<string>(3);
+        if (!environment.ContainsKey("LINUX_ROOT")) unsetEnvironment.Add("LINUX_ROOT");
+        if (!environment.ContainsKey("LINUX_MULTIARCH_ROOT")) unsetEnvironment.Add("LINUX_MULTIARCH_ROOT");
+        if (!environment.ContainsKey("UE_SDKS_ROOT")) unsetEnvironment.Add("UE_SDKS_ROOT");
         return await ExternalProcess.RunAsync(
             executable,
             ubt.EngineRoot,
@@ -171,6 +180,13 @@ public sealed class UnrealBuildToolRunner
             environment,
             unsetEnvironment: unsetEnvironment,
             cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    private static string FormatCurrentRuntimeVersion()
+    {
+        Version version = Environment.Version;
+        int build = version.Build >= 0 ? version.Build : 0;
+        return $"{version.Major}.{version.Minor}.{build}";
     }
 
     private static string ResolveDotNetRoot(string runtimeHost)

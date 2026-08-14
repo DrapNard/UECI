@@ -50,6 +50,7 @@ public sealed class UnrealEngineCompatibility
     private readonly string _moduleRulesSource;
     private readonly string _projectSource;
     private readonly string _ubtSource;
+    private readonly string _linuxPlatformSource;
 
     private UnrealEngineCompatibility(
         UnrealEngineVersion version,
@@ -57,7 +58,8 @@ public sealed class UnrealEngineCompatibility
         string targetRulesSource,
         string moduleRulesSource,
         string projectSource,
-        string ubtSource)
+        string ubtSource,
+        string linuxPlatformSource)
     {
         Version = version;
         ProjectStyle = projectStyle;
@@ -65,6 +67,7 @@ public sealed class UnrealEngineCompatibility
         _moduleRulesSource = moduleRulesSource;
         _projectSource = projectSource;
         _ubtSource = ubtSource;
+        _linuxPlatformSource = linuxPlatformSource;
     }
 
     public UnrealEngineVersion Version { get; }
@@ -120,6 +123,15 @@ public sealed class UnrealEngineCompatibility
     public bool SupportsDisableEnginePluginsByDefaultProject
         => HasUbtToken("DisableEnginePluginsByDefault") || Version.Major >= 5;
 
+    public bool LegacyLinuxUsesLinuxRoot
+        => ContainsIdentifier(_linuxPlatformSource, "LINUX_ROOT");
+
+    public bool LegacyLinuxUsesLinuxMultiarchRoot
+        => ContainsIdentifier(_linuxPlatformSource, "LINUX_MULTIARCH_ROOT");
+
+    public bool LegacyLinuxUsesAutoSdkRoot
+        => ContainsIdentifier(_linuxPlatformSource, "UE_SDKS_ROOT");
+
     public bool SupportsTargetMember(string token) => HasTargetToken(token);
     public bool SupportsModuleMember(string token) => HasModuleToken(token);
     public bool SupportsUbtToken(string token) => HasUbtToken(token);
@@ -165,6 +177,15 @@ public sealed class UnrealEngineCompatibility
             if (moduleRulesSource.Length == 0) moduleRulesSource = fallbackCorpus;
         }
 
+        // The Linux SDK selection code moved several times across UE4. Read the bounded platform
+        // subtree from the exact commit and use the environment-variable names it actually references
+        // instead of guessing from the release number. This is especially important for UE4.20 where
+        // native Setup.sh toolchains and Windows cross-toolchains coexist.
+        string linuxPlatformRoot = Path.Combine(ubtRoot, "Platform", "Linux");
+        string linuxPlatformSource = Directory.Exists(linuxPlatformRoot)
+            ? await ReadLinuxPlatformSourceCorpusAsync(linuxPlatformRoot, cancellationToken).ConfigureAwait(false)
+            : string.Empty;
+
         string ubtSource = string.Join(
             "\n",
             new[] { targetRulesSource, moduleRulesSource, buildConfigurationSource, buildModeSource, projectSource, fallbackCorpus }
@@ -176,7 +197,8 @@ public sealed class UnrealEngineCompatibility
             targetRulesSource,
             moduleRulesSource,
             projectSource,
-            ubtSource);
+            ubtSource,
+            linuxPlatformSource);
     }
 
     public static UnrealBuildToolProjectStyle DetectProjectStyle(string projectSource, UnrealEngineVersion version)
@@ -299,6 +321,30 @@ public sealed class UnrealEngineCompatibility
     {
         if (!File.Exists(path)) return string.Empty;
         return await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<string> ReadLinuxPlatformSourceCorpusAsync(
+        string root,
+        CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(root)) return string.Empty;
+        var builder = new System.Text.StringBuilder(capacity: 64 * 1024);
+        foreach (string path in Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
+                     .OrderBy(value => value, StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            FileInfo info = new(path);
+            if (info.Length > 1_000_000) continue;
+            string text = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+            if (text.Contains("LINUX_ROOT", StringComparison.Ordinal)
+                || text.Contains("LINUX_MULTIARCH_ROOT", StringComparison.Ordinal)
+                || text.Contains("UE_SDKS_ROOT", StringComparison.Ordinal))
+            {
+                builder.AppendLine(text);
+            }
+            if (builder.Length > 1_000_000) break;
+        }
+        return builder.ToString();
     }
 
     private static async Task<string> ReadSmallSourceCorpusAsync(string root, CancellationToken cancellationToken)

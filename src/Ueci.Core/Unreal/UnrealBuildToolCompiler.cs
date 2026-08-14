@@ -93,8 +93,9 @@ public sealed class UnrealBuildToolCompiler
                     && effectiveRuntime.Kind == UnrealBuildToolRuntimeKind.DotNet
                     && !string.IsNullOrWhiteSpace(existing.RuntimeConfigPath))
                 {
-                    await DotNetRuntimeConfig.EnsureRollForwardAsync(
+                    await DotNetRuntimeConfig.PinFrameworkVersionAsync(
                         existing.RuntimeConfigPath,
+                        Environment.Version,
                         "LatestMajor",
                         cancellationToken).ConfigureAwait(false);
                 }
@@ -189,8 +190,9 @@ public sealed class UnrealBuildToolCompiler
             // UBT can launch managed children without preserving that environment. Persist the
             // policy into the generated runtimeconfig as well so a netcoreapp3.x UBT never falls
             // back onto an installed-but-unusable OpenSSL 1.1-era runtime.
-            await DotNetRuntimeConfig.EnsureRollForwardAsync(
+            await DotNetRuntimeConfig.PinFrameworkVersionAsync(
                 paths.RuntimeConfigPath,
+                Environment.Version,
                 "LatestMajor",
                 cancellationToken).ConfigureAwait(false);
         }
@@ -257,7 +259,7 @@ public sealed class UnrealBuildToolCompiler
             root,
             dotnet,
             dotnet,
-            new Version(Environment.Version.Major, Environment.Version.Minor),
+            Environment.Version,
             BundlePrefix: null,
             ExactPaths: Array.Empty<string>(),
             Prefixes: Array.Empty<string>());

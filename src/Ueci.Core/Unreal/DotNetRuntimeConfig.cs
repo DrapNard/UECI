@@ -60,6 +60,59 @@ public sealed record DotNetRuntimeConfig(IReadOnlyList<DotNetFrameworkRequiremen
     }
 
 
+    public static async Task PinFrameworkVersionAsync(
+        string path,
+        Version version,
+        string policy = "LatestMajor",
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(version);
+        ArgumentException.ThrowIfNullOrWhiteSpace(policy);
+
+        string json = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+        JsonNode root = JsonNode.Parse(
+            json,
+            documentOptions: new JsonDocumentOptions
+            {
+                AllowTrailingCommas = true,
+                CommentHandling = JsonCommentHandling.Skip,
+            }) ?? throw new InvalidDataException($"Runtime config '{path}' is empty.");
+        JsonObject rootObject = root as JsonObject
+            ?? throw new InvalidDataException($"Runtime config '{path}' is not a JSON object.");
+        JsonObject runtimeOptions = rootObject["runtimeOptions"] as JsonObject
+            ?? throw new InvalidDataException($"Runtime config '{path}' has no runtimeOptions object.");
+
+        string versionText = FormatRuntimeVersion(version);
+        bool updated = false;
+        if (runtimeOptions["framework"] is JsonObject framework
+            && string.Equals((string?)framework["name"], "Microsoft.NETCore.App", StringComparison.Ordinal))
+        {
+            framework["version"] = versionText;
+            updated = true;
+        }
+        if (runtimeOptions["frameworks"] is JsonArray frameworks)
+        {
+            foreach (JsonNode? item in frameworks)
+            {
+                if (item is JsonObject candidate
+                    && string.Equals((string?)candidate["name"], "Microsoft.NETCore.App", StringComparison.Ordinal))
+                {
+                    candidate["version"] = versionText;
+                    updated = true;
+                }
+            }
+        }
+        if (!updated)
+        {
+            throw new InvalidDataException(
+                $"Runtime config '{path}' does not declare Microsoft.NETCore.App.");
+        }
+
+        runtimeOptions["rollForward"] = policy;
+        await WriteRuntimeConfigAsync(path, rootObject, cancellationToken).ConfigureAwait(false);
+    }
+
     public static async Task EnsureRollForwardAsync(
         string path,
         string policy = "LatestMajor",
@@ -82,6 +135,20 @@ public sealed record DotNetRuntimeConfig(IReadOnlyList<DotNetFrameworkRequiremen
             ?? throw new InvalidDataException($"Runtime config '{path}' has no runtimeOptions object.");
         runtimeOptions["rollForward"] = policy;
 
+        await WriteRuntimeConfigAsync(path, rootObject, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static string FormatRuntimeVersion(Version version)
+    {
+        int build = version.Build >= 0 ? version.Build : 0;
+        return $"{version.Major}.{version.Minor}.{build}";
+    }
+
+    private static async Task WriteRuntimeConfigAsync(
+        string path,
+        JsonObject rootObject,
+        CancellationToken cancellationToken)
+    {
         string temp = path + $".{Guid.NewGuid():N}.tmp";
         try
         {

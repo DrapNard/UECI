@@ -55,17 +55,20 @@ selection="$(select_assets_from_release_json <<<"$release_json")"
 asset_release_ref="$RELEASE_REF"
 
 # Some transitional UE4.6 patch tags kept source releases separate from the dependency release
-# carrying Required_1of2/Required_2of2. If the exact source tag has no complete set, search the
-# repository's 4.6.x releases and reuse the nearest matching dependency archive set. The source
-# commit remains pinned to RELEASE_REF; only the historical binary dependency overlay comes from
-# the sibling release.
+# carrying Required_1of2/Required_2of2. If the exact source tag has no complete set, first search
+# sibling 4.6.x releases. A few GitHub histories expose no complete 4.6 archive set at all; in that
+# case use a 4.5 dependency release only as a source for the two managed UBT support assemblies.
+# The source commit always remains pinned to RELEASE_REF.
+legacy_support_only=0
 if [[ "$selection" == MISSING$'\t'* && "$VERSION" == "4.6" ]]; then
-  for page in $(seq 1 20); do
-    page_json="$(gh api "repos/EpicGames/UnrealEngine/releases?per_page=100&page=$page")"
-    count="$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' <<<"$page_json")"
-    [[ "$count" != "0" ]] || break
+  for search_version in "4.6" "4.5"; do
+    [[ "$selection" == MISSING$'\t'* ]] || break
+    for page in $(seq 1 20); do
+      page_json="$(gh api "repos/EpicGames/UnrealEngine/releases?per_page=100&page=$page")"
+      count="$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' <<<"$page_json")"
+      [[ "$count" != "0" ]] || break
 
-    candidate="$(python3 -c '
+      candidate="$(python3 -c '
 import json, sys
 version=sys.argv[1]
 for release in json.load(sys.stdin):
@@ -81,13 +84,19 @@ for release in json.load(sys.stdin):
         if asset:
             print(str(asset.get("name") or "") + "\t" + str(asset.get("url") or ""))
     break
-' "$VERSION" <<<"$page_json")"
-    if [[ "$candidate" == SOURCE$'\t'* ]]; then
-      asset_release_ref="$(head -n1 <<<"$candidate" | cut -f2-)"
-      selection="$(tail -n +2 <<<"$candidate")"
-      echo "[matrix] UE$VERSION dependency archives found on sibling release $asset_release_ref"
-      break
-    fi
+' "$search_version" <<<"$page_json")"
+      if [[ "$candidate" == SOURCE$'\t'* ]]; then
+        asset_release_ref="$(head -n1 <<<"$candidate" | cut -f2-)"
+        selection="$(tail -n +2 <<<"$candidate")"
+        if [[ "$search_version" == "4.5" ]]; then
+          legacy_support_only=1
+          echo "[matrix] UE4.6 managed support archives found on legacy release $asset_release_ref"
+        else
+          echo "[matrix] UE4.6 dependency archives found on sibling release $asset_release_ref"
+        fi
+        break
+      fi
+    done
   done
 fi
 
@@ -111,15 +120,50 @@ ARCHIVE_DIR="${TMPDIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/ueci-legacy-assets-$VERS
 mkdir -p "$ARCHIVE_DIR"
 trap 'rm -rf -- "$ARCHIVE_DIR"' EXIT
 
+extract_managed_support() {
+  local archive="$1"
+  local found=0
+  local entry base destination
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    base="${entry##*/}"
+    case "${base,,}" in
+      ionic.zip.reduced.dll|ionic.zip.dll|rpcutility.exe|rpcutility.dll) ;;
+      *) continue ;;
+    esac
+    destination="$UPPER/Engine/Binaries/DotNET/$base"
+    mkdir -p "$(dirname "$destination")"
+    unzip -p "$archive" "$entry" > "$destination"
+    found=1
+  done < <(unzip -Z1 "$archive" | grep -Ei '(^|/)(Ionic\.Zip(\.Reduced)?\.dll|RPCUtility\.(exe|dll))$' || true)
+  return $(( found == 1 ? 0 : 1 ))
+}
+
 while IFS=$'\t' read -r name url; do
   [[ -n "$name" && -n "$url" ]] || continue
   archive="$ARCHIVE_DIR/$name"
   echo "[matrix] downloading UE$VERSION legacy dependency asset: $name"
   gh api "$url" -H 'Accept: application/octet-stream' > "$archive"
   [[ -s "$archive" ]] || { echo "Downloaded asset is empty: $name" >&2; exit 1; }
-  echo "[matrix] extracting $name into the FUSE upper overlay"
-  unzip -q -o "$archive" -d "$UPPER"
+  if [[ "$VERSION" == "4.6" && "$legacy_support_only" == "1" ]]; then
+    echo "[matrix] extracting only UE4.6 managed UBT support from $name"
+    extract_managed_support "$archive" || true
+  else
+    echo "[matrix] extracting $name into the FUSE upper overlay"
+    unzip -q -o "$archive" -d "$UPPER"
+  fi
 done <<<"$selection"
+
+if [[ "$VERSION" == "4.6" && "$legacy_support_only" == "1" ]]; then
+  ionic="$UPPER/Engine/Binaries/DotNET/Ionic.Zip.Reduced.dll"
+  [[ -f "$ionic" ]] || ionic="$UPPER/Engine/Binaries/DotNET/Ionic.Zip.dll"
+  rpc="$UPPER/Engine/Binaries/DotNET/RPCUtility.exe"
+  [[ -f "$rpc" ]] || rpc="$UPPER/Engine/Binaries/DotNET/RPCUtility.dll"
+  if [[ ! -f "$ionic" || ! -f "$rpc" ]]; then
+    echo "Legacy release $asset_release_ref did not contain both Ionic.Zip and RPCUtility support files." >&2
+    exit 1
+  fi
+fi
 
 printf '%s\n' "$RELEASE_REF|$asset_release_ref" > "$MARKER"
 echo "[matrix] UE$VERSION legacy dependencies prepared in $UPPER (assets: $asset_release_ref)"

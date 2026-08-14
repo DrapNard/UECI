@@ -265,6 +265,28 @@ public sealed class UnrealLinuxNativeToolchainInstaller
         _source = source ?? new HttpUnrealToolchainArchiveSource();
     }
 
+    public static Task<ExternalProcessResult> ProbeCompilerAsync(
+        string toolchainDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(toolchainDirectory);
+        string root = Path.GetFullPath(toolchainDirectory);
+        string compiler = Path.Combine(
+            root,
+            "x86_64-unknown-linux-gnu",
+            "bin",
+            OperatingSystem.IsWindows() ? "clang++.exe" : "clang++");
+        if (!File.Exists(compiler))
+        {
+            throw new FileNotFoundException("Epic Linux toolchain compiler is missing.", compiler);
+        }
+        return ExternalProcess.RunAsync(
+            compiler,
+            root,
+            ["--version"],
+            cancellationToken: cancellationToken);
+    }
+
     public static IReadOnlyList<string> FindInstalledSparseProtectionPaths(string engineRoot)
     {
         // Compatibility bridge for working sets created by alpha.6-alpha.8, where the native

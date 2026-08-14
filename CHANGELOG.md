@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.0-alpha.24] - 2026-08-14
+
+### Fixed
+
+- Pin runner-managed historical UnrealBuildTool execution to the exact `Microsoft.NETCore.App` runtime already hosting UECI, including `dotnet --fx-version`, so UE5.0 cannot fall back to an installed .NET Core 3.1 runtime that requires the obsolete OpenSSL 1.1 stack.
+- Detect legacy Linux SDK environment variables from the exact commit's `UnrealBuildTool/Platform/Linux` sources and export only the variables that generation actually reads, while keeping the projected Epic compiler first in `PATH` through `CC`/`CXX`.
+- Add an explicit legacy compiler probe to boundary-build diagnostics so UE4 Linux registration failures distinguish an unusable projected compiler from UBT SDK-selection logic.
+- Let UE4.6 source releases fall back to UE4.5 `Required_*` dependency archives when no complete UE4.6 archive set is published, extracting only the Ionic.Zip/RPCUtility managed support files required to compile that exact UE4.6 UBT source.
+
+### Added
+
+- Regression coverage for exact runner framework pinning and source-detected legacy Linux SDK environment requirements.
+
+### Validation
+
+- The alpha.23 boundary smoke is green on UE5.1, UE5.7, and UE5.8, each producing `libUECIHost-UECIMinimal.so`; alpha.24 narrows the active boundary work to UE4.6, UE4.20, and UE5.0.
+- CLI version advanced to `0.5.0-alpha.24`.
+
 ## [0.5.0-alpha.23] - 2026-08-14
 
 ### Fixed
