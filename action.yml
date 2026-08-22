@@ -94,7 +94,7 @@ runs:
     - name: Restore UECI cold-start cache
       id: cache
       if: ${{ inputs.cache-enabled == 'true' && github.event_name != 'pull_request_target' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-      uses: actions/cache@v5
+      uses: actions/cache@v6
       with:
         path: |
           ${{ inputs.cache-dir }}/engine-profiles
