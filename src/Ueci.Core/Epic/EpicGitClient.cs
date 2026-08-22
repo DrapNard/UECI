@@ -197,6 +197,96 @@ public sealed class EpicGitClient
         return false;
     }
 
+    /// <summary>
+    /// Predicts the source closure of a managed MSBuild entry project from its real
+    /// ProjectReference/Import graph. The result is a set of exact Git paths suitable for one
+    /// backfill request, avoiding a FUSE-triggered promisor fetch for each C# file.
+    /// Dynamic MSBuild expressions are deliberately excluded; the mounted VFS remains the
+    /// correctness fallback and records those accesses in the learned Engine profile.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> DiscoverManagedProjectSourcePathsAsync(
+        string repositoryDirectory,
+        string entryProjectPath,
+        string? tokenEnvironmentVariable = null,
+        Action<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        string token = GitHubReadOnlyCredential.GetRequiredToken(tokenEnvironmentVariable);
+        IReadOnlyDictionary<string, string> environment = GitHubReadOnlyCredential.CreateGitEnvironment(token);
+        string root = Path.GetFullPath(repositoryDirectory);
+        string commit = await GetPinnedCommitAsync(root, cancellationToken).ConfigureAwait(false);
+        string entry = NormalizeGitPathspec(entryProjectPath);
+        var pending = new Queue<string>();
+        var projects = new HashSet<string>(StringComparer.Ordinal);
+        var imports = new HashSet<string>(StringComparer.Ordinal);
+        pending.Enqueue(entry);
+
+        // A malformed/custom project must never make a plugin build less reliable. Keep the graph
+        // bounded and fall back to normal lazy hydration if it cannot be statically understood.
+        const int maxProjects = 128;
+        while (pending.Count != 0 && projects.Count < maxProjects)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string project = pending.Dequeue();
+            if (!projects.Add(project))
+            {
+                continue;
+            }
+
+            GitProcessResult source = await GitProcess.RunAsync(
+                root,
+                ["show", $"{commit}:{project}"],
+                environment,
+                cancellationToken).ConfigureAwait(false);
+            if (source.ExitCode != 0)
+            {
+                projects.Remove(project);
+                continue;
+            }
+
+            try
+            {
+                foreach (string referenced in ManagedProjectGraph.GetReferencedPaths(project, source.StandardOutput))
+                {
+                    if (referenced.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+                    {
+                        pending.Enqueue(referenced);
+                    }
+                    else if (referenced.EndsWith(".props", StringComparison.OrdinalIgnoreCase)
+                        || referenced.EndsWith(".targets", StringComparison.OrdinalIgnoreCase))
+                    {
+                        imports.Add(referenced);
+                    }
+                }
+            }
+            catch (System.Xml.XmlException)
+            {
+                // The project will still be handled by the VFS; this only disables prediction.
+                projects.Remove(project);
+            }
+        }
+
+        if (projects.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var sourceDirectories = projects
+            .Select(project => project[..project.LastIndexOf('/')])
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
+        string[] projectFiles = await ListTrackedPathsAsync(
+            root, commit, sourceDirectories, environment, cancellationToken).ConfigureAwait(false);
+        var predicted = new HashSet<string>(projectFiles, StringComparer.Ordinal);
+        predicted.UnionWith(projects);
+        predicted.UnionWith(imports);
+        progress?.Invoke(
+            $"[vfs/graph] Managed project graph: {projects.Count:N0} projects, " +
+            $"{predicted.Count:N0} source inputs predicted from MSBuild references.");
+        return predicted.OrderBy(path => path, StringComparer.Ordinal).ToArray();
+    }
+
 
     public async Task MaterializePathsAsync(
         string repositoryDirectory,
@@ -383,6 +473,32 @@ public sealed class EpicGitClient
             .Length;
     }
 
+    private static async Task<string[]> ListTrackedPathsAsync(
+        string root,
+        string commit,
+        IReadOnlyList<string> normalizedPaths,
+        IReadOnlyDictionary<string, string> environment,
+        CancellationToken cancellationToken)
+    {
+        var arguments = new List<string>(5 + normalizedPaths.Count)
+        {
+            "ls-tree",
+            "-r",
+            "--name-only",
+            commit,
+            "--",
+        };
+        arguments.AddRange(normalizedPaths);
+        GitProcessResult result = await RequireSuccessAsync(root, arguments, environment, cancellationToken)
+            .ConfigureAwait(false);
+        return result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(path => path.Replace('\\', '/'))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
+    }
+
 
     private static bool TryParseGitVersion(string output, out Version? version)
     {
@@ -518,6 +634,23 @@ public sealed class EpicGitClient
             Path.GetFullPath(outputPath),
             environment,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<string> ReadTrackedTextFileAsync(
+        string repositoryDirectory,
+        string enginePath,
+        string? tokenEnvironmentVariable = null,
+        CancellationToken cancellationToken = default)
+    {
+        string token = GitHubReadOnlyCredential.GetRequiredToken(tokenEnvironmentVariable);
+        IReadOnlyDictionary<string, string> environment = GitHubReadOnlyCredential.CreateGitEnvironment(token);
+        string root = Path.GetFullPath(repositoryDirectory);
+        string commit = await GetPinnedCommitAsync(root, cancellationToken).ConfigureAwait(false);
+        string normalized = NormalizeGitPathspec(enginePath);
+        GitProcessResult result = await RequireSuccessAsync(
+            root, ["cat-file", "blob", $"{commit}:{normalized}"], environment, cancellationToken)
+            .ConfigureAwait(false);
+        return result.StandardOutput;
     }
 
 

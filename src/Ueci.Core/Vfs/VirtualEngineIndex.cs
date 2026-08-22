@@ -34,6 +34,34 @@ public sealed class VirtualEngineIndex
             : [];
     }
 
+    /// <summary>
+    /// Returns immutable Git-backed files below a virtual directory. Callers use this to predict
+    /// semantic descriptor scans (for example UBT's Engine plugin discovery) before FUSE receives
+    /// hundreds of individual open requests.
+    /// </summary>
+    public IReadOnlyList<string> GetGitFilePathsUnder(string directory, string suffix)
+    {
+        string root = VirtualEnginePath.Normalize(directory);
+        string prefix = root.Length == 0 ? string.Empty : root + "/";
+        return _entries
+            .Where(pair => pair.Value.Metadata.Source == VirtualEngineSourceKind.Git
+                && pair.Value.Metadata.Kind != VirtualEngineNodeKind.Directory
+                && pair.Key.StartsWith(prefix, StringComparison.Ordinal)
+                && pair.Key.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+            .Select(pair => pair.Key)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    public IReadOnlyList<string> GetGitFilePaths()
+        => _entries
+            .Where(pair => pair.Value.Metadata.Source == VirtualEngineSourceKind.Git
+                && pair.Value.Metadata.Kind != VirtualEngineNodeKind.Directory
+                && pair.Value.GitEntry is not null)
+            .Select(pair => pair.Key)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
+
     public static VirtualEngineIndex Build(EpicGitTreeIndex git, GitDependenciesManifest manifest, Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(git);

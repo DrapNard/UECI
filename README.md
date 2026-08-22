@@ -66,7 +66,7 @@ The long-term design supports both **materialized mode** (portable, no special p
 
 ## Unreal release compatibility matrix
 
-Alpha.23 continues hardening the executable release-compatibility contract introduced in alpha.18 from repeated real Linux boundary runs. Alpha.22 produced the first complete green plugin build on UE5.7 through the FUSE backend, including a packaged native `.so`; the remaining release families are still treated as test-driven compatibility work rather than claimed support. `.github/workflows/unreal-version-matrix.yml` contains 32 independent Linux/FUSE jobs for the stable Epic release branches:
+Alpha.23 continues hardening the executable release-compatibility contract introduced in alpha.18 from repeated real Linux boundary runs. Alpha.22 produced the first complete green plugin build on UE5.7 through the FUSE backend, including a packaged native `.so`; the remaining release families are still treated as test-driven compatibility work rather than claimed support. `.github/workflows/unreal-version-matrix.yml` contains 31 independent Linux/FUSE jobs for the stable Epic release branches; UE 4.6/Linux is excluded because Epic no longer serves its required historical SDL archive:
 
 - UE4: `4.5` through `4.27`
 - UE5: `5.0` through `5.8`

@@ -1,4 +1,6 @@
 using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Ueci.Epic;
 using Ueci.GitDeps;
@@ -164,6 +166,30 @@ public static class VirtualEngineProfileStore
                 File.Delete(temp);
             }
         }
+    }
+
+    /// <summary>
+    /// Returns a stable identity for the visible lower inputs of a learned profile. Generated rule
+    /// assemblies are only safe to reuse when this identity matches; the commit alone is not enough.
+    /// </summary>
+    public static string GetFingerprint(VirtualEngineProfileDocument document)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        var text = new StringBuilder(document.Commit.Length + document.GitEntries.Count * 80);
+        text.Append(document.Commit.Trim().ToLowerInvariant()).Append('\n');
+        foreach (EpicGitTreeEntry entry in document.GitEntries.OrderBy(entry => entry.Path, StringComparer.Ordinal))
+        {
+            text.Append(entry.Path).Append('\0')
+                .Append(entry.ObjectId).Append('\0')
+                .Append(entry.UnixMode).Append('\0')
+                .Append(entry.IsSymbolicLink ? '1' : '0').Append('\n');
+        }
+        foreach (string path in document.GitDependencyPaths.OrderBy(path => path, StringComparer.Ordinal))
+        {
+            text.Append(path).Append('\n');
+        }
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(text.ToString()));
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
     private static string ValidateCommit(string commit)

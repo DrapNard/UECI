@@ -4,6 +4,8 @@ using System.Text;
 
 namespace Ueci.Epic;
 
+public sealed record EpicGitBlobPrefetchResult(int MaterializedFiles, long MaterializedBytes);
+
 public sealed class EpicGitBlobStore : IDisposable
 {
     private readonly string _repositoryRoot;
@@ -91,6 +93,91 @@ public sealed class EpicGitBlobStore : IDisposable
         return false;
     }
 
+    /// <summary>
+    /// Materializes a known working set through one <c>git cat-file --batch</c> session.
+    /// This is intended to run before the FUSE mount starts serving concurrent opens: it turns
+    /// thousands of tiny, serialized FUSE cache misses into a single sequential Git object read.
+    /// </summary>
+    public async Task<EpicGitBlobPrefetchResult> EnsureManyAsync(
+        IEnumerable<EpicGitTreeEntry> entries,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        string directory = Path.Combine(_cacheRoot, "git-blobs");
+        EpicGitTreeEntry[] missing = entries
+            .GroupBy(entry => ValidateObjectId(entry.ObjectId), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .Where(entry => !IsPlausible(Path.Combine(directory, ValidateObjectId(entry.ObjectId)), entry.Size))
+            .ToArray();
+        if (missing.Length == 0)
+        {
+            return new EpicGitBlobPrefetchResult(0, 0);
+        }
+
+        await _batchGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // No FUSE client is active at this point. A single batch gate protects the persistent
+            // process and makes every object available atomically before it can be opened.
+            Directory.CreateDirectory(directory);
+            EnsureBatchProcess();
+
+            long materializedBytes = 0;
+            foreach (EpicGitTreeEntry entry in missing)
+            {
+                string objectId = ValidateObjectId(entry.ObjectId);
+                string destination = Path.Combine(directory, objectId);
+                string temp = destination + $".{Guid.NewGuid():N}.tmp";
+                try
+                {
+                    // cat-file's stdout can contain a whole source file. Write one request then
+                    // drain its response before issuing the next one, otherwise two full pipes
+                    // can deadlock when a large predicted set is sent at once.
+                    await _batchInput!.WriteLineAsync(objectId).ConfigureAwait(false);
+                    await _batchInput.FlushAsync(cancellationToken).ConfigureAwait(false);
+                    string header = await ReadAsciiLineAsync(_batchOutput!, cancellationToken).ConfigureAwait(false);
+                    long size = ValidateBatchHeader(header, entry);
+                    Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(destination))!);
+                    await using (FileStream output = new(
+                        temp, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024, useAsync: true))
+                    {
+                        await CopyExactlyAsync(_batchOutput!, output, size, cancellationToken).ConfigureAwait(false);
+                    }
+                    int terminator = await ReadByteAsync(_batchOutput!, cancellationToken).ConfigureAwait(false);
+                    if (terminator != '\n')
+                    {
+                        throw new InvalidDataException("git cat-file --batch response was not newline terminated.");
+                    }
+                    if (!IsPlausible(temp, size))
+                    {
+                        throw new InvalidDataException($"Epic Git blob '{objectId}' materialized with unexpected size for '{entry.Path}'.");
+                    }
+                    File.Move(temp, destination, overwrite: true);
+                    ApplyMode(destination, entry.UnixMode);
+                    materializedBytes += size;
+                }
+                finally
+                {
+                    if (File.Exists(temp))
+                    {
+                        File.Delete(temp);
+                    }
+                }
+            }
+            _progress?.Invoke($"[vfs/git] Batch materialized {missing.Length:N0} predicted blobs ({materializedBytes:N0} bytes).");
+            return new EpicGitBlobPrefetchResult(missing.Length, materializedBytes);
+        }
+        catch
+        {
+            ResetBatchProcess();
+            throw;
+        }
+        finally
+        {
+            _batchGate.Release();
+        }
+    }
+
     private async Task MaterializeObjectWithBatchProcessAsync(
         EpicGitTreeEntry entry,
         string outputPath,
@@ -108,17 +195,7 @@ public sealed class EpicGitBlobStore : IDisposable
                     await _batchInput.FlushAsync(cancellationToken).ConfigureAwait(false);
 
                     string header = await ReadAsciiLineAsync(_batchOutput!, cancellationToken).ConfigureAwait(false);
-                    string[] fields = header.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    if (fields.Length != 3
-                        || !string.Equals(fields[0], entry.ObjectId, StringComparison.OrdinalIgnoreCase)
-                        || !string.Equals(fields[1], "blob", StringComparison.Ordinal)
-                        || !long.TryParse(fields[2], System.Globalization.NumberStyles.None,
-                            System.Globalization.CultureInfo.InvariantCulture, out long size)
-                        || size < 0)
-                    {
-                        throw new InvalidDataException(
-                            $"Unexpected git cat-file --batch header for '{entry.Path}': {header}");
-                    }
+                    long size = ValidateBatchHeader(header, entry);
 
                     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
                     await using FileStream output = new(
@@ -146,6 +223,23 @@ public sealed class EpicGitBlobStore : IDisposable
         {
             _batchGate.Release();
         }
+    }
+
+    private static long ValidateBatchHeader(string header, EpicGitTreeEntry entry)
+    {
+        string[] fields = header.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (fields.Length != 3
+            || !string.Equals(fields[0], entry.ObjectId, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(fields[1], "blob", StringComparison.Ordinal)
+            || !long.TryParse(fields[2], System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out long size)
+            || size < 0
+            || (entry.Size >= 0 && size != entry.Size))
+        {
+            throw new InvalidDataException(
+                $"Unexpected git cat-file --batch header for '{entry.Path}': {header}");
+        }
+        return size;
     }
 
     private void EnsureBatchProcess()

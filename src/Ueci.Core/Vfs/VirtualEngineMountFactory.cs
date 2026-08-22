@@ -1,5 +1,6 @@
 using Ueci.Epic;
 using Ueci.GitDeps;
+using Ueci.Plugin;
 
 namespace Ueci.Vfs;
 
@@ -15,7 +16,8 @@ public sealed record VirtualEngineMountPreparationOptions(
     Action<string>? Progress = null,
     string RuntimeIdentifier = "linux-x64",
     bool EnableEngineProfiles = false,
-    bool ForceDynamicProfile = false);
+    bool ForceDynamicProfile = false,
+    IReadOnlyList<string>? AdditionalModuleNames = null);
 
 public sealed class VirtualEngineMountContext : IDisposable
 {
@@ -219,20 +221,48 @@ public static class VirtualEngineMountFactory
         else if (options.EnableEngineProfiles && !options.ForceDynamicProfile)
         {
             VirtualEngineSeed seed = VirtualEngineEmbeddedSeed.Create(fullManifest, options.RuntimeIdentifier);
+            string[] semanticPaths = await DiscoverSemanticBuildInputsAsync(
+                git,
+                metadataRoot,
+                options.TokenEnvironmentVariable,
+                options.Progress,
+                cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<string> managedProjectPaths = await git.DiscoverManagedProjectSourcePathsAsync(
+                metadataRoot,
+                "Engine/Source/Programs/UnrealBuildTool/UnrealBuildTool.csproj",
+                options.TokenEnvironmentVariable,
+                options.Progress,
+                cancellationToken).ConfigureAwait(false);
+            // The module graph is encoded in Build.cs. Hydrate these tiny rule files in one
+            // promisor batch before parsing them, rather than paying one network request per
+            // dependency edge below.
+            _ = await git.TryBackfillCurrentSnapshotPathsAsync(
+                metadataRoot, semanticPaths, options.TokenEnvironmentVariable, 256,
+                options.Progress, cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<string> moduleSourcePaths = await DiscoverModuleSourceInputsAsync(
+                git, metadataRoot, options.TokenEnvironmentVariable, options.AdditionalModuleNames,
+                options.Progress, cancellationToken).ConfigureAwait(false);
+            string[] initialPaths = seed.GitPathspecs
+                .Concat(semanticPaths)
+                .Concat(managedProjectPaths)
+                .Concat(moduleSourcePaths)
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(path => path, StringComparer.Ordinal)
+                .ToArray();
             options.Progress?.Invoke(
                 $"[vfs/profile] No learned profile for {commit[..Math.Min(12, commit.Length)]}; " +
                 $"trying embedded seed '{seed.Name}'.");
 
             bool backfilled = await git.TryBackfillCurrentSnapshotPathsAsync(
                 metadataRoot,
-                seed.GitPathspecs,
+                initialPaths,
                 options.TokenEnvironmentVariable,
                 minimumBatchSize: 256,
                 progress: options.Progress,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
             gitIndex = await EpicGitTreeIndex.LoadPathsAsync(
                 repositoryDirectory: metadataRoot,
-                paths: seed.GitPathspecs,
+                paths: initialPaths,
                 includeBlobSizes: backfilled,
                 tokenEnvironmentVariable: options.TokenEnvironmentVariable,
                 progress: options.Progress,
@@ -314,6 +344,81 @@ public static class VirtualEngineMountFactory
             profileStoreRoot,
             options.Progress,
             source);
+    }
+
+    private static async Task<string[]> DiscoverSemanticBuildInputsAsync(
+        EpicGitClient git,
+        string metadataRoot,
+        string? tokenEnvironmentVariable,
+        Action<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        // UBT's Rules assembly is defined by ModuleRules/TargetRules files and it discovers Engine
+        // plugins from .uplugin descriptors. Derive those inputs from the pinned Git tree, rather
+        // than a version-specific seed, so the first FUSE run does not serialize thousands of
+        // promisor fetches while compiling UE*Rules.dll.
+        IReadOnlyList<string> tracked = await git.ListTrackedFilesAsync(
+            metadataRoot,
+            tokenEnvironmentVariable,
+            cancellationToken).ConfigureAwait(false);
+        string[] inputs = tracked
+            .Where(path =>
+                (path.StartsWith("Engine/", StringComparison.Ordinal)
+                    && (path.EndsWith(".Build.cs", StringComparison.OrdinalIgnoreCase)
+                        || path.EndsWith(".Target.cs", StringComparison.OrdinalIgnoreCase)))
+                || (path.StartsWith("Engine/", StringComparison.Ordinal)
+                    && path.EndsWith(".uplugin", StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
+        progress?.Invoke(
+            $"[vfs/graph] Predicted {inputs.Length:N0} UBT Rules/plugin descriptor inputs from the pinned Git tree.");
+        return inputs;
+    }
+
+    private static async Task<IReadOnlyList<string>> DiscoverModuleSourceInputsAsync(
+        EpicGitClient git,
+        string metadataRoot,
+        string? tokenEnvironmentVariable,
+        IReadOnlyList<string>? rootModules,
+        Action<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (rootModules is not { Count: > 0 }) return [];
+        IReadOnlyList<string> tracked = await git.ListTrackedFilesAsync(metadataRoot, tokenEnvironmentVariable, cancellationToken)
+            .ConfigureAwait(false);
+        Dictionary<string, string[]> rules = tracked
+            .Where(path => path.StartsWith("Engine/", StringComparison.Ordinal) && path.EndsWith(".Build.cs", StringComparison.OrdinalIgnoreCase))
+            .GroupBy(path => Path.GetFileName(path)[..^".Build.cs".Length], StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.OrderBy(ModuleRuleScore).ThenBy(path => path, StringComparer.Ordinal).ToArray(), StringComparer.OrdinalIgnoreCase);
+        var pending = new Queue<string>(rootModules.Where(name => !string.IsNullOrWhiteSpace(name)).Distinct(StringComparer.OrdinalIgnoreCase));
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var directories = new HashSet<string>(StringComparer.Ordinal);
+        while (pending.Count != 0 && visited.Count < 128)
+        {
+            string module = pending.Dequeue();
+            if (!visited.Add(module) || !rules.TryGetValue(module, out string[]? candidates)) continue;
+            foreach (string rule in candidates.Take(1))
+            {
+                directories.Add(VirtualEnginePath.Parent(rule));
+                string source = await git.ReadTrackedTextFileAsync(metadataRoot, rule, tokenEnvironmentVariable, cancellationToken)
+                    .ConfigureAwait(false);
+                foreach (string dependency in UnrealModuleDependencyHints.Extract(source)) pending.Enqueue(dependency);
+            }
+        }
+        string[] paths = tracked.Where(path => directories.Any(directory => path.StartsWith(directory + "/", StringComparison.Ordinal)))
+            .OrderBy(path => path, StringComparer.Ordinal).ToArray();
+        progress?.Invoke($"[vfs/graph] C++ module closure: {visited.Count:N0} modules, {paths.Length:N0} source/header inputs.");
+        return paths;
+    }
+
+    private static int ModuleRuleScore(string path)
+    {
+        if (path.StartsWith("Engine/Source/Runtime/", StringComparison.Ordinal)) return 0;
+        if (path.StartsWith("Engine/Source/Developer/", StringComparison.Ordinal)) return 1;
+        if (path.StartsWith("Engine/Source/Editor/", StringComparison.Ordinal)) return 2;
+        if (path.StartsWith("Engine/Platforms/", StringComparison.Ordinal)) return 3;
+        if (path.StartsWith("Engine/Plugins/", StringComparison.Ordinal)) return 4;
+        return 5;
     }
 
     private static async Task<bool> TryMaterializeCommitManifestAsync(

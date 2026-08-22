@@ -88,7 +88,7 @@ By default it builds `fixtures/MinimalPlugin/UECIMinimal.uplugin`, a single Runt
 
 - The retry parser is intentionally conservative. A new UBT diagnostic shape can stop discovery instead of guessing a huge subtree; Build.cs prefetch hints are capped and never replace UBT evaluation.
 - Program-only plugin modules are rejected for now.
-- Runtime and editor phases are implemented. UE 5.8 Linux/FUSE has passed the real minimal Runtime smoke; historical UE4/UE5 releases are exercised by the private 32-row compatibility workflow and are not considered verified until their matrix row is green.
+- Runtime and editor phases are implemented. UE 5.8 Linux/FUSE has passed the real minimal Runtime smoke; historical UE4/UE5 releases are exercised by the private 31-row compatibility workflow and are not considered verified until their matrix row is green. UE 4.6/Linux is excluded because its required historical SDL archive is no longer served by Epic.
 - UAT `BuildPlugin` is not used yet because it pulls a much broader automation surface. Once the minimal UBT path is proven, UECI can add an optional UAT-compatible packaging mode.
 - Cross-compiling to a platform different from the host is not the v0.4 goal; Windows and macOS are expected to use their native hosted/self-hosted environments.
 ## Executor diagnostics
@@ -122,6 +122,6 @@ The Linux native toolchain is not part of Git/GitDependencies. Alpha.17 installs
 
 Alpha.17 is the cold-runner pass. Blobless Epic metadata and `Commit.gitdeps.xml` are cached outside the Engine workspace, content-only plugins skip UBT/toolchain bootstrap, and the CLI defaults to `--backend auto` (FUSE for native Linux x64). Mounted builds emit phase timings for metadata, cache restore/save, mount startup, UBT compile/build, toolchain download/extract, host generation, product collection, and packaging. Raw UBT filesystem probes are reported separately from candidate immutable Engine profile misses.
 
-Alpha.18 adds the multi-release compatibility layer. UECI reads `Build.version`, inspects the pinned UBT source for rule/configuration/CLI capabilities, selects modern .NET or legacy Mono/MSBuild execution, prefers a prebuilt legacy `UnrealBuildTool.exe` when Epic supplies one, and generates classic `SetupBinaries`/`TargetInfo` host rules for old UE4. The release workflow exercises 4.5–4.27 and 5.0–5.8 independently and requires a native plugin `.so` from every successful row.
+Alpha.18 adds the multi-release compatibility layer. UECI reads `Build.version`, inspects the pinned UBT source for rule/configuration/CLI capabilities, selects modern .NET or legacy Mono/MSBuild execution, prefers a prebuilt legacy `UnrealBuildTool.exe` when Epic supplies one, and generates classic `SetupBinaries`/`TargetInfo` host rules for old UE4. The release workflow exercises UE 4.5, 4.7–4.27, and 5.0–5.8 independently and requires a native plugin `.so` from every successful row; UE 4.6/Linux is excluded because Epic no longer serves its required SDL archive.
 
 Use `./scripts/smoke-plugin-vfs.sh` for the first real build gate. The smoke enables aggregated VFS verbosity by default; set `UECI_VFS_VERBOSE=0` to silence those summaries. The materialized backend remains available as `--backend materialized`.

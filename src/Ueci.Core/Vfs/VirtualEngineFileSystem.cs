@@ -65,6 +65,29 @@ public sealed class VirtualEngineFileSystem : IDisposable
         Interlocked.Read(ref _gitDependenciesHydratedFiles),
         Interlocked.Read(ref _gitDependenciesDownloadedBytes));
 
+    /// <summary>
+    /// Hydrates a predicted Git-backed working set before mounting. This keeps the FUSE server on
+    /// its cheap cached-path path while compilers perform many concurrent random reads.
+    /// </summary>
+    public async Task PrefetchGitPathsAsync(
+        IEnumerable<string> paths,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        EpicGitTreeEntry[] entries = paths
+            .Select(VirtualEnginePath.Normalize)
+            .Distinct(StringComparer.Ordinal)
+            .Select(path => _index.TryGet(path, out VirtualEngineLowerEntry? entry) ? entry?.GitEntry : null)
+            .OfType<EpicGitTreeEntry>()
+            .ToArray();
+        EpicGitBlobPrefetchResult result = await _gitBlobs.EnsureManyAsync(entries, cancellationToken).ConfigureAwait(false);
+        if (result.MaterializedFiles != 0)
+        {
+            Interlocked.Add(ref _gitHydratedFiles, result.MaterializedFiles);
+            Interlocked.Add(ref _gitHydratedBytes, result.MaterializedBytes);
+        }
+    }
+
     public Task<VirtualEngineMetadata?> GetMetadataAsync(
         string path,
         CancellationToken cancellationToken = default)

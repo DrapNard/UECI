@@ -7,10 +7,11 @@ The workflow intentionally uses stable Epic release branches rather than moving 
 
 | Family | Release branches | Matrix contract |
 | --- | --- | --- |
-| UE4 | 4.5–4.27 | Build the minimal code plugin and require a native Linux `.so` |
+| UE4 | 4.5, 4.7–4.27 | Build the minimal code plugin and require a native Linux `.so` |
 | UE5 | 5.0–5.8 | Build the minimal code plugin and require a native Linux `.so` |
 
-There are 32 independent jobs in total. `fail-fast` is disabled, so a failure on one historical
+There are 31 independent jobs in total. UE 4.6 is intentionally excluded on Linux because Epic no
+longer serves the historical SDL archive required by that release. `fail-fast` is disabled, so a failure on one historical
 release still produces results and diagnostics for the remaining releases.
 The workflow prefers a matching Epic release `Commit.gitdeps.xml` asset when available and pins the release tag that owns that asset. If no release asset exists, it pins the stable branch head and uses the manifest tracked by that exact Engine commit.
 

@@ -35,7 +35,6 @@ jobs:
       matrix:
         version:
           - "4.5"
-          - "4.6"
           - "4.7"
           - "4.8"
           - "4.9"
@@ -121,7 +120,7 @@ jobs:
           printf 'plugin=%s\n' "$plugin" >> "$GITHUB_OUTPUT"
 
       - name: Prepare legacy release assets
-        if: ${{ matrix.version == '4.5' || matrix.version == '4.6' }}
+        if: ${{ matrix.version == '4.5' }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.UECI_EPIC_GITHUB_TOKEN }}

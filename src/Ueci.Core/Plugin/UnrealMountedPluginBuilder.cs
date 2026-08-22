@@ -98,6 +98,7 @@ internal sealed class UnrealMountedPluginBuilder
         Directory.CreateDirectory(mountedStateRoot);
         Directory.CreateDirectory(mountPoint);
         Directory.CreateDirectory(hostWorkspaceRoot);
+        IReadOnlyList<string> moduleRoots = DiscoverPluginModuleRoots(plugin);
 
         options.Progress?.Invoke(
             $"Preparing virtual Unreal Engine for Epic ref '{options.GitRef}' " +
@@ -117,10 +118,12 @@ internal sealed class UnrealMountedPluginBuilder
                 Progress: options.Progress,
                 RuntimeIdentifier: options.RuntimeIdentifier,
                 EnableEngineProfiles: true,
-                ForceDynamicProfile: forceDynamicProfile),
+                ForceDynamicProfile: forceDynamicProfile,
+                AdditionalModuleNames: moduleRoots),
             cancellationToken)).ConfigureAwait(false);
 
         var artifactCache = new VirtualEngineArtifactCache(options.FetchOptions.CacheDirectory, options.Progress);
+        string profileStore = Path.Combine(sharedCacheRoot, "engine-profiles");
         bool restoredArtifacts = false;
         bool reusableUbt = false;
         if (plugin.HasCode)
@@ -139,11 +142,29 @@ internal sealed class UnrealMountedPluginBuilder
                         context.Commit,
                         cancellationToken).ConfigureAwait(false);
                 }).ConfigureAwait(false);
-            // Rules assemblies are profile-sensitive: the same Epic commit can legitimately be mounted
-            // with the embedded seed, a learned minimal profile, or the complete dynamic namespace. Keep
-            // the commit-scoped UBT binary hot, but always rebuild UE5Rules/UE5ProgramRules against the
-            // namespace that is actually visible for this build (only a few seconds on the optimized VFS).
-            artifactCache.ClearRuleArtifacts(context.FileSystem.UpperRoot);
+            // Rules assemblies are profile-sensitive. Reuse them only when the persisted profile has
+            // exactly the same lower inputs; dynamic/seed profiles must compile their own rules first.
+            VirtualEngineProfileDocument? profile = context.ProfileSource == VirtualEngineProfileSource.Persisted
+                ? await VirtualEngineProfileStore.TryLoadAsync(profileStore, context.Commit, cancellationToken: cancellationToken)
+                    .ConfigureAwait(false)
+                : null;
+            if (profile is null)
+            {
+                artifactCache.ClearRuleArtifacts(context.FileSystem.UpperRoot);
+            }
+            else
+            {
+                string fingerprint = VirtualEngineProfileStore.GetFingerprint(profile);
+                bool restoredRules = await artifactCache.RestoreRuleArtifactsAsync(
+                    context.FileSystem.UpperRoot,
+                    context.Commit,
+                    fingerprint,
+                    cancellationToken).ConfigureAwait(false);
+                if (!restoredRules)
+                {
+                    artifactCache.ClearRuleArtifacts(context.FileSystem.UpperRoot);
+                }
+            }
             reusableUbt = restoredArtifacts
                 && artifactCache.HasReusableUnrealBuildTool(context.FileSystem.UpperRoot);
         }
@@ -152,10 +173,11 @@ internal sealed class UnrealMountedPluginBuilder
         try
         {
             // A warm commit cache already contains UBT managed outputs, so there is no reason to
-            // hydrate their managed source trees again. On a cold cache, batch-prefetching these
-            // stable bootstrap roots avoids thousands of individual promisor round-trips. The
-            // backfill only writes Git objects, while mount startup only brings up the FUSE helper,
-            // so both can safely overlap before any UBT process is allowed to read the view.
+            // hydrate their managed source trees again. On a cold cache, derive the actual MSBuild
+            // project graph from UBT's entry project and backfill its source closure in one batch.
+            // This replaces a version-specific source list and prevents FUSE from triggering a
+            // promisor fetch for every source file. The backfill only writes Git objects, while
+            // mount startup only brings up the FUSE helper, so both can safely overlap.
             Task prefetchTask = Task.CompletedTask;
             if (plugin.HasCode && !reusableUbt)
             {
@@ -164,19 +186,52 @@ internal sealed class UnrealMountedPluginBuilder
                     "ubt.prefetch",
                     async () =>
                     {
-                        _ = await epicGit.TryBackfillCurrentSnapshotPathsAsync(
+                        IReadOnlyList<string> graph = await epicGit.DiscoverManagedProjectSourcePathsAsync(
                             metadataRoot,
-                            [
-                                "Engine/Build",
-                                "Engine/Source/Programs/UnrealBuildTool",
-                                "Engine/Source/Programs/Shared",
-                                "Engine/Source/Programs/DotNETCommon",
-                                "Engine/Source/Programs/EnvVarsToXML",
-                            ],
+                            "Engine/Source/Programs/UnrealBuildTool/UnrealBuildTool.csproj",
                             options.TokenEnvironmentVariable,
-                            minimumBatchSize: 256,
                             progress: options.Progress,
                             cancellationToken: cancellationToken).ConfigureAwait(false);
+                        // UBT discovers Engine plugins by reading their descriptors. On a complete
+                        // learned index this is an observable semantic set, not a version-specific
+                        // manifest: join it to the MSBuild closure before one batched backfill.
+                        IReadOnlyList<string> pluginDescriptors = context.FileSystem.LowerIndex
+                            .GetGitFilePathsUnder("Engine", ".uplugin");
+                        // Once descriptors are known, UBT constructs its module graph by scanning
+                        // ModuleRules files. Their name is part of Unreal's build contract, so this
+                        // is another semantic prediction rather than a release-specific file list.
+                        IReadOnlyList<string> moduleRules = context.FileSystem.LowerIndex
+                            .GetGitFilePathsUnder("Engine", ".Build.cs")
+                            .Concat(context.FileSystem.LowerIndex.GetGitFilePathsUnder("Engine", ".Target.cs"))
+                            .OrderBy(path => path, StringComparer.Ordinal)
+                            .ToArray();
+                        string[] predicted = graph
+                            .Concat(pluginDescriptors)
+                            .Concat(moduleRules)
+                            // The mount factory may have expanded this commit's index with the
+                            // plugin's transitive C++ module closure. Materialize every selected
+                            // Git input now, before FUSE receives parallel compiler opens.
+                            .Concat(context.FileSystem.LowerIndex.GetGitFilePaths())
+                            .Distinct(StringComparer.Ordinal)
+                            .OrderBy(path => path, StringComparer.Ordinal)
+                            .ToArray();
+                        if (predicted.Length != 0)
+                        {
+                            _ = await epicGit.TryBackfillCurrentSnapshotPathsAsync(
+                                metadataRoot,
+                                predicted,
+                                options.TokenEnvironmentVariable,
+                                minimumBatchSize: 256,
+                                progress: options.Progress,
+                                cancellationToken: cancellationToken).ConfigureAwait(false);
+                            // FUSE serves a real backing path to UBT, which means an otherwise
+                            // local Git object still used to be copied into CAS one open at a time.
+                            // Stream the complete predicted set through one cat-file process first;
+                            // the compiler then only sees normal cached files and never waits for
+                            // per-file FUSE hydration.
+                            await context.FileSystem.PrefetchGitPathsAsync(predicted, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
                     });
             }
             else if (plugin.HasCode)
@@ -656,6 +711,18 @@ internal sealed class UnrealMountedPluginBuilder
                             context.FileSystem.UpperRoot,
                             context.Commit,
                             CancellationToken.None)).ConfigureAwait(false);
+                    VirtualEngineProfileDocument? profile = await VirtualEngineProfileStore.TryLoadAsync(
+                        profileStore,
+                        context.Commit,
+                        cancellationToken: CancellationToken.None).ConfigureAwait(false);
+                    if (profile is not null)
+                    {
+                        await artifactCache.SaveRuleArtifactsAsync(
+                            context.FileSystem.UpperRoot,
+                            context.Commit,
+                            VirtualEngineProfileStore.GetFingerprint(profile),
+                            CancellationToken.None).ConfigureAwait(false);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -799,6 +866,24 @@ internal sealed class UnrealMountedPluginBuilder
             diagnostics = previousAttempts + Environment.NewLine + Environment.NewLine + diagnostics;
         }
         return (adaptive.Result, diagnostics);
+    }
+
+    private static IReadOnlyList<string> DiscoverPluginModuleRoots(UnrealPluginDescriptor plugin)
+    {
+        var modules = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Core" };
+        string sourceRoot = Path.Combine(Path.GetDirectoryName(plugin.DescriptorPath)!, "Source");
+        if (Directory.Exists(sourceRoot))
+        {
+            foreach (string buildRules in Directory.EnumerateFiles(sourceRoot, "*.Build.cs", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    modules.UnionWith(UnrealModuleDependencyHints.Extract(File.ReadAllText(buildRules)));
+                }
+                catch (IOException) { }
+            }
+        }
+        return modules.OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
     private static IReadOnlyList<MountedBuildPhase> CreatePhases(

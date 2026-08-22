@@ -208,7 +208,15 @@ public interface IUnrealToolchainArchiveSource
 
 public sealed class HttpUnrealToolchainArchiveSource : IUnrealToolchainArchiveSource
 {
-    private static readonly HttpClient Client = CreateClient();
+    private static readonly HttpClient DefaultClient = CreateClient();
+    private readonly HttpClient _client;
+    private const long SegmentedDownloadThreshold = 32L * 1024 * 1024;
+    private const int MaxConcurrentSegments = 8;
+
+    public HttpUnrealToolchainArchiveSource(HttpClient? httpClient = null)
+    {
+        _client = httpClient ?? DefaultClient;
+    }
 
     public async Task<long> DownloadAsync(
         Uri uri,
@@ -218,7 +226,33 @@ public sealed class HttpUnrealToolchainArchiveSource : IUnrealToolchainArchiveSo
         ArgumentNullException.ThrowIfNull(uri);
         ArgumentNullException.ThrowIfNull(destination);
 
-        using HttpResponseMessage response = await Client.GetAsync(
+        // Epic's Linux toolchain is a single >1 GiB archive. One HTTP stream often leaves
+        // GitHub-hosted runner bandwidth idle, while the CDN supports byte ranges. Probe first and
+        // use bounded parallel ranges only for a seekable FileStream; every other source keeps the
+        // conservative streaming path below.
+        if (destination is FileStream file && file.CanSeek)
+        {
+            long? length = await TryGetRangeLengthAsync(uri, cancellationToken).ConfigureAwait(false);
+            if (length >= SegmentedDownloadThreshold)
+            {
+                try
+                {
+                    return await DownloadRangesAsync(uri, file, length.Value, cancellationToken).ConfigureAwait(false);
+                }
+                catch (RangeUnavailableException)
+                {
+                    file.SetLength(0);
+                    file.Position = 0;
+                }
+            }
+        }
+
+        return await DownloadSingleAsync(uri, destination, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<long> DownloadSingleAsync(Uri uri, Stream destination, CancellationToken cancellationToken)
+    {
+        using HttpResponseMessage response = await _client.GetAsync(
             uri,
             HttpCompletionOption.ResponseHeadersRead,
             cancellationToken).ConfigureAwait(false);
@@ -227,12 +261,84 @@ public sealed class HttpUnrealToolchainArchiveSource : IUnrealToolchainArchiveSo
         await using Stream source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         long before = destination.CanSeek ? destination.Position : 0;
         await source.CopyToAsync(destination, 1024 * 1024, cancellationToken).ConfigureAwait(false);
-        if (destination.CanSeek)
-        {
-            return destination.Position - before;
-        }
-        return response.Content.Headers.ContentLength ?? 0;
+        return destination.CanSeek ? destination.Position - before : response.Content.Headers.ContentLength ?? 0;
     }
+
+    private async Task<long?> TryGetRangeLengthAsync(Uri uri, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        request.Headers.Range = new RangeHeaderValue(0, 0);
+        using HttpResponseMessage response = await _client.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode != System.Net.HttpStatusCode.PartialContent)
+        {
+            return null;
+        }
+        long? length = response.Content.Headers.ContentRange?.Length;
+        return length is > 0 ? length : null;
+    }
+
+    private async Task<long> DownloadRangesAsync(
+        Uri uri,
+        FileStream destination,
+        long length,
+        CancellationToken cancellationToken)
+    {
+        destination.SetLength(length);
+        long segmentLength = Math.Max(8L * 1024 * 1024, (length + MaxConcurrentSegments - 1) / MaxConcurrentSegments);
+        var segments = new List<(long Offset, long Length)>();
+        for (long offset = 0; offset < length; offset += segmentLength)
+        {
+            segments.Add((offset, Math.Min(segmentLength, length - offset)));
+        }
+
+        await Task.WhenAll(segments.Select(segment => DownloadRangeAsync(
+            uri, destination, segment.Offset, segment.Length, cancellationToken))).ConfigureAwait(false);
+        destination.Position = length;
+        return length;
+    }
+
+    private async Task DownloadRangeAsync(
+        Uri uri,
+        FileStream destination,
+        long offset,
+        long length,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        request.Headers.Range = new RangeHeaderValue(offset, offset + length - 1);
+        using HttpResponseMessage response = await _client.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken).ConfigureAwait(false);
+        ContentRangeHeaderValue? range = response.Content.Headers.ContentRange;
+        if (response.StatusCode != System.Net.HttpStatusCode.PartialContent
+            || range?.From != offset
+            || range.To != offset + length - 1)
+        {
+            throw new RangeUnavailableException();
+        }
+
+        await using Stream source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        byte[] buffer = new byte[1024 * 1024];
+        long written = 0;
+        while (written < length)
+        {
+            int requested = (int)Math.Min(buffer.Length, length - written);
+            int read = await source.ReadAsync(buffer.AsMemory(0, requested), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                throw new EndOfStreamException($"Toolchain range ended {length - written:N0} bytes early.");
+            }
+            await RandomAccess.WriteAsync(destination.SafeFileHandle, buffer.AsMemory(0, read), offset + written, cancellationToken)
+                .ConfigureAwait(false);
+            written += read;
+        }
+    }
+
+    private sealed class RangeUnavailableException : Exception;
 
     private static HttpClient CreateClient()
     {

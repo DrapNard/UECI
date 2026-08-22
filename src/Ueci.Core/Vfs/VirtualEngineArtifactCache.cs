@@ -2,8 +2,8 @@ namespace Ueci.Vfs;
 
 /// <summary>
 /// Opportunistic commit-scoped cache for generated managed UBT artifacts. Engine Rules assemblies
-/// are intentionally not persisted because their contents also depend on the visible minimal-profile
-/// namespace, not only on the pinned Epic commit.
+/// are cached separately under an exact visible-profile fingerprint because their contents depend on
+/// more than the pinned Epic commit.
 /// </summary>
 public sealed class VirtualEngineArtifactCache
 {
@@ -53,6 +53,55 @@ public sealed class VirtualEngineArtifactCache
         {
             Directory.Delete(rules, recursive: true);
             _progress?.Invoke("[vfs/artifacts] Invalidated Engine Rules assemblies for the active Engine profile.");
+        }
+    }
+
+    public async Task<bool> RestoreRuleArtifactsAsync(
+        string upperRoot,
+        string commit,
+        string profileFingerprint,
+        CancellationToken cancellationToken = default)
+    {
+        string source = RuleRoot(commit, profileFingerprint);
+        long copied = await CopyTreeAsync(
+            source,
+            Combine(upperRoot, "Engine/Intermediate/Build/BuildRules"),
+            cancellationToken).ConfigureAwait(false);
+        if (copied != 0)
+        {
+            _progress?.Invoke($"[vfs/artifacts] Restored {copied:N0} profile-scoped Engine Rules artifact files for {Short(commit)}.");
+        }
+        return copied != 0;
+    }
+
+    public async Task SaveRuleArtifactsAsync(
+        string upperRoot,
+        string commit,
+        string profileFingerprint,
+        CancellationToken cancellationToken = default)
+    {
+        string source = Combine(upperRoot, "Engine/Intermediate/Build/BuildRules");
+        if (!Directory.Exists(source)) return;
+
+        string destination = RuleRoot(commit, profileFingerprint);
+        string temp = destination + $".{Guid.NewGuid():N}.tmp";
+        try
+        {
+            long copied = await CopyTreeAsync(source, temp, cancellationToken).ConfigureAwait(false);
+            if (copied == 0)
+            {
+                if (Directory.Exists(temp)) Directory.Delete(temp, recursive: true);
+                return;
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            if (Directory.Exists(destination)) Directory.Delete(destination, recursive: true);
+            Directory.Move(temp, destination);
+            _progress?.Invoke($"[vfs/artifacts] Cached {copied:N0} profile-scoped Engine Rules artifact files for {Short(commit)}.");
+        }
+        finally
+        {
+            if (Directory.Exists(temp)) Directory.Delete(temp, recursive: true);
         }
     }
 
@@ -164,6 +213,16 @@ public sealed class VirtualEngineArtifactCache
 
     private string CommitRoot(string commit)
         => Path.Combine(_cacheRoot, commit.ToLowerInvariant(), "linux-x64");
+
+    private string RuleRoot(string commit, string profileFingerprint)
+    {
+        if (string.IsNullOrWhiteSpace(profileFingerprint)
+            || profileFingerprint.Any(character => !Uri.IsHexDigit(character)))
+        {
+            throw new ArgumentException("Profile fingerprint must be hexadecimal.", nameof(profileFingerprint));
+        }
+        return Path.Combine(CommitRoot(commit), "rules", profileFingerprint.ToLowerInvariant());
+    }
 
     private static void DeleteCachedRoots(string upperRoot)
     {

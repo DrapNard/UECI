@@ -248,8 +248,17 @@ public sealed class UnrealBuildToolCompiler
         string ueciState = Path.Combine(root, ".ueci");
         string nugetPackages = Path.Combine(ueciState, "nuget-packages");
         string dotnetHome = Path.Combine(ueciState, "dotnet-home");
+        // The caller's checkout may contain a global.json for a different SDK (UECI itself is
+        // currently built with .NET 8 while current Unreal bundles .NET 10). `dotnet` searches
+        // upward from its working directory, even when the project path is absolute. Execute from
+        // a neutral temporary directory so the Epic-bundled SDK selected in RuntimeRoot wins.
+        // On Linux do not use TMPDIR: CI/test harnesses can point it inside the checkout, which
+        // would put the caller's global.json back in dotnet's upward SDK search path.
+        string temporaryRoot = OperatingSystem.IsWindows() ? Path.GetTempPath() : "/tmp";
+        string dotnetWorkingDirectory = Path.Combine(temporaryRoot, "ueci-dotnet-work");
         Directory.CreateDirectory(nugetPackages);
         Directory.CreateDirectory(dotnetHome);
+        Directory.CreateDirectory(dotnetWorkingDirectory);
 
         var environment = new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -291,7 +300,7 @@ public sealed class UnrealBuildToolCompiler
             };
             ExternalProcessResult restore = await ExternalProcess.RunAsync(
                 runtime.HostPath,
-                root,
+                dotnetWorkingDirectory,
                 restoreArguments,
                 environment,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -312,7 +321,7 @@ public sealed class UnrealBuildToolCompiler
             };
             ExternalProcessResult build = await ExternalProcess.RunAsync(
                 runtime.HostPath,
-                root,
+                dotnetWorkingDirectory,
                 compatibilityBuildArguments,
                 environment,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -332,7 +341,7 @@ public sealed class UnrealBuildToolCompiler
         };
         return await ExternalProcess.RunAsync(
             runtime.HostPath,
-            root,
+            dotnetWorkingDirectory,
             arguments,
             environment,
             cancellationToken: cancellationToken).ConfigureAwait(false);

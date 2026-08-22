@@ -3,7 +3,10 @@ namespace Ueci.GitDeps;
 public sealed record GitDependenciesFetchOptions(
     string CacheDirectory,
     bool CacheCompressedPacks = true,
-    int MaxConcurrentPacks = 2)
+    // Cold UBT bootstrap spans many independent small packs (managed runtime, UBA and support
+    // libraries). Two streams underutilizes GitHub-hosted runners; eight retains bounded IO while
+    // allowing those packs to arrive concurrently. Per-pack locks still coalesce duplicate reads.
+    int MaxConcurrentPacks = 8)
 {
     public static GitDependenciesFetchOptions CreateDefault()
         => new(GitDependenciesCache.GetDefaultRoot());

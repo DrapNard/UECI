@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 ALL_VERSIONS=(
-  4.5 4.6 4.7 4.8 4.9
+  4.5 4.7 4.8 4.9
   4.10 4.11 4.12 4.13 4.14 4.15 4.16 4.17 4.18 4.19
   4.20 4.21 4.22 4.23 4.24 4.25 4.26 4.27
   5.0 5.1 5.2 5.3 5.4 5.5 5.6 5.7 5.8
@@ -150,8 +150,8 @@ for RAW_VERSION in "${VERSIONS[@]}"; do
     echo "[matrix] using dependency metadata from the release source layout"
   fi
 
-  # UE4.5 predates Commit.gitdeps.xml and transitional UE4.6 tags may still need the historical
-  # Required archives for managed UBT support binaries. Overlay them before mounting when present.
+  # UE4.5 predates Commit.gitdeps.xml and needs its historical Required archives for managed UBT
+  # support binaries. Overlay them before mounting when present.
   if ! GH_TOKEN="$GH_TOKEN" ./scripts/prepare-legacy-release-deps.sh \
       "$VERSION" "$ENGINE_REF" "$ENGINE" 2>&1 | tee -a "$LOG"; then
     echo "❌ UE $VERSION: legacy dependency preparation failed"

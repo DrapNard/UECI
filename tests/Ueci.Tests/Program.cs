@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Formats.Tar;
 using System.IO.Compression;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -29,6 +30,7 @@ internal static class Program
         ("Epic sparse source seed materializes from a local partial clone", EpicSparseSourceMaterializationAsync),
         ("Epic ref resolver returns an exact object id without checkout", EpicRefResolveAsync),
         ("GitHub tree size metadata splits truncated subtrees without blob content", GitHubTreeSizeMetadataAsync),
+        ("managed project graph resolves relative MSBuild references", ManagedProjectGraphAsync),
         ("virtual Engine view overlays GitDependencies over Git and performs lazy COW", VirtualEngineViewCowAsync),
         ("virtual Engine profile persists an accessed commit working set", VirtualEngineProfileRoundTripAsync),
         ("commit-scoped generated artifact cache restores UBT outputs", VirtualEngineArtifactCacheRoundTripAsync),
@@ -83,6 +85,7 @@ internal static class Program
         ("Linux SDK descriptor resolves Epic native toolchain", LinuxToolchainDescriptorAsync),
         ("Linux SDK descriptor discovers legacy setup-script toolchain", LinuxToolchainLegacyDescriptorAsync),
         ("Linux native toolchain installer is offline-testable and cached", LinuxToolchainInstallerAsync),
+        ("Linux toolchain HTTP source parallelizes range-capable archives", LinuxToolchainHttpRangesAsync),
         ("Linux toolchain projection is restored after sparse expansion", LinuxToolchainSparseProtectionAsync),
     ];
 
@@ -504,6 +507,7 @@ internal static class Program
             WriteFixtureFile(sourceRoot, "Engine/Source/Runtime/Core/Public/GitOnly.h", "git-only\n");
             WriteFixtureFile(sourceRoot, "Engine/Source/Runtime/Core/Public/GitSecond.h", "git-second\n");
             WriteFixtureFile(sourceRoot, "Engine/Source/Runtime/Core/Public/Core.h", "git-version-is-overlaid\n");
+            WriteFixtureFile(sourceRoot, "Engine/Plugins/Runtime/Fixture/Fixture.uplugin", "{}\n");
             await RunGitAsync(sourceRoot, ["add", "."]);
             await RunGitAsync(sourceRoot, ["commit", "--quiet", "-m", "fixture"]);
             await RunGitAsync(root, ["clone", "--quiet", "--bare", sourceRoot, bareRoot]);
@@ -546,6 +550,9 @@ internal static class Program
             Assert.Equal(VirtualEngineSourceKind.Git, gitOnly!.Metadata.Source);
             Assert.Equal((long)"git-only\n".Length, gitOnly.GitEntry!.Size);
             Assert.Equal((long)"git-only\n".Length, gitOnly.Metadata.Size);
+            Assert.True(index.GetGitFilePathsUnder("Engine/Plugins", ".uplugin").Contains(
+                "Engine/Plugins/Runtime/Fixture/Fixture.uplugin",
+                StringComparer.Ordinal));
 
             var packSource = new MemoryPackSource(fixture.PackUri, fixture.CompressedBytes);
             using var fileSystem = new VirtualEngineFileSystem(
@@ -575,6 +582,15 @@ internal static class Program
                 "Engine/Source/Runtime/Core/Public/GitOnly.h");
             Assert.Equal((long)"git-only\n".Length, gitStat!.Size);
             Assert.Equal(0L, fileSystem.Metrics.GitHydratedFiles);
+
+            // A known source closure is materialized through one cat-file stream before FUSE
+            // opens it. This preserves normal random-access files for compilers without a
+            // serialized cache miss per source file.
+            await fileSystem.PrefetchGitPathsAsync([
+                "Engine/Source/Runtime/Core/Public/GitOnly.h",
+                "Engine/Source/Runtime/Core/Public/GitSecond.h",
+            ]);
+            Assert.Equal(2L, fileSystem.Metrics.GitHydratedFiles);
 
             string gitBacking = await fileSystem.ResolveReadBackingPathAsync(
                 "Engine/Source/Runtime/Core/Public/GitOnly.h");
@@ -627,6 +643,29 @@ internal static class Program
         }
     }
 
+    private static Task ManagedProjectGraphAsync()
+    {
+        const string project = "Engine/Source/Programs/UnrealBuildTool/UnrealBuildTool.csproj";
+        const string xml = """
+            <Project>
+              <ItemGroup>
+                <ProjectReference Include="../Shared/EpicGames.Core/EpicGames.Core.csproj" />
+                <ProjectReference Include="$(EngineDir)/Generated.csproj" />
+              </ItemGroup>
+              <Import Project="../../Build/Common.targets" />
+              <Import Project="$(MSBuildToolsPath)/Microsoft.CSharp.targets" />
+            </Project>
+            """;
+
+        IReadOnlyList<string> paths = ManagedProjectGraph.GetReferencedPaths(project, xml);
+        Assert.Equal(2, paths.Count);
+        Assert.True(paths.Contains(
+            "Engine/Source/Programs/Shared/EpicGames.Core/EpicGames.Core.csproj",
+            StringComparer.Ordinal));
+        Assert.True(paths.Contains("Engine/Source/Build/Common.targets", StringComparer.Ordinal));
+        return Task.CompletedTask;
+    }
+
     private static async Task VirtualEngineProfileRoundTripAsync()
     {
         string root = CreateTempDirectory();
@@ -667,6 +706,19 @@ internal static class Program
             Assert.Equal("Engine/Source/Runtime/Core/Public/GitOnly.h", loaded.GitEntries[0].Path);
             Assert.Equal(1, loaded.GitDependencyPaths.Count);
             Assert.Equal("Engine/Source/Runtime/Core/Public/Core.h", loaded.GitDependencyPaths[0]);
+
+            // Rule artifacts must survive a new runner/workspace, but only while the lower profile
+            // is identical. Save order and its generated timestamp are intentionally irrelevant.
+            string fingerprint = VirtualEngineProfileStore.GetFingerprint(loaded);
+            var reordered = loaded with
+            {
+                GeneratedAtUtc = loaded.GeneratedAtUtc.AddHours(1),
+                GitEntries = loaded.GitEntries.Reverse().ToArray(),
+                GitDependencyPaths = loaded.GitDependencyPaths.Reverse().ToArray(),
+            };
+            Assert.Equal(fingerprint, VirtualEngineProfileStore.GetFingerprint(reordered));
+            var changed = reordered with { GitDependencyPaths = ["Engine/Source/Runtime/Core/Public/Changed.h"] };
+            Assert.False(fingerprint == VirtualEngineProfileStore.GetFingerprint(changed));
 
             GitDependenciesManifest subset = VirtualEngineManifestSubset.Create(
                 fixture.Manifest,
@@ -715,6 +767,19 @@ internal static class Program
             artifacts.ClearRuleArtifacts(upper);
             Assert.True(artifacts.HasReusableUnrealBuildTool(upper));
             Assert.False(File.Exists(rules));
+
+            const string profileFingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+            Directory.CreateDirectory(Path.GetDirectoryName(rules)!);
+            await File.WriteAllTextAsync(rules, "profile-scoped-rules");
+            await artifacts.SaveRuleArtifactsAsync(upper, commit, profileFingerprint);
+            Directory.Delete(Path.Combine(upper, "Engine", "Intermediate"), recursive: true);
+            bool restoredRules = await artifacts.RestoreRuleArtifactsAsync(upper, commit, profileFingerprint);
+            Assert.True(restoredRules);
+            Assert.Equal("profile-scoped-rules", await File.ReadAllTextAsync(rules));
+            Assert.False(await artifacts.RestoreRuleArtifactsAsync(
+                upper,
+                commit,
+                "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"));
 
             // A commit change must invalidate generated upper artifacts before another restore.
             await artifacts.PrepareUpperForCommitAsync(
@@ -2754,6 +2819,35 @@ internal static class Program
         }
     }
 
+    private static async Task LinuxToolchainHttpRangesAsync()
+    {
+        byte[] payload = new byte[33 * 1024 * 1024];
+        for (int index = 0; index < payload.Length; index++)
+        {
+            payload[index] = (byte)(index % 251);
+        }
+        var handler = new RangeArchiveHandler(payload);
+        using var client = new HttpClient(handler);
+        var source = new HttpUnrealToolchainArchiveSource(client);
+        string path = Path.Combine(CreateTempDirectory(), "archive.tar.gz");
+        try
+        {
+            await using (FileStream destination = new(
+                path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, useAsync: true))
+            {
+                long downloaded = await source.DownloadAsync(new Uri("https://fixture.invalid/toolchain.tar.gz"), destination);
+                Assert.Equal((long)payload.Length, downloaded);
+            }
+            Assert.Equal(6, handler.RangeRequests); // probe + five >=8 MiB segments
+            byte[] downloadedBytes = await File.ReadAllBytesAsync(path);
+            Assert.True(payload.AsSpan().SequenceEqual(downloadedBytes));
+        }
+        finally
+        {
+            DeleteDirectory(Path.GetDirectoryName(path)!);
+        }
+    }
+
     private static async Task LinuxToolchainSparseProtectionAsync()
     {
         const string version = "v26_clang-20.1.8-rockylinux8";
@@ -3161,6 +3255,42 @@ internal static class Program
             DownloadCount++;
             await destination.WriteAsync(_bytes.AsMemory(), cancellationToken);
             return _bytes.Length;
+        }
+    }
+
+    private sealed class RangeArchiveHandler(byte[] payload) : HttpMessageHandler
+    {
+        private int _rangeRequests;
+
+        public int RangeRequests => Volatile.Read(ref _rangeRequests);
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RangeItemHeaderValue? range = request.Headers.Range?.Ranges.SingleOrDefault();
+            if (range?.From is null || range.To is null)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(payload),
+                });
+            }
+
+            long start = range.From.Value;
+            long end = range.To.Value;
+            if (start < 0 || end < start || end >= payload.LongLength)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.RequestedRangeNotSatisfiable));
+            }
+            Interlocked.Increment(ref _rangeRequests);
+            int length = checked((int)(end - start + 1));
+            var response = new HttpResponseMessage(HttpStatusCode.PartialContent)
+            {
+                Content = new ByteArrayContent(payload.AsSpan(checked((int)start), length).ToArray()),
+            };
+            response.Content.Headers.ContentRange = new ContentRangeHeaderValue(start, end, payload.LongLength);
+            return Task.FromResult(response);
         }
     }
 
