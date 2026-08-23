@@ -144,6 +144,7 @@ public static class VirtualEngineEmbeddedSeed
                 // registration sources before it evaluates any plugin module.
                 "Engine/Platforms/Mac",
                 "Engine/Config/Mac",
+                "Engine/Source/Programs/UnrealBuildTool/Platform/Mac",
                 "Engine/Source/Developer/Mac",
             ]
             : [];
