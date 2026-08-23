@@ -71,6 +71,24 @@ public sealed class EpicGitTreeIndex
             $"[vfs/profile] Indexing {normalized.Length:N0} targeted Git pathspec(s)" +
             (includeBlobSizes ? " with local exact sizes..." : " without global tree scan..."));
 
+        // A sparse-checkout fallback has already populated Git's index with the selected source
+        // set. Apple Git handles thousands of ls-tree pathspecs poorly; scanning this one local
+        // index and filtering in memory is markedly faster and does not contact the remote.
+        if (includeBlobSizes && File.Exists(Path.Combine(root, ".git", "index")))
+        {
+            EpicGitTreeIndex? sparseIndex = await TryLoadPathsFromWorkingIndexAsync(
+                root,
+                commit,
+                normalized,
+                environment,
+                cancellationToken).ConfigureAwait(false);
+            if (sparseIndex is not null)
+            {
+                progress?.Invoke($"[vfs/profile] Targeted Git index contains {sparseIndex.Entries.Count:N0} blobs.");
+                return sparseIndex;
+            }
+        }
+
         var entries = new Dictionary<string, EpicGitTreeEntry>(StringComparer.Ordinal);
         IReadOnlyList<IReadOnlyList<string>> batches = CreatePathspecBatches(normalized);
         foreach ((IReadOnlyList<string> batch, int index) in batches.Select((value, index) => (value, index)))
@@ -98,6 +116,57 @@ public sealed class EpicGitTreeIndex
         }
         progress?.Invoke($"[vfs/profile] Targeted Git index contains {entries.Count:N0} blobs.");
         return new EpicGitTreeIndex(commit, entries);
+    }
+
+    private static async Task<EpicGitTreeIndex?> TryLoadPathsFromWorkingIndexAsync(
+        string repositoryRoot,
+        string commit,
+        IReadOnlyList<string> requestedPaths,
+        IReadOnlyDictionary<string, string> environment,
+        CancellationToken cancellationToken)
+    {
+        var requested = new HashSet<string>(requestedPaths, StringComparer.Ordinal);
+        GitProcessResult result = await GitProcess.RunAsync(
+            repositoryRoot,
+            ["ls-files", "--stage", "-z"],
+            environment,
+            cancellationToken).ConfigureAwait(false);
+        if (result.ExitCode != 0)
+        {
+            return null;
+        }
+
+        var entries = new Dictionary<string, EpicGitTreeEntry>(StringComparer.Ordinal);
+        foreach (string raw in result.StandardOutput.Split('\0', StringSplitOptions.RemoveEmptyEntries))
+        {
+            int tab = raw.IndexOf('\t');
+            if (tab < 0)
+            {
+                continue;
+            }
+
+            string path = Normalize(raw[(tab + 1)..]);
+            if (!requested.Contains(path))
+            {
+                continue;
+            }
+
+            string[] fields = raw[..tab].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (fields.Length < 3 || !int.TryParse(fields[0], System.Globalization.NumberStyles.AllowLeadingWhite,
+                    System.Globalization.CultureInfo.InvariantCulture, out int mode))
+            {
+                continue;
+            }
+
+            string workingPath = Path.Combine(repositoryRoot, path.Replace('/', Path.DirectorySeparatorChar));
+            long size = File.Exists(workingPath) ? new FileInfo(workingPath).Length : -1;
+            int unixMode = Convert.ToInt32(fields[0], 8) & 0x0fff;
+            entries[path] = new EpicGitTreeEntry(path, fields[1], size, unixMode, fields[0] == "120000");
+        }
+
+        return entries.Count == requested.Count
+            ? new EpicGitTreeIndex(commit, entries)
+            : null;
     }
 
     internal static IReadOnlyList<IReadOnlyList<string>> CreatePathspecBatches(IReadOnlyList<string> pathspecs)
