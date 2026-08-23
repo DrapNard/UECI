@@ -1,4 +1,3 @@
-using System.Formats.Tar;
 using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
@@ -49,34 +48,47 @@ public sealed class EpicGitArchivePrefetcher
             cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
-        await using Stream responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        await using var gzip = new GZipStream(responseStream, CompressionMode.Decompress);
-        using var reader = new TarReader(gzip, leaveOpen: false);
-        int written = 0;
-        TarEntry? entry;
-        while ((entry = reader.GetNextEntry(copyData: false)) is not null && pending.Count != 0)
+        string archiveDirectory = Path.Combine(Path.GetFullPath(cacheRoot), "archives");
+        Directory.CreateDirectory(archiveDirectory);
+        string archiveFile = Path.Combine(archiveDirectory, $"epic-source-{commit}.zip.{Guid.NewGuid():N}.tmp");
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (entry.DataStream is null || !TryNormalizeArchivePath(entry.Name, out string path)
-                || !pending.Remove(path, out EpicGitTreeEntry? gitEntry))
+            await using (Stream responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
+            await using (FileStream destination = new(archiveFile, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, useAsync: true))
             {
-                continue;
+                await responseStream.CopyToAsync(destination, 1024 * 1024, cancellationToken).ConfigureAwait(false);
+            }
+            using var zip = ZipFile.OpenRead(archiveFile);
+            int written = 0;
+            foreach (ZipArchiveEntry archiveEntry in zip.Entries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!TryNormalizeArchivePath(archiveEntry.FullName, out string path)
+                    || !pending.Remove(path, out EpicGitTreeEntry? gitEntry))
+                {
+                    continue;
+                }
+
+                await using Stream source = archiveEntry.Open();
+                if (await WriteBlobAsync(source, gitEntry, archiveEntry.Length, cacheRoot, cancellationToken).ConfigureAwait(false))
+                {
+                    written++;
+                }
             }
 
-            if (await WriteBlobAsync(entry.DataStream, gitEntry, entry.Length, cacheRoot, cancellationToken).ConfigureAwait(false))
+            if (pending.Count != 0)
             {
-                written++;
+                throw new InvalidDataException(
+                    $"Epic source archive did not contain {pending.Count:N0} selected path(s), including '{pending.Keys.First()}'.");
             }
-        }
 
-        if (pending.Count != 0)
+            progress?.Invoke($"[vfs/archive] Materialized {written:N0} selected Git blobs from one HTTP archive stream.");
+            return written;
+        }
+        finally
         {
-            throw new InvalidDataException(
-                $"Epic source archive did not contain {pending.Count:N0} selected path(s), including '{pending.Keys.First()}'.");
+            if (File.Exists(archiveFile)) File.Delete(archiveFile);
         }
-
-        progress?.Invoke($"[vfs/archive] Materialized {written:N0} selected Git blobs from one HTTP archive stream.");
-        return written;
     }
 
     private static async Task<bool> WriteBlobAsync(
@@ -154,7 +166,7 @@ public sealed class EpicGitArchivePrefetcher
         if (segments.Length != 2) throw new InvalidDataException($"Invalid GitHub repository URL '{repository}'.");
         string owner = segments[0];
         string name = segments[1].EndsWith(".git", StringComparison.OrdinalIgnoreCase) ? segments[1][..^4] : segments[1];
-        return new Uri($"https://api.github.com/repos/{owner}/{name}/tarball/{commit}");
+        return new Uri($"https://api.github.com/repos/{owner}/{name}/zipball/{commit}");
     }
 
     private static HttpClient CreateClient()
