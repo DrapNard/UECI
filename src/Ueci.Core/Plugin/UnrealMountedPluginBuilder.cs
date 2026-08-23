@@ -223,6 +223,26 @@ internal sealed class UnrealMountedPluginBuilder
                             .ToArray();
                         if (predicted.Length != 0)
                         {
+                            if (OperatingSystem.IsMacOS())
+                            {
+                                EpicGitTreeEntry[] archiveEntries = predicted
+                                    .Select(path => context.FileSystem.LowerIndex.TryGet(path, out VirtualEngineLowerEntry? entry)
+                                        ? entry?.GitEntry
+                                        : null)
+                                    .Where(entry => entry is not null)
+                                    .Cast<EpicGitTreeEntry>()
+                                    .ToArray();
+                                await new EpicGitArchivePrefetcher().PrefetchAsync(
+                                    options.Repository,
+                                    context.Commit,
+                                    archiveEntries,
+                                    options.FetchOptions.CacheDirectory,
+                                    options.TokenEnvironmentVariable,
+                                    options.Progress,
+                                    cancellationToken).ConfigureAwait(false);
+                                return;
+                            }
+
                             bool backfilled = await epicGit.TryBackfillCurrentSnapshotPathsAsync(
                                 metadataRoot,
                                 predicted,

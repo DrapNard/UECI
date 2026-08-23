@@ -248,9 +248,12 @@ public static class VirtualEngineMountFactory
             // The module graph is encoded in Build.cs. Hydrate these tiny rule files in one
             // promisor batch before parsing them, rather than paying one network request per
             // dependency edge below.
-            _ = await git.TryBackfillCurrentSnapshotPathsAsync(
-                metadataRoot, semanticPaths, options.TokenEnvironmentVariable, 256,
-                options.Progress, cancellationToken).ConfigureAwait(false);
+            if (!OperatingSystem.IsMacOS())
+            {
+                _ = await git.TryBackfillCurrentSnapshotPathsAsync(
+                    metadataRoot, semanticPaths, options.TokenEnvironmentVariable, 256,
+                    options.Progress, cancellationToken).ConfigureAwait(false);
+            }
             IReadOnlyList<string> moduleSourcePaths = await DiscoverModuleSourceInputsAsync(
                 git, metadataRoot, options.TokenEnvironmentVariable, options.AdditionalModuleNames,
                 options.Progress, cancellationToken).ConfigureAwait(false);
@@ -265,13 +268,18 @@ public static class VirtualEngineMountFactory
                 $"[vfs/profile] No learned profile for {commit[..Math.Min(12, commit.Length)]}; " +
                 $"trying embedded seed '{seed.Name}'.");
 
-            bool backfilled = await git.TryBackfillCurrentSnapshotPathsAsync(
+            bool backfilled = !OperatingSystem.IsMacOS() && await git.TryBackfillCurrentSnapshotPathsAsync(
                 metadataRoot,
                 initialPaths,
                 options.TokenEnvironmentVariable,
                 minimumBatchSize: 256,
                 progress: options.Progress,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (OperatingSystem.IsMacOS())
+            {
+                options.Progress?.Invoke(
+                    "[vfs/archive] Deferring source blob hydration to the single HTTP archive stream.");
+            }
             gitIndex = await EpicGitTreeIndex.LoadPathsAsync(
                 repositoryDirectory: metadataRoot,
                 paths: initialPaths,
