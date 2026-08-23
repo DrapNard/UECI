@@ -945,7 +945,7 @@ internal sealed class UnrealMountedPluginBuilder
     {
         if (!OperatingSystem.IsMacOS()) return;
 
-        string config = Path.Combine(engineRoot, "Engine", "Platforms", "Mac", "Config", "Mac_SDK.json");
+        string config = Path.Combine(engineRoot, "Engine", "Config", "Mac", "Mac_SDK.json");
         if (!File.Exists(config)) return;
 
         string original = await File.ReadAllTextAsync(config, cancellationToken).ConfigureAwait(false);
