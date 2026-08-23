@@ -136,6 +136,17 @@ public static class VirtualEngineEmbeddedSeed
             "Directory.Build.props",
             "Directory.Build.targets",
         ]);
+        bool macHost = runtimeIdentifier.StartsWith("mac-", StringComparison.OrdinalIgnoreCase)
+            || runtimeIdentifier.StartsWith("macos-", StringComparison.OrdinalIgnoreCase);
+        IEnumerable<string> platformGitPaths = macHost
+            ? [
+                // UBT validates a platform from its DataDrivenPlatformInfo and the Mac platform
+                // registration sources before it evaluates any plugin module.
+                "Engine/Platforms/Mac",
+                "Engine/Config/Mac",
+                "Engine/Source/Developer/Mac",
+            ]
+            : [];
         IReadOnlyList<string> gitPaths = (!legacySeed
             ? commonGitPaths
             : commonGitPaths.Concat([
@@ -150,7 +161,7 @@ public static class VirtualEngineEmbeddedSeed
                 // than listing every one in Commit.gitdeps.xml. Index this tiny directory so
                 // Ionic.Zip/RPCUtility references can resolve either way.
                 "Engine/Binaries/DotNET",
-            ]))
+            ])).Concat(platformGitPaths)
             .Distinct(StringComparer.Ordinal)
             .OrderBy(value => value, StringComparer.Ordinal)
             .ToArray();
@@ -158,7 +169,7 @@ public static class VirtualEngineEmbeddedSeed
         return new VirtualEngineSeed(
             gitPaths,
             gitDependencyPaths.OrderBy(value => value, StringComparer.Ordinal).ToArray(),
-            legacySeed ? "ue4-linux-x64-compat-seed" : "ue5-linux-x64-alpha6-observed");
+            legacySeed ? "ue4-compat-seed" : macHost ? "ue5-macos-alpha6-observed" : "ue5-linux-x64-alpha6-observed");
     }
 
     private static void AddIfPresent(
