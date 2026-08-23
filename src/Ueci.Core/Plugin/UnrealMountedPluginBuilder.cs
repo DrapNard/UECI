@@ -833,11 +833,6 @@ internal sealed class UnrealMountedPluginBuilder
 
     private static bool ShouldRetryWithDynamicProfile(Exception exception)
     {
-        if (exception is FileNotFoundException or DirectoryNotFoundException)
-        {
-            return true;
-        }
-
         string text = exception.ToString();
 
         // Modern UBT can wrap an absent shared PCH in DirectoryNotFoundException while retaining

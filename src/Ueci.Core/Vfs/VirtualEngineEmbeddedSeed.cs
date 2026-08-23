@@ -138,6 +138,26 @@ public static class VirtualEngineEmbeddedSeed
         ]);
         bool macHost = runtimeIdentifier.StartsWith("mac-", StringComparison.OrdinalIgnoreCase)
             || runtimeIdentifier.StartsWith("macos-", StringComparison.OrdinalIgnoreCase);
+        if (macHost)
+        {
+            // These Core dependencies are supplied by GitDependencies rather than the source Git
+            // tree in UE5.5. Include the complete, bounded macOS link closure up front: UBT opens
+            // headers while compiling and static/dynamic libraries only when linking. A lazy
+            // source-tree seed alone consequently reaches the expensive global profile fallback
+            // after the native compile.
+            foreach (string prefix in new[]
+                     {
+                         "Engine/Source/ThirdParty/BLAKE3/",
+                         "Engine/Source/ThirdParty/GuidelinesSupportLibrary/",
+                         "Engine/Source/ThirdParty/PLCrashReporter/",
+                         "Engine/Source/ThirdParty/zlib/",
+                         "Engine/Source/Runtime/OodleDataCompression/",
+                         "Engine/Binaries/ThirdParty/Intel/TBB/Mac/",
+                     })
+            {
+                AddFilesWithPrefix(manifest, gitDependencyPaths, prefix);
+            }
+        }
         IEnumerable<string> platformGitPaths = macHost
             ? [
                 // UBT validates a platform from its DataDrivenPlatformInfo and the Mac platform
@@ -147,6 +167,17 @@ public static class VirtualEngineEmbeddedSeed
                 "Engine/Config/Apple",
                 "Engine/Source/Programs/UnrealBuildTool/Platform/Mac",
                 "Engine/Source/Developer/Mac",
+                // These are the Mac-native third-party module roots reached by Core on UE5.5.
+                // Keep their headers and rules visible before UBT evaluates its action graph; a
+                // missing PLCrashReporter header otherwise forces an avoidable full-tree profile
+                // discovery on the first macOS build.
+                "Engine/Source/ThirdParty/PLCrashReporter",
+                "Engine/Source/ThirdParty/zlib",
+                "Engine/Source/ThirdParty/BLAKE3",
+                "Engine/Source/ThirdParty/Intel/TBB",
+                "Engine/Source/ThirdParty/mimalloc",
+                "Engine/Source/ThirdParty/GuidelinesSupportLibrary",
+                "Engine/Source/Runtime/OodleDataCompression",
             ]
             : [];
         IReadOnlyList<string> gitPaths = (!legacySeed
@@ -215,6 +246,20 @@ public static class VirtualEngineEmbeddedSeed
             string extension = Path.GetExtension(path);
             if (extension.Equals(".props", StringComparison.OrdinalIgnoreCase)
                 || extension.Equals(".targets", StringComparison.OrdinalIgnoreCase))
+            {
+                paths.Add(path);
+            }
+        }
+    }
+
+    private static void AddFilesWithPrefix(
+        GitDependenciesManifest manifest,
+        HashSet<string> paths,
+        string prefix)
+    {
+        foreach (string path in manifest.Files.Keys)
+        {
+            if (path.StartsWith(prefix, StringComparison.Ordinal))
             {
                 paths.Add(path);
             }

@@ -81,6 +81,14 @@ public static class UnrealBuildDiagnosticParser
         string slashDiagnostics = diagnostics.Replace('\\', '/');
         foreach (string line in slashDiagnostics.Split('\n'))
         {
+            // UBT reports every system-header search that cannot be mapped to an Engine module
+            // as "Could not find include directory ... found in Engine/...". The referenced
+            // Engine path is the *including* file, not an absent lower input. Treating it as
+            // one turns normal macOS SDK probing into an expensive full-profile retry.
+            if (line.Contains("Could not find include directory for", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
             if (!LooksLikeMissingPathDiagnostic(line))
             {
                 continue;

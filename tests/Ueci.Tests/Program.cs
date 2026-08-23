@@ -1570,6 +1570,14 @@ internal static class Program
                 new("Engine/Binaries/ThirdParty/Mono/Mac/bin/mono", "e", true),
             ["Engine/Source/ThirdParty/Intel/ISPC/bin/Mac/ispc"] =
                 new("Engine/Source/ThirdParty/Intel/ISPC/bin/Mac/ispc", "f", true),
+            ["Engine/Source/ThirdParty/GuidelinesSupportLibrary/GSL-1144/include/gsl/pointers"] =
+                new("Engine/Source/ThirdParty/GuidelinesSupportLibrary/GSL-1144/include/gsl/pointers", "g", false),
+            ["Engine/Source/ThirdParty/BLAKE3/1.3.1/lib/Mac/Release/libBLAKE3.a"] =
+                new("Engine/Source/ThirdParty/BLAKE3/1.3.1/lib/Mac/Release/libBLAKE3.a", "h", false),
+            ["Engine/Source/Runtime/OodleDataCompression/Sdks/2.9.12/lib/Mac/liboo2coremac64.a"] =
+                new("Engine/Source/Runtime/OodleDataCompression/Sdks/2.9.12/lib/Mac/liboo2coremac64.a", "i", false),
+            ["Engine/Binaries/ThirdParty/Intel/TBB/Mac/libtbb.dylib"] =
+                new("Engine/Binaries/ThirdParty/Intel/TBB/Mac/libtbb.dylib", "j", true),
         };
         var manifest = new GitDependenciesManifest(
             "https://cdn.example.test/dependencies",
@@ -1588,6 +1596,20 @@ internal static class Program
         Assert.Equal("Engine/Binaries/ThirdParty/Mono/Mac/bin/mono", mono.MonoPath);
         VirtualEngineSeed seed = VirtualEngineEmbeddedSeed.Create(manifest, "mac-arm64");
         Assert.True(seed.GitDependencyPaths.Contains("Engine/Source/ThirdParty/Intel/ISPC/bin/Mac/ispc", StringComparer.Ordinal));
+        Assert.True(seed.GitDependencyPaths.Contains(
+            "Engine/Source/ThirdParty/GuidelinesSupportLibrary/GSL-1144/include/gsl/pointers",
+            StringComparer.Ordinal));
+        Assert.True(seed.GitDependencyPaths.Contains(
+            "Engine/Source/ThirdParty/BLAKE3/1.3.1/lib/Mac/Release/libBLAKE3.a",
+            StringComparer.Ordinal));
+        Assert.True(seed.GitDependencyPaths.Contains(
+            "Engine/Source/Runtime/OodleDataCompression/Sdks/2.9.12/lib/Mac/liboo2coremac64.a",
+            StringComparer.Ordinal));
+        Assert.True(seed.GitDependencyPaths.Contains(
+            "Engine/Binaries/ThirdParty/Intel/TBB/Mac/libtbb.dylib",
+            StringComparer.Ordinal));
+        Assert.True(seed.GitPathspecs.Contains("Engine/Source/ThirdParty/PLCrashReporter", StringComparer.Ordinal));
+        Assert.True(seed.GitPathspecs.Contains("Engine/Source/Runtime/OodleDataCompression", StringComparer.Ordinal));
         return Task.CompletedTask;
     }
 
@@ -2347,6 +2369,9 @@ internal static class Program
         Assert.True(UnrealBuildDiagnostics.HasMissingEngineInput(wrappedPchFailure));
         Assert.False(UnrealBuildDiagnostics.HasMissingEngineInput(
             "UbaStorageServer - Failed to create directory /tmp/.epic/UnrealBuildAccelerator/sessions"));
+        Assert.False(UnrealBuildDiagnostics.HasMissingEngineInput(
+            "Core SharedPCH - Could not find include directory for 'stddef.h' found in " +
+            "'/tmp/engine-view/Engine/Source/Runtime/Core/Public/HAL/Platform.h'."));
         return Task.CompletedTask;
     }
 

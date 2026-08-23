@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
@@ -12,6 +13,7 @@ namespace Ueci.Epic;
 public sealed class EpicGitArchivePrefetcher
 {
     private static readonly HttpClient Client = CreateClient();
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> ArchiveLocks = new(StringComparer.Ordinal);
 
     public async Task<int> PrefetchAsync(
         string repository,
@@ -38,56 +40,129 @@ public sealed class EpicGitArchivePrefetcher
         }
 
         Uri archive = CreateArchiveUri(repository, commit);
-        string token = GitHubReadOnlyCredential.GetRequiredToken(tokenEnvironmentVariable);
-        progress?.Invoke($"[vfs/archive] Streaming one Epic source archive for {pending.Count:N0} selected blobs.");
-        using var request = new HttpRequestMessage(HttpMethod.Get, archive);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        using HttpResponseMessage response = await Client.SendAsync(
-            request,
-            HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        string archiveFile = GetArchiveFilePath(cacheRoot, commit);
+        if (IsValidArchive(archiveFile))
+        {
+            progress?.Invoke($"[vfs/archive] Reusing cached Epic source archive for {pending.Count:N0} selected blobs.");
+        }
+        else
+        {
+            progress?.Invoke($"[vfs/archive] Streaming one Epic source archive for {pending.Count:N0} selected blobs.");
+            string token = GitHubReadOnlyCredential.GetRequiredToken(tokenEnvironmentVariable);
+            using var request = new HttpRequestMessage(HttpMethod.Get, archive);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            using HttpResponseMessage response = await Client.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            archiveFile = await GetArchiveFileAsync(response, archiveFile, cancellationToken).ConfigureAwait(false);
+        }
 
-        string archiveDirectory = Path.Combine(Path.GetFullPath(cacheRoot), "archives");
-        Directory.CreateDirectory(archiveDirectory);
-        string archiveFile = Path.Combine(archiveDirectory, $"epic-source-{commit}.zip.{Guid.NewGuid():N}.tmp");
+        using var zip = ZipFile.OpenRead(archiveFile);
+        int written = 0;
+        foreach (ZipArchiveEntry archiveEntry in zip.Entries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!TryNormalizeArchivePath(archiveEntry.FullName, out string path)
+                || !pending.Remove(path, out EpicGitTreeEntry? gitEntry))
+            {
+                continue;
+            }
+
+            await using Stream source = archiveEntry.Open();
+            if (await WriteBlobAsync(source, gitEntry, archiveEntry.Length, cacheRoot, cancellationToken).ConfigureAwait(false))
+            {
+                written++;
+            }
+        }
+
+        progress?.Invoke($"[vfs/archive] Materialized {written:N0} selected Git blobs from one HTTP archive stream.");
+        if (pending.Count != 0)
+        {
+            progress?.Invoke(
+                $"[vfs/archive] Archive omitted {pending.Count:N0} selected path(s), including '{pending.Keys.First()}'; " +
+                "leaving them for the lazy Git fallback.");
+        }
+        return written;
+    }
+
+    private static async Task<string> GetArchiveFileAsync(
+        HttpResponseMessage response,
+        string archiveFile,
+        CancellationToken cancellationToken)
+    {
+        if (IsValidArchive(archiveFile))
+        {
+            return archiveFile;
+        }
+
+        SemaphoreSlim gate = ArchiveLocks.GetOrAdd(archiveFile, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await using (Stream responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
-            await using (FileStream destination = new(archiveFile, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, useAsync: true))
+            if (IsValidArchive(archiveFile))
             {
-                await responseStream.CopyToAsync(destination, 1024 * 1024, cancellationToken).ConfigureAwait(false);
+                return archiveFile;
             }
-            using var zip = ZipFile.OpenRead(archiveFile);
-            int written = 0;
-            foreach (ZipArchiveEntry archiveEntry in zip.Entries)
+            TryDelete(archiveFile);
+            string temporary = archiveFile + $".{Guid.NewGuid():N}.tmp";
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (!TryNormalizeArchivePath(archiveEntry.FullName, out string path)
-                    || !pending.Remove(path, out EpicGitTreeEntry? gitEntry))
+                await using (Stream responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
+                await using (FileStream destination = new(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, useAsync: true))
                 {
-                    continue;
+                    await responseStream.CopyToAsync(destination, 1024 * 1024, cancellationToken).ConfigureAwait(false);
                 }
-
-                await using Stream source = archiveEntry.Open();
-                if (await WriteBlobAsync(source, gitEntry, archiveEntry.Length, cacheRoot, cancellationToken).ConfigureAwait(false))
+                if (!IsValidArchive(temporary))
                 {
-                    written++;
+                    throw new InvalidDataException("GitHub returned an invalid Epic source archive.");
                 }
+                File.Move(temporary, archiveFile, overwrite: true);
+                return archiveFile;
             }
-
-            progress?.Invoke($"[vfs/archive] Materialized {written:N0} selected Git blobs from one HTTP archive stream.");
-            if (pending.Count != 0)
+            finally
             {
-                progress?.Invoke(
-                    $"[vfs/archive] Archive omitted {pending.Count:N0} selected path(s), including '{pending.Keys.First()}'; " +
-                    "leaving them for the lazy Git fallback.");
+                TryDelete(temporary);
             }
-            return written;
         }
         finally
         {
-            if (File.Exists(archiveFile)) File.Delete(archiveFile);
+            gate.Release();
+        }
+    }
+
+    private static string GetArchiveFilePath(string cacheRoot, string commit)
+    {
+        string archiveDirectory = Path.Combine(Path.GetFullPath(cacheRoot), "archives");
+        Directory.CreateDirectory(archiveDirectory);
+        return Path.Combine(archiveDirectory, $"epic-source-{commit}.zip");
+    }
+
+    private static bool IsValidArchive(string path)
+    {
+        if (!File.Exists(path) || new FileInfo(path).Length < 22) return false;
+        try
+        {
+            using ZipArchive archive = ZipFile.OpenRead(path);
+            return archive.Entries.Count != 0;
+        }
+        catch (InvalidDataException)
+        {
+            return false;
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch (IOException)
+        {
+            // A concurrent reader may still be using an obsolete cache entry. It will be retried
+            // under the archive gate on the next request.
         }
     }
 
