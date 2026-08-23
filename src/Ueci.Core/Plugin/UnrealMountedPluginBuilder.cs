@@ -945,19 +945,29 @@ internal sealed class UnrealMountedPluginBuilder
     {
         if (!OperatingSystem.IsMacOS()) return;
 
-        string config = Path.Combine(engineRoot, "Engine", "Config", "Mac", "Mac_SDK.json");
-        if (!File.Exists(config)) return;
+        string[] descriptors =
+        [
+            Path.Combine(engineRoot, "Engine", "Config", "Mac", "Mac_SDK.json"),
+            Path.Combine(engineRoot, "Engine", "Config", "Apple", "Apple_SDK.json"),
+        ];
+        bool patched = false;
+        foreach (string config in descriptors.Where(File.Exists))
+        {
+            string original = await File.ReadAllTextAsync(config, cancellationToken).ConfigureAwait(false);
+            string adjusted = Regex.Replace(
+                original,
+                "(\\\"MaxVersion\\\"\\s*:\\s*\\\")[^\\\"]+(\\\")",
+                "${1}99.0.0${2}",
+                RegexOptions.CultureInvariant);
+            if (string.Equals(original, adjusted, StringComparison.Ordinal)) continue;
 
-        string original = await File.ReadAllTextAsync(config, cancellationToken).ConfigureAwait(false);
-        string adjusted = Regex.Replace(
-            original,
-            "(\\\"MaxVersion\\\"\\s*:\\s*\\\")[^\\\"]+(\\\")",
-            "${1}99.0.0${2}",
-            RegexOptions.CultureInvariant);
-        if (string.Equals(original, adjusted, StringComparison.Ordinal)) return;
-
-        await File.WriteAllTextAsync(config, adjusted, cancellationToken).ConfigureAwait(false);
-        progress?.Invoke("[macos/sdk] Raised UE's Mac SDK upper gate in the COW workspace for the installed Xcode SDK.");
+            await File.WriteAllTextAsync(config, adjusted, cancellationToken).ConfigureAwait(false);
+            patched = true;
+        }
+        if (patched)
+        {
+            progress?.Invoke("[macos/sdk] Raised UE's Apple SDK upper gate in the COW workspace for the installed Xcode SDK.");
+        }
     }
 
     private static IReadOnlyList<MountedBuildPhase> CreatePhases(
