@@ -76,13 +76,13 @@ public sealed class EpicGitArchivePrefetcher
                 }
             }
 
+            progress?.Invoke($"[vfs/archive] Materialized {written:N0} selected Git blobs from one HTTP archive stream.");
             if (pending.Count != 0)
             {
-                throw new InvalidDataException(
-                    $"Epic source archive did not contain {pending.Count:N0} selected path(s), including '{pending.Keys.First()}'.");
+                progress?.Invoke(
+                    $"[vfs/archive] Archive omitted {pending.Count:N0} selected path(s), including '{pending.Keys.First()}'; " +
+                    "leaving them for the lazy Git fallback.");
             }
-
-            progress?.Invoke($"[vfs/archive] Materialized {written:N0} selected Git blobs from one HTTP archive stream.");
             return written;
         }
         finally
