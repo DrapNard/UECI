@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using Ueci.Epic;
 using Ueci.GitDeps;
 using Ueci.Unreal;
@@ -291,6 +292,7 @@ internal sealed class UnrealMountedPluginBuilder
             await using LinuxFuseMountSession mount = mountSession;
 
             string virtualEngineRoot = mount.MountPoint;
+            await RelaxMacSdkVersionGateAsync(virtualEngineRoot, options.Progress, cancellationToken).ConfigureAwait(false);
 
             // Content-only plugins never need UBT or a native toolchain. This matters on cold CI
             // runners: package them immediately instead of paying the managed/native bootstrap cost.
@@ -934,6 +936,28 @@ internal sealed class UnrealMountedPluginBuilder
             }
         }
         return modules.OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    private static async Task RelaxMacSdkVersionGateAsync(
+        string engineRoot,
+        Action<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+
+        string config = Path.Combine(engineRoot, "Engine", "Platforms", "Mac", "Config", "Mac_SDK.json");
+        if (!File.Exists(config)) return;
+
+        string original = await File.ReadAllTextAsync(config, cancellationToken).ConfigureAwait(false);
+        string adjusted = Regex.Replace(
+            original,
+            "(\\\"MaxVersion\\\"\\s*:\\s*\\\")[^\\\"]+(\\\")",
+            "${1}99.0.0${2}",
+            RegexOptions.CultureInvariant);
+        if (string.Equals(original, adjusted, StringComparison.Ordinal)) return;
+
+        await File.WriteAllTextAsync(config, adjusted, cancellationToken).ConfigureAwait(false);
+        progress?.Invoke("[macos/sdk] Raised UE's Mac SDK upper gate in the COW workspace for the installed Xcode SDK.");
     }
 
     private static IReadOnlyList<MountedBuildPhase> CreatePhases(
