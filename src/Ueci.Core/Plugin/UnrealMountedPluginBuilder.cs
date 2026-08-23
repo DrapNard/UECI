@@ -10,7 +10,7 @@ using Ueci.Vfs.Linux;
 namespace Ueci.Plugin;
 
 /// <summary>
-/// Linux/FUSE plugin build path. Known Epic commits use a learned minimal Engine profile; unknown
+/// Native FUSE plugin build path for Linux and macOS. Known Epic commits use a learned minimal Engine profile; unknown
 /// commits first try the embedded alpha.6 working-set seed and automatically fall back to one full
 /// dynamic discovery pass when a required lower path is missing.
 /// </summary>
@@ -20,15 +20,16 @@ internal sealed class UnrealMountedPluginBuilder
         UnrealPluginBuildOptions options,
         CancellationToken cancellationToken = default)
     {
-        if (!OperatingSystem.IsLinux())
-        {
-            throw new PlatformNotSupportedException("The mounted plugin build backend currently requires Linux + FUSE3.");
-        }
-        if (!options.RuntimeIdentifier.Equals("linux-x64", StringComparison.OrdinalIgnoreCase)
-            || !options.Platform.Equals("Linux", StringComparison.OrdinalIgnoreCase))
+        bool linux = OperatingSystem.IsLinux()
+            && options.RuntimeIdentifier.Equals("linux-x64", StringComparison.OrdinalIgnoreCase)
+            && options.Platform.Equals("Linux", StringComparison.OrdinalIgnoreCase);
+        bool mac = OperatingSystem.IsMacOS()
+            && options.RuntimeIdentifier.StartsWith("mac-", StringComparison.OrdinalIgnoreCase)
+            && options.Platform.Equals("Mac", StringComparison.OrdinalIgnoreCase);
+        if (!linux && !mac)
         {
             throw new PlatformNotSupportedException(
-                "The first mounted plugin build backend currently supports linux-x64 -> Linux only.");
+                "The mounted plugin build backend supports native linux-x64 -> Linux (FUSE3) and macOS -> Mac (macFUSE) only.");
         }
 
         var timings = new UnrealPluginBuildTimingCollector();
@@ -91,9 +92,8 @@ internal sealed class UnrealMountedPluginBuilder
         // Native toolchains are immutable for an Epic SDK version. Keep the installed tree in the
         // shared UECI cache rather than the disposable Engine workspace so ephemeral CI jobs can
         // restore it directly without re-extracting the 1+ GiB archive.
-        string toolchainStore = Path.Combine(
-            sharedCacheRoot,
-            "toolchains", "installed", "linux-x64");
+        string toolchainStore = Path.Combine(sharedCacheRoot, "toolchains", "installed", "linux-x64");
+        bool isLinuxBuild = options.Platform.Equals("Linux", StringComparison.OrdinalIgnoreCase);
 
         Directory.CreateDirectory(mountedStateRoot);
         Directory.CreateDirectory(mountPoint);
@@ -122,8 +122,14 @@ internal sealed class UnrealMountedPluginBuilder
                 AdditionalModuleNames: moduleRoots),
             cancellationToken)).ConfigureAwait(false);
 
-        var artifactCache = new VirtualEngineArtifactCache(options.FetchOptions.CacheDirectory, options.Progress);
-        string profileStore = Path.Combine(sharedCacheRoot, "engine-profiles");
+        var artifactCache = new VirtualEngineArtifactCache(
+            options.FetchOptions.CacheDirectory,
+            options.Progress,
+            options.RuntimeIdentifier);
+        string profileStore = Path.Combine(
+            sharedCacheRoot,
+            "engine-profiles",
+            VirtualEngineMountFactory.CacheScope(options.RuntimeIdentifier));
         bool restoredArtifacts = false;
         bool reusableUbt = false;
         if (plugin.HasCode)
@@ -217,20 +223,29 @@ internal sealed class UnrealMountedPluginBuilder
                             .ToArray();
                         if (predicted.Length != 0)
                         {
-                            _ = await epicGit.TryBackfillCurrentSnapshotPathsAsync(
+                            bool backfilled = await epicGit.TryBackfillCurrentSnapshotPathsAsync(
                                 metadataRoot,
                                 predicted,
                                 options.TokenEnvironmentVariable,
                                 minimumBatchSize: 256,
                                 progress: options.Progress,
                                 cancellationToken: cancellationToken).ConfigureAwait(false);
-                            // FUSE serves a real backing path to UBT, which means an otherwise
-                            // local Git object still used to be copied into CAS one open at a time.
-                            // Stream the complete predicted set through one cat-file process first;
-                            // the compiler then only sees normal cached files and never waits for
-                            // per-file FUSE hydration.
-                            await context.FileSystem.PrefetchGitPathsAsync(predicted, cancellationToken)
-                                .ConfigureAwait(false);
+                            if (backfilled)
+                            {
+                                // FUSE serves a real backing path to UBT, which means an otherwise
+                                // local Git object still used to be copied into CAS one open at a time.
+                                // Stream the complete predicted set through one cat-file process first;
+                                // the compiler then only sees normal cached files and never waits for
+                                // per-file FUSE hydration.
+                                await context.FileSystem.PrefetchGitPathsAsync(predicted, cancellationToken)
+                                    .ConfigureAwait(false);
+                            }
+                            else
+                            {
+                                options.Progress?.Invoke(
+                                    "[vfs/prefetch] Skipping eager CAS hydration because this Git version cannot batch backfill paths; " +
+                                    "the mount will hydrate only files UBT actually opens.");
+                            }
                         }
                     });
             }
@@ -299,7 +314,7 @@ internal sealed class UnrealMountedPluginBuilder
                     contentDownloaded,
                     Array.Empty<UnrealPluginBuildPhaseResult>(),
                     [
-                        "MountedBackend:FUSE3",
+                        $"MountedBackend:{(isLinuxBuild ? "FUSE3" : "macFUSE")}",
                         $"EngineProfile:{context.ProfileSource}",
                         $"GitHydratedFiles:{contentMetrics.GitHydratedFiles:N0}",
                         $"GitHydratedBytes:{contentMetrics.GitHydratedBytes:N0}",
@@ -326,7 +341,9 @@ internal sealed class UnrealMountedPluginBuilder
             // These three cold-start jobs are independent once the FUSE view exists. Run them
             // concurrently so toolchain acquisition overlaps UBT compilation and host generation.
             options.Progress?.Invoke(
-                "Cold bootstrap: preparing UBT, version-compatible synthetic host, and Epic Linux toolchain concurrently...");
+                isLinuxBuild
+                    ? "Cold bootstrap: preparing UBT, version-compatible synthetic host, and Epic Linux toolchain concurrently..."
+                    : "Cold bootstrap: preparing UBT and version-compatible synthetic host concurrently; using the local Xcode toolchain.");
 
             var compiler = new UnrealBuildToolCompiler();
             Task<UnrealBuildToolCompileResult> compileTask = timings.MeasureAsync(
@@ -348,12 +365,16 @@ internal sealed class UnrealMountedPluginBuilder
                     compatibility,
                     cancellationToken));
 
-            options.Progress?.Invoke("Ensuring Epic Linux native toolchain for the mounted build...");
             var linuxToolchain = new UnrealLinuxNativeToolchainInstaller();
             Task<UnrealLinuxNativeToolchainResult?> toolchainTask = timings.MeasureAsync(
                 "toolchain.ensure",
                 async () =>
                 {
+                    if (!isLinuxBuild)
+                    {
+                        return null;
+                    }
+                    options.Progress?.Invoke("Ensuring Epic Linux native toolchain for the mounted build...");
                     try
                     {
                         return await linuxToolchain.EnsureAsync(
@@ -376,7 +397,7 @@ internal sealed class UnrealMountedPluginBuilder
                     }
                 });
 
-            Task<UnrealLegacyLinuxCompiler?> legacyCompilerTask = compatibility.Version.Major == 4
+            Task<UnrealLegacyLinuxCompiler?> legacyCompilerTask = isLinuxBuild && compatibility.Version.Major == 4
                 && compatibility.Version.Minor < 20
                     ? timings.MeasureAsync(
                         "legacy-compiler.ensure",
@@ -660,7 +681,7 @@ internal sealed class UnrealMountedPluginBuilder
                 downloaded,
                 phaseResults,
                 [
-                    "MountedBackend:FUSE3",
+                    $"MountedBackend:{(isLinuxBuild ? "FUSE3" : "macFUSE")}",
                     $"EngineCompatibility:{compatibility.Version}",
                     $"UbtRuntime:{compile.Paths.RuntimeKind}",
                     $"EngineProfile:{context.ProfileSource}",

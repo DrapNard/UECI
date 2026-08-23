@@ -12,14 +12,15 @@ public sealed class LinuxFuseHelperCompiler
         Action<string>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        if (!OperatingSystem.IsLinux())
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
         {
-            throw new PlatformNotSupportedException("The libfuse3 backend is Linux-only.");
+            throw new PlatformNotSupportedException("The FUSE backend requires Linux/FUSE3 or macOS/macFUSE.");
         }
 
         byte[] sourceBytes = ReadEmbeddedSource();
         string sourceHash = Convert.ToHexString(SHA256.HashData(sourceBytes)).ToLowerInvariant()[..16];
-        string buildRoot = Path.Combine(Path.GetFullPath(cacheRoot), "native", "fuse3", sourceHash);
+        string backend = OperatingSystem.IsMacOS() ? "macfuse" : "fuse3";
+        string buildRoot = Path.Combine(Path.GetFullPath(cacheRoot), "native", backend, sourceHash);
         string sourcePath = Path.Combine(buildRoot, "ueci-fuse-helper.c");
         string binaryPath = Path.Combine(buildRoot, "ueci-fuse-helper");
         if (File.Exists(binaryPath))
@@ -35,7 +36,9 @@ public sealed class LinuxFuseHelperCompiler
         if (pkg.ExitCode != 0)
         {
             throw new InvalidOperationException(
-                "libfuse3 development files are required for 'ueci mount'. Install fuse3/pkg-config for your distribution. " +
+                (OperatingSystem.IsMacOS()
+                    ? "macFUSE development files are required for 'ueci mount'. Install macFUSE and pkg-config (for example with Homebrew). "
+                    : "libfuse3 development files are required for 'ueci mount'. Install fuse3/pkg-config for your distribution. ") +
                 pkg.StandardError.Trim());
         }
 
@@ -54,7 +57,7 @@ public sealed class LinuxFuseHelperCompiler
         };
         args.AddRange(SplitFlags(pkg.StandardOutput));
 
-        progress?.Invoke($"Compiling embedded libfuse3 helper with {Path.GetFileName(compiler)}...");
+        progress?.Invoke($"Compiling embedded {(OperatingSystem.IsMacOS() ? "macFUSE" : "libfuse3")} helper with {Path.GetFileName(compiler)}...");
         ProcessResult build = await RunAsync(compiler, buildRoot, args, cancellationToken).ConfigureAwait(false);
         if (build.ExitCode != 0)
         {

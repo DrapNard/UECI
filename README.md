@@ -2,7 +2,7 @@
 
 **UECI is an experimental, minimal Unreal Engine substrate for CI/CD.** Its goal is to build Unreal Engine code plugins without installing a full Unreal Engine tree on every runner.
 
-> Status: **v0.5 alpha / technical prototype (alpha.31).** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, the materialized lazy plugin-build fallback, and a real Linux/FUSE3 virtual Engine mount now exist. `build-plugin --backend fuse` can compile UBT and the plugin directly through that mounted Engine on Linux x64. Windows/macOS mounted backends remain roadmap items.
+> Status: **v0.5 alpha / technical prototype.** Authenticated Epic source bootstrap, real GitDependencies CDN materialization, UnrealBuildTool bootstrap, the materialized lazy plugin-build fallback, and native lazy Engine mounts now exist. `build-plugin --backend fuse` supports Linux x64 through FUSE3 and macOS through macFUSE. Windows remains on the materialized fallback.
 
 ## Why
 
@@ -25,7 +25,7 @@ A normal Unreal source setup materializes a very large source/dependency tree be
                     plugin build
 ```
 
-The long-term design supports both **materialized mode** (portable, no special privileges) and **mounted mode** (FUSE on Linux, WinFsp on Windows, an appropriate macOS backend) behind the same engine-view contract.
+The long-term design supports both **materialized mode** (portable, no special privileges) and **mounted mode** (FUSE3 on Linux, macFUSE on macOS, WinFsp on Windows) behind the same engine-view contract.
 
 ## What UECI already does
 
@@ -199,7 +199,7 @@ The lower-level `epic init` and `epic materialize` commands are also available i
 
 UECI injects the Git authorization header through per-process environment configuration. It does not persist the token to `.git/config`, the remote URL, `.ueci.yml`, or normal logs.
 
-## Mount a virtual Engine (Linux/FUSE3)
+## Mount a virtual Engine (Linux/FUSE3 or macOS/macFUSE)
 
 The v0.5 mounted backend exposes the whole pinned Unreal namespace without checking out Engine source contents. Directory metadata comes from Git tree metadata + `Commit.gitdeps.xml`; the first `open()` of an immutable file blocks only that filesystem request while UECI fills the CAS. Writes go to a persistent copy-on-write upper layer outside the mount.
 
@@ -274,7 +274,7 @@ Sparse worktree updates, GitDependencies overlays, and externally installed SDKs
 
 ## Build a plugin (experimental)
 
-Two backends now coexist. `auto` is the default and selects `fuse` for native Linux x64 builds while keeping `materialized` as the portable fallback elsewhere. `fuse` (Linux x64) mounts the exact learned/seeded pinned Engine working set (with one dynamic fallback when required), compiles UBT **inside the virtual Engine**, installs the Epic native toolchain in persistent state outside the mount, and invokes each UBT target once while Git/GitDependencies files hydrate into CAS on normal filesystem access.
+Two backends now coexist. `auto` selects `fuse` for native Linux x64 and macOS builds, keeping `materialized` as the portable fallback elsewhere. `fuse` mounts the exact learned/seeded pinned Engine working set (with one dynamic fallback when required), compiles UBT **inside the virtual Engine**, and invokes each UBT target once while Git/GitDependencies files hydrate into CAS on normal filesystem access. Linux installs Epic's native toolchain in persistent state; macOS uses the local Xcode toolchain.
 
 ```bash
 export UECI_EPIC_GITHUB_TOKEN='github_pat_...'
@@ -295,6 +295,7 @@ Real-host smokes:
 ```bash
 ./scripts/smoke-plugin.sh       # materialized fallback
 ./scripts/smoke-plugin-vfs.sh   # Linux/FUSE mounted build
+./scripts/smoke-plugin-vfs-macos.sh # macOS/macFUSE mounted build; enforces <5 minutes
 ```
 
 See [`docs/plugin-build.md`](docs/plugin-build.md) and [`docs/vfs.md`](docs/vfs.md).

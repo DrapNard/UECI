@@ -82,8 +82,11 @@ static struct server_connection *connect_server(void)
 {
     if (g_server.reader && g_server.writer) return &g_server;
 
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return NULL;
+#ifdef SOCK_CLOEXEC
+    (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
+#endif
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
@@ -183,7 +186,7 @@ static void *ueci_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
     return NULL;
 }
 
-static int ueci_getattr(const char *path, struct stat *st, struct fuse_file_info *fi)
+static int ueci_getattr_stat(const char *path, struct stat *st, struct fuse_file_info *fi)
 {
     if (fi && fi->fh) {
         if (fstat((int)fi->fh, st) == 0) return 0;
@@ -218,6 +221,29 @@ static int ueci_getattr(const char *path, struct stat *st, struct fuse_file_info
     return 0;
 }
 
+#ifdef __APPLE__
+static void copy_darwin_attributes(struct fuse_darwin_attr *attr, const struct stat *st)
+{
+    attr->mode = st->st_mode;
+    attr->nlink = st->st_nlink;
+    attr->uid = st->st_uid;
+    attr->gid = st->st_gid;
+    attr->size = st->st_size;
+    attr->blksize = st->st_blksize;
+    attr->blocks = st->st_blocks;
+}
+
+static int ueci_getattr(const char *path, struct fuse_darwin_attr *attr, struct fuse_file_info *fi)
+{
+    struct stat st;
+    int result = ueci_getattr_stat(path, &st, fi);
+    if (result == 0) copy_darwin_attributes(attr, &st);
+    return result;
+}
+#else
+#define ueci_getattr ueci_getattr_stat
+#endif
+
 static int ueci_opendir(const char *path, struct fuse_file_info *fi)
 {
     (void)path;
@@ -228,8 +254,13 @@ static int ueci_opendir(const char *path, struct fuse_file_info *fi)
     return 0;
 }
 
+#ifdef __APPLE__
+static int ueci_readdir(const char *path, void *buf, fuse_darwin_fill_dir_t filler, off_t offset,
+                        struct fuse_file_info *fi, enum fuse_readdir_flags flags)
+#else
 static int ueci_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset,
                         struct fuse_file_info *fi, enum fuse_readdir_flags flags)
+#endif
 {
     (void)offset; (void)fi;
     char *hex = hex_encode(path);
@@ -303,7 +334,14 @@ static int ueci_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off
         // A non-GitHub lower may still have an unknown (-1) size; don't poison the inode cache with
         // a fake zero in that fallback case, so a later getattr can hydrate the exact size.
         enum fuse_fill_dir_flags fill_flags = child_size >= 0 ? FUSE_FILL_DIR_PLUS : FUSE_FILL_DIR_DEFAULTS;
+#ifdef __APPLE__
+        struct fuse_darwin_attr attr;
+        memset(&attr, 0, sizeof(attr));
+        copy_darwin_attributes(&attr, &child);
+        int full = filler(buf, name, &attr, 0, fill_flags);
+#else
         int full = filler(buf, name, &child, 0, fill_flags);
+#endif
         free(name);
         if (full) break;
     }
@@ -510,6 +548,7 @@ static int ueci_utimens(const char *path, const struct timespec tv[2], struct fu
 }
 
 
+#ifndef __APPLE__
 static int ueci_fallocate(const char *path, int mode, off_t offset, off_t length, struct fuse_file_info *fi)
 {
     (void)path;
@@ -528,6 +567,7 @@ static ssize_t ueci_copy_file_range(const char *path_in, struct fuse_file_info *
     ssize_t result = copy_file_range((int)fi_in->fh, &offset_in, (int)fi_out->fh, &offset_out, size, flags);
     return result < 0 ? -errno : result;
 }
+#endif
 
 static off_t ueci_lseek(const char *path, off_t offset, int whence, struct fuse_file_info *fi)
 {
@@ -541,10 +581,14 @@ static int ueci_access(const char *path, int mask)
 {
     (void)mask;
     struct stat st;
-    return ueci_getattr(path, &st, NULL);
+    return ueci_getattr_stat(path, &st, NULL);
 }
 
+#ifdef __APPLE__
+static int ueci_statfs(const char *path, struct statfs *st)
+#else
 static int ueci_statfs(const char *path, struct statvfs *st)
+#endif
 {
     (void)path;
     char *response = NULL;
@@ -554,7 +598,11 @@ static int ueci_statfs(const char *path, struct statvfs *st)
     char *physical = hex_decode(response + 3);
     free(response);
     if (!physical) return -EIO;
+#ifdef __APPLE__
+    int rc = statfs(physical, st);
+#else
     int rc = statvfs(physical, st);
+#endif
     int saved = errno;
     free(physical);
     return rc == 0 ? 0 : -saved;
@@ -583,8 +631,10 @@ static const struct fuse_operations ueci_ops = {
     .access = ueci_access,
     .create = ueci_create,
     .utimens = ueci_utimens,
+#ifndef __APPLE__
     .fallocate = ueci_fallocate,
     .copy_file_range = ueci_copy_file_range,
+#endif
     .lseek = ueci_lseek,
 };
 
@@ -595,6 +645,16 @@ int main(int argc, char **argv)
         return 2;
     }
     g_socket_path = argv[1];
+#ifdef __APPLE__
+    char *fuse_argv[] = {
+        argv[0],
+        "-f",
+        "-o",
+        "default_permissions,fsname=ueci",
+        argv[2],
+        NULL,
+    };
+#else
     char *fuse_argv[] = {
         argv[0],
         "-f",
@@ -603,5 +663,6 @@ int main(int argc, char **argv)
         argv[2],
         NULL,
     };
+#endif
     return fuse_main(5, fuse_argv, &ueci_ops, NULL);
 }

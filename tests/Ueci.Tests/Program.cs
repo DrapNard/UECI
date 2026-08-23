@@ -30,9 +30,11 @@ internal static class Program
         ("Epic sparse source seed materializes from a local partial clone", EpicSparseSourceMaterializationAsync),
         ("Epic ref resolver returns an exact object id without checkout", EpicRefResolveAsync),
         ("GitHub tree size metadata splits truncated subtrees without blob content", GitHubTreeSizeMetadataAsync),
+        ("targeted Git pathspec indexing batches below exec argument limits", GitPathspecBatchingAsync),
         ("managed project graph resolves relative MSBuild references", ManagedProjectGraphAsync),
         ("virtual Engine view overlays GitDependencies over Git and performs lazy COW", VirtualEngineViewCowAsync),
         ("virtual Engine profile persists an accessed commit working set", VirtualEngineProfileRoundTripAsync),
+        ("virtual Engine cache scopes separate host runtimes", VirtualEngineCacheScopeAsync),
         ("commit-scoped generated artifact cache restores UBT outputs", VirtualEngineArtifactCacheRoundTripAsync),
         ("materializer extracts multiple blobs in one pack download", MaterializerExtractsMultiBlobPackAsync),
         ("materializer reuses compressed pack cache", MaterializerReusesPackCacheAsync),
@@ -52,6 +54,7 @@ internal static class Program
         ("Epic bundled dotnet resolver selects host runtime", BundledDotNetResolverAsync),
         ("Epic bundled dotnet SDK resolver selects latest SDK", BundledDotNetSdkResolverAsync),
         ("Epic bundled dotnet resolver accepts historical Linux bundle layouts", BundledDotNetHistoricalLayoutAsync),
+        ("Epic bundled runtimes resolve UECI mac RIDs", BundledMacRuntimeResolverAsync),
         ("Epic bundled Mono resolver selects legacy host runtime", BundledMonoResolverAsync),
         ("Engine compatibility feature-detects UE4 legacy and UE5 modern rules", EngineCompatibilityDetectsAsync),
         ("Engine compatibility discovers UE5 moved rules declarations", EngineCompatibilityDiscoversMovedRulesAsync),
@@ -439,6 +442,19 @@ internal static class Program
         }
     }
 
+    private static Task GitPathspecBatchingAsync()
+    {
+        string[] paths = Enumerable.Range(0, 2_000)
+            .Select(index => $"Engine/Source/Runtime/VeryLongModule{index:D4}/Private/{new string('x', 48)}.cpp")
+            .ToArray();
+        IReadOnlyList<IReadOnlyList<string>> batches = EpicGitTreeIndex.CreatePathspecBatches(paths);
+        Assert.True(batches.Count > 1);
+        Assert.Equal(paths.Length, batches.Sum(batch => batch.Count));
+        Assert.Equal(paths[0], batches[0][0]);
+        Assert.Equal(paths[^1], batches[^1][^1]);
+        return Task.CompletedTask;
+    }
+
     private static async Task EpicRefResolveAsync()
     {
         const string tokenVariable = "UECI_TEST_RESOLVE_TOKEN";
@@ -732,6 +748,14 @@ internal static class Program
         {
             DeleteDirectory(root);
         }
+    }
+
+    private static Task VirtualEngineCacheScopeAsync()
+    {
+        Assert.Equal("mac-arm64", VirtualEngineMountFactory.CacheScope("mac-arm64"));
+        Assert.Equal("linux_x64", VirtualEngineMountFactory.CacheScope("Linux/X64"));
+        Assert.Equal("mac_arm64", VirtualEngineMountFactory.CacheScope("mac/arm64"));
+        return Task.CompletedTask;
     }
 
     private static async Task VirtualEngineArtifactCacheRoundTripAsync()
@@ -1527,6 +1551,43 @@ internal static class Program
             "Engine/Binaries/Linux/UnrealBuildAccelerator/UbaHost",
             StringComparer.Ordinal));
         Assert.True(seed.GitPathspecs.Contains("Engine/Config", StringComparer.Ordinal));
+        return Task.CompletedTask;
+    }
+
+    private static Task BundledMacRuntimeResolverAsync()
+    {
+        var files = new Dictionary<string, GitDependencyFile>(StringComparer.Ordinal)
+        {
+            ["Engine/Binaries/ThirdParty/DotNet/8.0.300/mac-arm64/dotnet"] =
+                new("Engine/Binaries/ThirdParty/DotNet/8.0.300/mac-arm64/dotnet", "a", true),
+            ["Engine/Binaries/ThirdParty/DotNet/8.0.300/mac-arm64/sdk/8.0.300/MSBuild.dll"] =
+                new("Engine/Binaries/ThirdParty/DotNet/8.0.300/mac-arm64/sdk/8.0.300/MSBuild.dll", "b", false),
+            ["Engine/Binaries/ThirdParty/DotNet/8.0.300/mac-arm64/host/fxr/8.0.5/libhostfxr.dylib"] =
+                new("Engine/Binaries/ThirdParty/DotNet/8.0.300/mac-arm64/host/fxr/8.0.5/libhostfxr.dylib", "c", true),
+            ["Engine/Binaries/ThirdParty/DotNet/8.0.300/mac-arm64/shared/Microsoft.NETCore.App/8.0.5/System.Private.CoreLib.dll"] =
+                new("Engine/Binaries/ThirdParty/DotNet/8.0.300/mac-arm64/shared/Microsoft.NETCore.App/8.0.5/System.Private.CoreLib.dll", "d", false),
+            ["Engine/Binaries/ThirdParty/Mono/Mac/bin/mono"] =
+                new("Engine/Binaries/ThirdParty/Mono/Mac/bin/mono", "e", true),
+            ["Engine/Source/ThirdParty/Intel/ISPC/bin/Mac/ispc"] =
+                new("Engine/Source/ThirdParty/Intel/ISPC/bin/Mac/ispc", "f", true),
+        };
+        var manifest = new GitDependenciesManifest(
+            "https://cdn.example.test/dependencies",
+            files,
+            new Dictionary<string, GitDependencyBlob>(),
+            new Dictionary<string, GitDependencyPack>());
+
+        EpicBundledDotNetSdkPlan sdk = EpicBundledDotNetSdkResolver.Resolve(manifest, "mac-arm64");
+        Assert.Equal("Engine/Binaries/ThirdParty/DotNet/8.0.300/mac-arm64/", sdk.BundlePrefix);
+        var config = new DotNetRuntimeConfig(
+            [new DotNetFrameworkRequirement("Microsoft.NETCore.App", new Version(8, 0, 0))]);
+        EpicBundledDotNetPlan runtime = EpicBundledDotNetResolver.Resolve(manifest, config, "mac-arm64");
+        Assert.Equal(sdk.BundlePrefix, runtime.BundlePrefix);
+        EpicBundledMonoPlan mono = EpicBundledMonoResolver.TryResolve(manifest, "mac-arm64")
+            ?? throw new Exception("macOS Mono plan missing");
+        Assert.Equal("Engine/Binaries/ThirdParty/Mono/Mac/bin/mono", mono.MonoPath);
+        VirtualEngineSeed seed = VirtualEngineEmbeddedSeed.Create(manifest, "mac-arm64");
+        Assert.True(seed.GitDependencyPaths.Contains("Engine/Source/ThirdParty/Intel/ISPC/bin/Mac/ispc", StringComparer.Ordinal));
         return Task.CompletedTask;
     }
 

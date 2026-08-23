@@ -7,9 +7,9 @@ if [[ -z "${UECI_EPIC_GITHUB_TOKEN:-}" ]]; then
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MOUNT="${UECI_VFS_MOUNT:-/tmp/ueci-vfs-engine}"
-META="${UECI_VFS_METADATA:-/tmp/ueci-vfs-metadata}"
-STATE="${UECI_VFS_STATE:-/tmp/ueci-vfs-state}"
+MOUNT="${UECI_VFS_MOUNT:-$ROOT/.ueci/smoke-vfs-engine}"
+META="${UECI_VFS_METADATA:-$ROOT/.ueci/smoke-vfs-metadata}"
+STATE="${UECI_VFS_STATE:-$ROOT/.ueci/smoke-vfs-state}"
 REF="${UECI_EPIC_REF:-release}"
 START_TIMEOUT="${UECI_VFS_START_TIMEOUT:-600}"
 VERBOSE="${UECI_VFS_VERBOSE:-1}"

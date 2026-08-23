@@ -26,6 +26,13 @@ public sealed class GitDependenciesCache
             return Path.GetFullPath(explicitRoot);
         }
 
+        // Build caches can be tens of gigabytes. Keep the default beside the workspace rather
+        // than silently filling a developer's system volume (notably ~/Library/Caches on macOS).
+        if (OperatingSystem.IsMacOS())
+        {
+            return Path.Combine(Environment.CurrentDirectory, ".ueci", "cache");
+        }
+
         string? xdg = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
         if (!string.IsNullOrWhiteSpace(xdg))
         {
@@ -36,11 +43,6 @@ public sealed class GitDependenciesCache
         if (OperatingSystem.IsLinux())
         {
             return Path.Combine(home, ".cache", "ueci");
-        }
-
-        if (OperatingSystem.IsMacOS())
-        {
-            return Path.Combine(home, "Library", "Caches", "ueci");
         }
 
         string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);

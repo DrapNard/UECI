@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENGINE_DIR="${UECI_ENGINE_DIR:-/tmp/ueci-plugin-vfs-work}"
-OUTPUT_DIR="${UECI_PLUGIN_OUTPUT:-/tmp/ueci-plugin-vfs-package}"
+ENGINE_DIR="${UECI_ENGINE_DIR:-$ROOT/.ueci/smoke-plugin-vfs-work}"
+OUTPUT_DIR="${UECI_PLUGIN_OUTPUT:-$ROOT/.ueci/smoke-plugin-vfs-package}"
 PLUGIN="${UECI_PLUGIN:-$ROOT/fixtures/MinimalPlugin/UECIMinimal.uplugin}"
 REF="${UECI_EPIC_REF:-release}"
 VERBOSE="${UECI_VFS_VERBOSE:-1}"

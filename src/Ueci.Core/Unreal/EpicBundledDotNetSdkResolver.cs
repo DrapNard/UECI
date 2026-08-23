@@ -91,7 +91,9 @@ public static class EpicBundledDotNetSdkResolver
 
         bool wantsLinux = rid.StartsWith("linux-", StringComparison.Ordinal);
         bool wantsWindows = rid.StartsWith("win-", StringComparison.Ordinal);
-        bool wantsMac = rid.StartsWith("osx-", StringComparison.Ordinal) || rid.StartsWith("macos-", StringComparison.Ordinal);
+        bool wantsMac = rid.StartsWith("mac-", StringComparison.Ordinal)
+            || rid.StartsWith("osx-", StringComparison.Ordinal)
+            || rid.StartsWith("macos-", StringComparison.Ordinal);
         bool hasLinux = segments.Any(segment => segment.Contains("linux", StringComparison.OrdinalIgnoreCase));
         bool hasWindows = segments.Any(segment => segment.Contains("win", StringComparison.OrdinalIgnoreCase));
         bool hasMac = segments.Any(segment => segment.Contains("osx", StringComparison.OrdinalIgnoreCase)

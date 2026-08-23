@@ -252,9 +252,9 @@ public sealed class UnrealBuildToolCompiler
         // currently built with .NET 8 while current Unreal bundles .NET 10). `dotnet` searches
         // upward from its working directory, even when the project path is absolute. Execute from
         // a neutral temporary directory so the Epic-bundled SDK selected in RuntimeRoot wins.
-        // On Linux do not use TMPDIR: CI/test harnesses can point it inside the checkout, which
-        // would put the caller's global.json back in dotnet's upward SDK search path.
-        string temporaryRoot = OperatingSystem.IsWindows() ? Path.GetTempPath() : "/tmp";
+        // Keep all managed build state inside the Engine workspace. This also avoids placing
+        // macOS cold-build objects on the system volume.
+        string temporaryRoot = Path.Combine(ueciState, "tmp");
         string dotnetWorkingDirectory = Path.Combine(temporaryRoot, "ueci-dotnet-work");
         Directory.CreateDirectory(nugetPackages);
         Directory.CreateDirectory(dotnetHome);

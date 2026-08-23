@@ -18,9 +18,17 @@ public sealed class VirtualEngineArtifactCache
     private readonly string _cacheRoot;
     private readonly Action<string>? _progress;
 
-    public VirtualEngineArtifactCache(string cacheDirectory, Action<string>? progress = null)
+    public VirtualEngineArtifactCache(
+        string cacheDirectory,
+        Action<string>? progress = null,
+        string? runtimeIdentifier = null)
     {
-        _cacheRoot = Path.Combine(Path.GetFullPath(cacheDirectory), "engine-artifacts");
+        _cacheRoot = string.IsNullOrWhiteSpace(runtimeIdentifier)
+            ? Path.Combine(Path.GetFullPath(cacheDirectory), "engine-artifacts")
+            : Path.Combine(
+                Path.GetFullPath(cacheDirectory),
+                "engine-artifacts",
+                VirtualEngineMountFactory.CacheScope(runtimeIdentifier));
         _progress = progress;
     }
 

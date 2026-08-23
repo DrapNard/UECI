@@ -54,7 +54,7 @@ public sealed class EpicGitClient
         }
 
         string[] lines = result.StandardOutput
-            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         string? peeled = lines.FirstOrDefault(line => line.EndsWith("^{}", StringComparison.Ordinal));
         string? selected = peeled ?? lines.FirstOrDefault();
         if (selected is null)
@@ -62,7 +62,7 @@ public sealed class EpicGitClient
             throw new InvalidDataException($"git ls-remote returned no object id for Epic ref '{reference}'.");
         }
 
-        string objectId = selected.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries)[0];
+        string objectId = selected.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries)[0];
         if (objectId.Length != 40 || objectId.Any(character => !Uri.IsHexDigit(character)))
         {
             throw new InvalidDataException(
@@ -363,7 +363,7 @@ public sealed class EpicGitClient
             cancellationToken).ConfigureAwait(false);
         string[] existingDirectories = sparseList.ExitCode == 0
             ? sparseList.StandardOutput
-                .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Select(NormalizeGitPathspec)
                 .ToArray()
             : Array.Empty<string>();
@@ -600,7 +600,7 @@ public sealed class EpicGitClient
                 $"git ls-tree failed while probing '{normalized}': {exists.StandardError.Trim()}");
         }
         bool tracked = exists.StandardOutput
-            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Any(path => string.Equals(path, normalized, StringComparison.Ordinal));
         if (!tracked) return false;
 

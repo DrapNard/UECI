@@ -20,7 +20,8 @@ public static class EpicBundledMonoResolver
 
         string[] hostTokens = runtimeIdentifier.StartsWith("linux-", StringComparison.OrdinalIgnoreCase)
             ? ["/Linux/", "/linux/"]
-            : runtimeIdentifier.StartsWith("osx-", StringComparison.OrdinalIgnoreCase)
+            : runtimeIdentifier.StartsWith("mac-", StringComparison.OrdinalIgnoreCase)
+                || runtimeIdentifier.StartsWith("osx-", StringComparison.OrdinalIgnoreCase)
                 || runtimeIdentifier.StartsWith("macos-", StringComparison.OrdinalIgnoreCase)
                 ? ["/Mac/", "/MacOS/", "/osx/"]
                 : ["/Win64/", "/Windows/", "/win/"];

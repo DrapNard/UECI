@@ -70,6 +70,15 @@ public sealed class VirtualEngineMountContext : IDisposable
 
 public static class VirtualEngineMountFactory
 {
+    internal static string CacheScope(string runtimeIdentifier)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runtimeIdentifier);
+        string scope = new(runtimeIdentifier.Trim().ToLowerInvariant()
+            .Select(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' ? character : '_')
+            .ToArray());
+        return scope.Length == 0 ? "unknown" : scope;
+    }
+
     public static async Task<VirtualEngineMountContext> PrepareAsync(
         VirtualEngineMountPreparationOptions options,
         CancellationToken cancellationToken = default)
@@ -79,7 +88,10 @@ public static class VirtualEngineMountFactory
         string stateRoot = Path.GetFullPath(options.StateDirectory);
         Directory.CreateDirectory(metadataRoot);
         Directory.CreateDirectory(stateRoot);
-        string profileStoreRoot = Path.Combine(Path.GetFullPath(options.FetchOptions.CacheDirectory), "engine-profiles");
+        string profileStoreRoot = Path.Combine(
+            Path.GetFullPath(options.FetchOptions.CacheDirectory),
+            "engine-profiles",
+            CacheScope(options.RuntimeIdentifier));
         Directory.CreateDirectory(profileStoreRoot);
 
         var git = new EpicGitClient();

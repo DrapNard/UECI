@@ -422,9 +422,9 @@ internal static class Program
             return args.Length == 0 ? 2 : 0;
         }
 
-        if (!OperatingSystem.IsLinux())
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
         {
-            return Fail("The v0.5 mounted backend currently requires Linux + FUSE3. Use the materialized backend on other hosts.");
+            return Fail("The mounted backend requires Linux + FUSE3 or macOS + macFUSE. Use the materialized backend on other hosts.");
         }
 
         string mountPoint = args[0];
@@ -438,6 +438,10 @@ internal static class Program
         GitDependenciesFetchOptions fetchOptions = GetFetchOptions(args);
         bool verbose = HasFlag(args, "--verbose");
         string effectiveUpperRoot = upperRoot ?? Path.Combine(stateRoot, "upper");
+        EnsureBuildPathOnProjectVolume(mountPoint, "mount point");
+        EnsureBuildPathOnProjectVolume(metadataRoot, "metadata directory");
+        EnsureBuildPathOnProjectVolume(stateRoot, "VFS state directory");
+        EnsureBuildPathOnProjectVolume(effectiveUpperRoot, "VFS upper directory");
         ValidateMountBackingPaths(
             mountPoint,
             metadataRoot,
@@ -511,6 +515,8 @@ internal static class Program
         string runtimeIdentifier = GetOption(args, "--host-rid") ?? UnrealHostRuntime.DetectRuntimeIdentifier();
         string platform = GetOption(args, "--platform") ?? UnrealPluginBuilder.PlatformForHostRuntime(runtimeIdentifier);
         string configuration = GetOption(args, "--configuration") ?? "Development";
+        EnsureBuildPathOnProjectVolume(engineRoot, "Engine workspace");
+        EnsureBuildPathOnProjectVolume(output, "package output");
         string backend = (GetOption(args, "--backend") ?? "auto").ToLowerInvariant();
         EnginePresentationMode presentationMode = backend switch
         {
@@ -659,6 +665,7 @@ internal static class Program
     private static GitDependenciesFetchOptions GetFetchOptions(string[] args)
     {
         string cacheDirectory = GetOption(args, "--cache-dir") ?? GitDependenciesCache.GetDefaultRoot();
+        EnsureBuildPathOnProjectVolume(cacheDirectory, "cache directory");
         bool cachePacks = !HasFlag(args, "--no-pack-cache");
         string? concurrencyRaw = GetOption(args, "--max-concurrent-packs");
         int concurrency = concurrencyRaw is null
@@ -667,6 +674,21 @@ internal static class Program
                 ? parsed
                 : throw new ArgumentException("--max-concurrent-packs must be an integer.");
         return new GitDependenciesFetchOptions(cacheDirectory, cachePacks, concurrency);
+    }
+
+    private static void EnsureBuildPathOnProjectVolume(string path, string description)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+
+        string volumeRoot = Environment.GetEnvironmentVariable("UECI_PROJECT_VOLUME_ROOT") ?? "/Volumes/Project";
+        string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(volumeRoot));
+        string candidate = Path.GetFullPath(path);
+        if (!IsSameOrDescendant(candidate, root))
+        {
+            throw new ArgumentException(
+                $"The {description} must be on the project volume '{root}', not '{candidate}'. " +
+                "Set UECI_PROJECT_VOLUME_ROOT if your secondary build volume uses another mount point.");
+        }
     }
 
     private static void WriteJson<T>(T value)
@@ -820,7 +842,7 @@ internal static class Program
               --no-pack-cache            Discard compressed GitDependencies packs after extraction.
               --max-concurrent-packs N   Download/extract up to N packs concurrently.
 
-            Auto selects the FUSE backend for native linux-x64 -> Linux builds and materialized elsewhere.
+            Auto selects the mounted FUSE backend for native linux-x64 -> Linux and macOS -> Mac builds, and materialized elsewhere.
             The materialized backend keeps the v0.4 sparse discovery/retry loop. The FUSE backend mounts
             the pinned Engine working set, compiles UBT inside that virtual Engine,
             installs the host toolchain outside the mount, then runs each UBT target once while Git/GitDeps

@@ -1,6 +1,6 @@
 # Mounted VFS (v0.5 alpha)
 
-UECI v0.5 introduces a real Linux/FUSE3 backend. It presents the selected Unreal commit as a complete filesystem namespace while source and dependency file contents remain lazy.
+UECI v0.5 presents the selected Unreal commit as a complete filesystem namespace while source and dependency file contents remain lazy. The native bridge uses FUSE3 on Linux and macFUSE on macOS.
 
 ## Backend matrix
 
@@ -8,9 +8,9 @@ UECI v0.5 introduces a real Linux/FUSE3 backend. It presents the selected Unreal
 |---|---|---|
 | Linux | FUSE 3 (implemented in v0.5 alpha) | materialized directory |
 | Windows | WinFsp (planned) | materialized directory |
-| macOS | macFUSE/FSKit path to be validated | materialized directory |
+| macOS | macFUSE (implemented) | materialized directory |
 
-Mounted mode is optional. Hosted CI environments that do not expose `/dev/fuse` continue to use the materialized backend.
+Mounted mode is optional. Hosted CI environments that do not expose FUSE continue to use the materialized backend. On macOS, install macFUSE plus its `pkg-config` development metadata, activate its system extension in macOS Settings if prompted, and ensure the Xcode command-line tools are available. UECI fails mount startup after 20 seconds on macOS when that prerequisite is not active, preserving cold-build time for a useful error rather than waiting for the Linux-oriented two-minute timeout.
 
 ## Linux architecture
 
@@ -155,7 +155,11 @@ Git tree objects contain path/mode/object-id but not blob length. On the Epic/Gi
 7. invoke each UBT target once; UBT/clang resolve Engine sources and native libraries through normal filesystem calls;
 8. package the plugin and unmount in a `finally`/async-dispose path.
 
-The materialized backend remains the default because hosted CI cannot be assumed to expose `/dev/fuse`. The mounted backend is currently Linux x64 only.
+The materialized backend remains available for hosts without FUSE. `--backend auto` selects the mounted backend on native Linux x64 and macOS hosts.
+
+## macOS storage policy
+
+On macOS, UECI defaults its cache to `.ueci/cache` in the current workspace instead of `~/Library/Caches`. The CLI requires mount state, Engine workspaces, package output, and cache paths to live below `/Volumes/Project`; set `UECI_PROJECT_VOLUME_ROOT` when the secondary project volume is mounted elsewhere. The FUSE helper socket and managed UBT temporary working directory are also created under that build state, so a cold build does not write build objects to the system volume.
 
 ### Minimal build profiles
 

@@ -91,9 +91,9 @@ public sealed class LinuxFuseMount
     {
         ArgumentNullException.ThrowIfNull(fileSystem);
         ArgumentNullException.ThrowIfNull(options);
-        if (!OperatingSystem.IsLinux())
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
         {
-            throw new PlatformNotSupportedException("The first UECI mounted backend requires Linux + FUSE3.");
+            throw new PlatformNotSupportedException("The mounted backend requires Linux/FUSE3 or macOS/macFUSE.");
         }
 
         string mountPoint = Path.GetFullPath(options.MountPoint);
@@ -110,7 +110,7 @@ public sealed class LinuxFuseMount
         var compiler = new LinuxFuseHelperCompiler();
         string helper = await compiler.EnsureCompiledAsync(options.CacheDirectory, options.Progress, cancellationToken)
             .ConfigureAwait(false);
-        string socket = CreateShortSocketPath(mountPoint);
+        string socket = CreateShortSocketPath(options.CacheDirectory, mountPoint);
         var server = new FuseProtocolServer(fileSystem, socket, options.Progress, options.Verbose);
         await server.StartAsync(cancellationToken).ConfigureAwait(false);
 
@@ -133,7 +133,7 @@ public sealed class LinuxFuseMount
             await WaitUntilMountedAsync(
                 mountPoint,
                 process,
-                options.StartupTimeout ?? TimeSpan.FromMinutes(2),
+                options.StartupTimeout ?? DefaultStartupTimeout,
                 options.Progress,
                 cancellationToken).ConfigureAwait(false);
             options.Progress?.Invoke($"Virtual Unreal Engine mount ready at {mountPoint}.");
@@ -213,12 +213,13 @@ public sealed class LinuxFuseMount
             $"FUSE mount did not become ready within {timeout.TotalSeconds:N0}s: {mountPoint}");
     }
 
+    private static TimeSpan DefaultStartupTimeout
+        => OperatingSystem.IsMacOS() ? TimeSpan.FromSeconds(20) : TimeSpan.FromMinutes(2);
+
     private static bool IsMounted(string mountPoint)
     {
-        if (!OperatingSystem.IsLinux() || !File.Exists("/proc/self/mountinfo"))
-        {
-            return false;
-        }
+        if (OperatingSystem.IsMacOS()) return IsMountedOnMacOs(mountPoint);
+        if (!OperatingSystem.IsLinux() || !File.Exists("/proc/self/mountinfo")) return false;
 
         string target = Path.GetFullPath(mountPoint);
         try
@@ -242,6 +243,31 @@ public sealed class LinuxFuseMount
         return false;
     }
 
+    private static bool IsMountedOnMacOs(string mountPoint)
+    {
+        string target = Path.GetFullPath(mountPoint);
+        try
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo("/sbin/mount")
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    CreateNoWindow = true,
+                },
+            };
+            process.Start();
+            string output = process.StandardOutput.ReadToEnd();
+            process.WaitForExit();
+            return output.Split('\n').Any(line => line.Contains($" on {target} ", StringComparison.Ordinal));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    }
+
     private static string UnescapeMountInfo(string value)
         => value
             .Replace("\\040", " ", StringComparison.Ordinal)
@@ -249,21 +275,22 @@ public sealed class LinuxFuseMount
             .Replace("\\012", "\n", StringComparison.Ordinal)
             .Replace("\\134", "\\", StringComparison.Ordinal);
 
-    private static string CreateShortSocketPath(string mountPoint)
+    private static string CreateShortSocketPath(string cacheDirectory, string mountPoint)
     {
         byte[] digest = SHA256.HashData(Encoding.UTF8.GetBytes($"{Environment.ProcessId}:{mountPoint}:{Guid.NewGuid():N}"));
         string token = Convert.ToHexString(digest).ToLowerInvariant()[..16];
-        return Path.Combine(Path.GetTempPath(), $"ueci-{token}.sock");
+        string directory = Path.Combine(Path.GetFullPath(cacheDirectory), "tmp", "sockets");
+        Directory.CreateDirectory(directory);
+        return Path.Combine(directory, $"ueci-{token}.sock");
     }
 
     internal static async Task TryUnmountAsync(string mountPoint, bool lazy = false)
     {
         string[] fuseArgs = lazy ? ["-u", "-z", mountPoint] : ["-u", mountPoint];
-        string[] umountArgs = lazy ? ["-l", mountPoint] : [mountPoint];
+        string[] umountArgs = lazy ? ["-f", mountPoint] : [mountPoint];
         foreach ((string exe, string[] args) in new[]
         {
-            ("fusermount3", fuseArgs),
-            ("umount", umountArgs),
+            OperatingSystem.IsLinux() ? ("fusermount3", fuseArgs) : ("/sbin/umount", umountArgs),
         })
         {
             try

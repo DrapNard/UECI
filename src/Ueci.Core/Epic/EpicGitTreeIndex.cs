@@ -12,6 +12,9 @@ public sealed record EpicGitTreeEntry(
 
 public sealed class EpicGitTreeIndex
 {
+    // macOS has a much smaller effective exec argument budget than Linux once the inherited
+    // environment is included. Keep each ls-tree invocation comfortably below both limits.
+    private const int MaximumPathspecArgumentCharacters = 64 * 1024;
     private readonly IReadOnlyDictionary<string, EpicGitTreeEntry> _entries;
 
     private EpicGitTreeIndex(string commit, IReadOnlyDictionary<string, EpicGitTreeEntry> entries)
@@ -64,32 +67,62 @@ public sealed class EpicGitTreeIndex
             throw new ArgumentException("At least one Git path is required.", nameof(paths));
         }
 
-        var arguments = new List<string>(6 + normalized.Length) { "ls-tree", "-r", "-z" };
-        if (includeBlobSizes)
-        {
-            arguments.Add("--long");
-        }
-        arguments.Add(commit);
-        arguments.Add("--");
-        arguments.AddRange(normalized);
-
         progress?.Invoke(
             $"[vfs/profile] Indexing {normalized.Length:N0} targeted Git pathspec(s)" +
             (includeBlobSizes ? " with local exact sizes..." : " without global tree scan..."));
-        GitProcessResult result = await GitProcess.RunAsync(root, arguments, environment, cancellationToken)
-            .ConfigureAwait(false);
-        if (result.ExitCode != 0)
-        {
-            throw new InvalidOperationException($"Unable to index targeted Epic Git paths: {result.StandardError.Trim()}");
-        }
 
         var entries = new Dictionary<string, EpicGitTreeEntry>(StringComparer.Ordinal);
-        foreach (string raw in result.StandardOutput.Split('\0', StringSplitOptions.RemoveEmptyEntries))
+        IReadOnlyList<IReadOnlyList<string>> batches = CreatePathspecBatches(normalized);
+        foreach ((IReadOnlyList<string> batch, int index) in batches.Select((value, index) => (value, index)))
         {
-            ParseRecord(raw, entries);
+            var arguments = new List<string>(6 + batch.Count) { "ls-tree", "-r", "-z" };
+            if (includeBlobSizes)
+            {
+                arguments.Add("--long");
+            }
+            arguments.Add(commit);
+            arguments.Add("--");
+            arguments.AddRange(batch);
+
+            GitProcessResult result = await GitProcess.RunAsync(root, arguments, environment, cancellationToken)
+                .ConfigureAwait(false);
+            if (result.ExitCode != 0)
+            {
+                throw new InvalidOperationException(
+                    $"Unable to index targeted Epic Git paths (batch {index + 1}/{batches.Count}): {result.StandardError.Trim()}");
+            }
+            foreach (string raw in result.StandardOutput.Split('\0', StringSplitOptions.RemoveEmptyEntries))
+            {
+                ParseRecord(raw, entries);
+            }
         }
         progress?.Invoke($"[vfs/profile] Targeted Git index contains {entries.Count:N0} blobs.");
         return new EpicGitTreeIndex(commit, entries);
+    }
+
+    internal static IReadOnlyList<IReadOnlyList<string>> CreatePathspecBatches(IReadOnlyList<string> pathspecs)
+    {
+        ArgumentNullException.ThrowIfNull(pathspecs);
+        var batches = new List<IReadOnlyList<string>>();
+        var current = new List<string>();
+        int characters = 0;
+        foreach (string pathspec in pathspecs)
+        {
+            int cost = checked(pathspec.Length + 1);
+            if (current.Count != 0 && characters + cost > MaximumPathspecArgumentCharacters)
+            {
+                batches.Add(current);
+                current = new List<string>();
+                characters = 0;
+            }
+            current.Add(pathspec);
+            characters += cost;
+        }
+        if (current.Count != 0)
+        {
+            batches.Add(current);
+        }
+        return batches;
     }
 
     public EpicGitTreeIndex WithBlobSizes(IReadOnlyDictionary<string, long>? sizesByObjectId)

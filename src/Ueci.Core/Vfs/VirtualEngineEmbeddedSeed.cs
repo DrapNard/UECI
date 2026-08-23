@@ -78,7 +78,15 @@ public static class VirtualEngineEmbeddedSeed
         }
 
         // alpha.6's UHT/rules pass needed ISPC before the native C++ action graph was executed.
-        AddIfPresent(manifest, gitDependencyPaths, "Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc");
+        string? ispcPath = runtimeIdentifier.StartsWith("mac-", StringComparison.OrdinalIgnoreCase)
+            ? "Engine/Source/ThirdParty/Intel/ISPC/bin/Mac/ispc"
+            : runtimeIdentifier.StartsWith("linux-", StringComparison.OrdinalIgnoreCase)
+                ? "Engine/Source/ThirdParty/Intel/ISPC/bin/Linux/ispc"
+                : null;
+        if (ispcPath is not null)
+        {
+            AddIfPresent(manifest, gitDependencyPaths, ispcPath);
+        }
 
         // Some release manifests place managed build support outside the runtime/SDK bundle that
         // selected the host. Pull these tiny compatibility files by basename wherever Epic stored

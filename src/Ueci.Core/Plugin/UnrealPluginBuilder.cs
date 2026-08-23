@@ -130,11 +130,14 @@ public sealed class UnrealPluginBuilder
         EnginePresentationMode presentationMode = options.PresentationMode;
         if (presentationMode == EnginePresentationMode.Auto)
         {
-            // Prefer the lazy mounted backend where it is production-ready today. Other hosts keep
-            // the materialized path until their native mount backends land (WinFsp/macFUSE next).
-            presentationMode = OperatingSystem.IsLinux()
-                && options.RuntimeIdentifier.Equals("linux-x64", StringComparison.OrdinalIgnoreCase)
-                && options.Platform.Equals("Linux", StringComparison.OrdinalIgnoreCase)
+            // Prefer the lazy mounted backend on native FUSE hosts. Other hosts retain the
+            // materialized path until their native mount backend exists.
+            presentationMode = (OperatingSystem.IsLinux()
+                    && options.RuntimeIdentifier.Equals("linux-x64", StringComparison.OrdinalIgnoreCase)
+                    && options.Platform.Equals("Linux", StringComparison.OrdinalIgnoreCase))
+                || (OperatingSystem.IsMacOS()
+                    && options.RuntimeIdentifier.StartsWith("mac-", StringComparison.OrdinalIgnoreCase)
+                    && options.Platform.Equals("Mac", StringComparison.OrdinalIgnoreCase))
                     ? EnginePresentationMode.Mounted
                     : EnginePresentationMode.Materialized;
         }
