@@ -263,7 +263,7 @@ internal sealed class UnrealMountedPluginBuilder
                         mountPoint,
                         options.FetchOptions.CacheDirectory,
                         Verbose: options.VerboseVfs,
-                        StartupTimeout: TimeSpan.FromMinutes(2),
+                        StartupTimeout: OperatingSystem.IsMacOS() ? TimeSpan.FromSeconds(20) : TimeSpan.FromMinutes(2),
                         Progress: options.Progress),
                     cancellationToken));
             await Task.WhenAll(prefetchTask, mountTask).ConfigureAwait(false);
@@ -336,6 +336,15 @@ internal sealed class UnrealMountedPluginBuilder
                 virtualEngineRoot,
                 options.RuntimeIdentifier,
                 compatibility.ProjectStyle);
+            managedRuntime = await timings.MeasureAsync(
+                "ubt.runtime.materialize",
+                () => MaterializeMacRuntimeAsync(
+                    context.FileSystem,
+                    context.Manifest,
+                    managedRuntime,
+                    sharedCacheRoot,
+                    options.Progress,
+                    cancellationToken)).ConfigureAwait(false);
             options.Progress?.Invoke($"[compat] Managed UBT runtime: {managedRuntime.Description}.");
 
             // These three cold-start jobs are independent once the FUSE view exists. Run them
@@ -972,6 +981,113 @@ internal sealed class UnrealMountedPluginBuilder
 
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(repository + "\n" + gitRef));
         return Convert.ToHexString(hash).ToLowerInvariant()[..20];
+    }
+
+    /// <summary>
+    /// Materializes the executable portion of Epic's managed SDK on the project volume. macOS can
+    /// reject the signed dotnet host when it is executed through macFUSE; using the exact bundled
+    /// SDK also avoids source-compatibility changes introduced by newer locally installed SDKs.
+    /// </summary>
+    private static async Task<UnrealBuildToolRuntimePlan> MaterializeMacRuntimeAsync(
+        VirtualEngineFileSystem fileSystem,
+        GitDependenciesManifest manifest,
+        UnrealBuildToolRuntimePlan runtime,
+        string cacheRoot,
+        Action<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (!OperatingSystem.IsMacOS()
+            || runtime.Kind != UnrealBuildToolRuntimeKind.DotNet
+            || string.IsNullOrWhiteSpace(runtime.BundlePrefix)
+            || runtime.SdkVersion is null)
+        {
+            return runtime;
+        }
+
+        string bundlePrefix = runtime.BundlePrefix;
+        string hostPath = runtime.ExactPaths.SingleOrDefault(path =>
+            path.EndsWith("/dotnet", StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidDataException("Epic bundled macOS .NET runtime has no dotnet host path.");
+        if (!manifest.Files.TryGetValue(hostPath, out GitDependencyFile? hostFile))
+        {
+            throw new InvalidDataException($"The mounted manifest does not contain the macOS .NET host '{hostPath}'.");
+        }
+
+        string destination = Path.Combine(
+            Path.GetFullPath(cacheRoot),
+            "managed-runtimes",
+            "macos",
+            hostFile.Hash.ToLowerInvariant());
+        string completionMarker = Path.Combine(destination, ".ueci-complete");
+        string hostRelative = hostPath[bundlePrefix.Length..].Replace('/', Path.DirectorySeparatorChar);
+        string persistedHost = Path.Combine(destination, hostRelative);
+        if (!File.Exists(completionMarker) || !File.Exists(persistedHost))
+        {
+            string sdkPrefix = $"{bundlePrefix}sdk/{runtime.SdkVersion}/";
+            string[] requiredPrefixes =
+            [
+                $"{bundlePrefix}host/",
+                $"{bundlePrefix}shared/Microsoft.NETCore.App/",
+                $"{bundlePrefix}packs/",
+                sdkPrefix,
+            ];
+            GitDependencyFile[] files = manifest.Files.Values
+                .Where(file => file.Name.Equals(hostPath, StringComparison.Ordinal)
+                    || requiredPrefixes.Any(prefix => file.Name.StartsWith(prefix, StringComparison.Ordinal)))
+                .OrderBy(file => file.Name, StringComparer.Ordinal)
+                .ToArray();
+            if (files.Length == 0)
+            {
+                throw new InvalidDataException("Epic bundled macOS .NET runtime did not contain a usable SDK payload.");
+            }
+
+            progress?.Invoke($"[macos/runtime] Materializing {files.Length:N0} required files from Epic .NET SDK {runtime.SdkVersion} outside macFUSE.");
+            string temporary = destination + $".{Guid.NewGuid():N}.tmp";
+            try
+            {
+                foreach (GitDependencyFile file in files)
+                {
+                    string output = GitDependencyPath.CombineUnderRoot(temporary, file.Name[bundlePrefix.Length..]);
+                    Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+                    string source = await fileSystem.ResolveReadBackingPathAsync(file.Name, cancellationToken)
+                        .ConfigureAwait(false);
+                    File.Copy(source, output, overwrite: true);
+                    if (file.IsExecutable)
+                    {
+                        File.SetUnixFileMode(output,
+                            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                            UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                            UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+                    }
+                }
+
+                await File.WriteAllTextAsync(
+                    Path.Combine(temporary, ".ueci-complete"),
+                    hostFile.Hash + Environment.NewLine,
+                    cancellationToken).ConfigureAwait(false);
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                if (Directory.Exists(destination))
+                {
+                    Directory.Delete(destination, recursive: true);
+                }
+                Directory.Move(temporary, destination);
+            }
+            finally
+            {
+                if (Directory.Exists(temporary))
+                {
+                    Directory.Delete(temporary, recursive: true);
+                }
+            }
+        }
+
+        progress?.Invoke("[macos/runtime] Using the cached exact Epic .NET SDK outside macFUSE for hardened Mach-O execution.");
+        return runtime with
+        {
+            RuntimeRoot = destination,
+            HostPath = persistedHost,
+            BuildToolPath = persistedHost,
+        };
     }
 
     private static string FormatTimingSummary(IReadOnlyList<UnrealPluginBuildTiming> timings)

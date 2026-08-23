@@ -29,6 +29,34 @@ internal static class GitProcess
             await stderr.ConfigureAwait(false));
     }
 
+    public static async Task<GitProcessResult> RunWithInputAsync(
+        string workingDirectory,
+        IReadOnlyList<string> arguments,
+        string standardInput,
+        IReadOnlyDictionary<string, string>? environment = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(standardInput);
+
+        var info = CreateStartInfo(workingDirectory, arguments, environment);
+        info.RedirectStandardInput = true;
+        info.RedirectStandardOutput = true;
+        info.RedirectStandardError = true;
+
+        using var process = new Process { StartInfo = info };
+        process.Start();
+        Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+        Task<string> stderr = process.StandardError.ReadToEndAsync();
+        await process.StandardInput.WriteAsync(standardInput.AsMemory(), cancellationToken).ConfigureAwait(false);
+        process.StandardInput.Close();
+        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+
+        return new GitProcessResult(
+            process.ExitCode,
+            await stdout.ConfigureAwait(false),
+            await stderr.ConfigureAwait(false));
+    }
+
     public static async Task RunBinaryToFileAsync(
         string workingDirectory,
         IReadOnlyList<string> arguments,

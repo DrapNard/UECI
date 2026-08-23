@@ -296,6 +296,7 @@ public sealed class UnrealBuildToolCompiler
                 project,
                 "--nologo",
                 "--verbosity:minimal",
+                "/p:ImportDirectoryBuildProps=false",
                 $"/p:TargetFramework={targetFramework}",
             };
             ExternalProcessResult restore = await ExternalProcess.RunAsync(
@@ -317,6 +318,7 @@ public sealed class UnrealBuildToolCompiler
                 "--verbosity:minimal",
                 "--no-incremental",
                 "--no-restore",
+                "/p:ImportDirectoryBuildProps=false",
                 $"/p:TargetFramework={targetFramework}",
             };
             ExternalProcessResult build = await ExternalProcess.RunAsync(
@@ -338,6 +340,10 @@ public sealed class UnrealBuildToolCompiler
             "--nologo",
             "--verbosity:minimal",
             "--no-incremental",
+            // The virtual Engine is mounted below the caller's checkout. Do not import that
+            // checkout's Directory.Build.props: user-level defaults such as implicit usings can
+            // change Epic's source semantics and make UBT fail to compile.
+            "/p:ImportDirectoryBuildProps=false",
         };
         return await ExternalProcess.RunAsync(
             runtime.HostPath,

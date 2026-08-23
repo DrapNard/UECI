@@ -194,8 +194,11 @@ public sealed class LinuxFuseMount
             cancellationToken.ThrowIfCancellationRequested();
             if (process.HasExited)
             {
+                string macFuseHint = OperatingSystem.IsMacOS()
+                    ? " macFUSE reported that its filesystem is unavailable; ensure its system component is approved and active, then restart the terminal session."
+                    : string.Empty;
                 throw new InvalidOperationException(
-                    $"FUSE helper exited before the mount became ready (exit {process.ExitCode}).");
+                    $"FUSE helper exited before the mount became ready (exit {process.ExitCode}).{macFuseHint}");
             }
             if (IsMounted(mountPoint))
             {

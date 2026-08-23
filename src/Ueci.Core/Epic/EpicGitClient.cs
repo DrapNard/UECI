@@ -160,11 +160,14 @@ public sealed class EpicGitClient
         if (!TryParseGitVersion(versionResult.StandardOutput, out Version? gitVersion)
             || gitVersion < new Version(2, 54))
         {
-            progress?.Invoke(
-                $"Path-limited git backfill requires Git 2.54+; " +
-                $"{(gitVersion is null ? "installed version could not be parsed" : $"found {gitVersion}")}. " +
-                "Continuing with the persistent lazy Git batch reader.");
-            return false;
+            return await TryMaterializeSparsePathsAsync(
+                root,
+                commit,
+                normalizedPaths,
+                environment,
+                gitVersion,
+                progress,
+                cancellationToken).ConfigureAwait(false);
         }
 
         var arguments = new List<string>(5 + normalizedPaths.Length)
@@ -195,6 +198,66 @@ public sealed class EpicGitClient
             "Targeted git backfill failed; continuing lazily instead." +
             (diagnostics.Length == 0 ? string.Empty : $" {diagnostics.Replace(Environment.NewLine, " ")}"));
         return false;
+    }
+
+    private static async Task<bool> TryMaterializeSparsePathsAsync(
+        string repositoryRoot,
+        string commit,
+        IReadOnlyList<string> paths,
+        IReadOnlyDictionary<string, string> environment,
+        Version? gitVersion,
+        Action<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        // Apple Git 2.50 predates `git backfill`, but does support no-cone sparse-checkout with
+        // patterns streamed on stdin. One targeted checkout makes the promisor remote transfer the
+        // complete predicted source set in a single operation, avoiding one network request per
+        // FUSE open. The metadata repository and its worktree live under the project cache.
+        progress?.Invoke(
+            $"git backfill requires Git 2.54+; " +
+            $"{(gitVersion is null ? "installed version could not be parsed" : $"found {gitVersion}")}. " +
+            $"Using one sparse-checkout for {paths.Count:N0} predicted source path(s).");
+        try
+        {
+            string patterns = string.Join('\n', paths) + '\n';
+            string sparsePatternFile = Path.Combine(repositoryRoot, ".git", "info", "sparse-checkout");
+            bool initialized = File.Exists(sparsePatternFile);
+            if (!initialized)
+            {
+                await RequireSuccessAsync(
+                    repositoryRoot,
+                    ["reset", "--mixed", commit],
+                    environment,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            GitProcessResult result = await GitProcess.RunWithInputAsync(
+                repositoryRoot,
+                // Sparse-checkout can otherwise trigger an automatic full maintenance/prune
+                // after hydrating thousands of promisor objects, which is counterproductive on
+                // a cold build. Cache maintenance is handled separately by the cache lifecycle.
+                initialized
+                    ? ["-c", "gc.auto=0", "sparse-checkout", "add", "--stdin"]
+                    : ["-c", "gc.auto=0", "sparse-checkout", "set", "--no-cone", "--stdin"],
+                patterns,
+                environment,
+                cancellationToken).ConfigureAwait(false);
+            if (result.ExitCode == 0)
+            {
+                progress?.Invoke("Targeted sparse-checkout completed; UBT bootstrap source blobs are local Git objects.");
+                return true;
+            }
+
+            string diagnostics = CombineDiagnostics(result);
+            progress?.Invoke(
+                "Targeted sparse-checkout failed; continuing with lazy Git blob fetches." +
+                (diagnostics.Length == 0 ? string.Empty : $" {diagnostics.Replace(Environment.NewLine, " ")}"));
+            return false;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException)
+        {
+            progress?.Invoke($"Targeted sparse-checkout could not be initialized; continuing lazily. {ex.Message}");
+            return false;
+        }
     }
 
     /// <summary>
