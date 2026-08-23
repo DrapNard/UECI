@@ -63,8 +63,10 @@ public sealed class EpicGitArchivePrefetcher
                 continue;
             }
 
-            await WriteBlobAsync(entry.DataStream, gitEntry, entry.Length, cacheRoot, cancellationToken).ConfigureAwait(false);
-            written++;
+            if (await WriteBlobAsync(entry.DataStream, gitEntry, entry.Length, cacheRoot, cancellationToken).ConfigureAwait(false))
+            {
+                written++;
+            }
         }
 
         if (pending.Count != 0)
@@ -77,7 +79,7 @@ public sealed class EpicGitArchivePrefetcher
         return written;
     }
 
-    private static async Task WriteBlobAsync(
+    private static async Task<bool> WriteBlobAsync(
         Stream input,
         EpicGitTreeEntry entry,
         long archiveLength,
@@ -110,13 +112,14 @@ public sealed class EpicGitArchivePrefetcher
             string actual = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
             if (bytes != expectedSize || !actual.Equals(entry.ObjectId, StringComparison.OrdinalIgnoreCase))
             {
-                throw new InvalidDataException($"Archive blob validation failed for '{entry.Path}'.");
+                return false;
             }
             File.Move(temporary, destination, overwrite: true);
             if (!OperatingSystem.IsWindows())
             {
                 File.SetUnixFileMode(destination, (UnixFileMode)entry.UnixMode);
             }
+            return true;
         }
         finally
         {
