@@ -48,8 +48,11 @@ dotnet run --project src/Ueci.Cli/Ueci.Cli.csproj -c Release --no-build -- \
 elapsed=$((SECONDS - started))
 
 descriptor="$OUTPUT_DIR/UECIMinimal/UECIMinimal.uplugin"
-binary="$OUTPUT_DIR/UECIMinimal/Binaries/Mac/UECIMinimal.dylib"
+binary_directory="$OUTPUT_DIR/UECIMinimal/Binaries/Mac"
 [[ -f "$descriptor" ]] || { echo "Missing package descriptor: $descriptor" >&2; exit 1; }
-[[ -f "$binary" ]] || { echo "Missing native macOS plugin binary: $binary" >&2; exit 1; }
+find "$binary_directory" -maxdepth 1 -type f -name '*.dylib' -print -quit | grep -q . || {
+  echo "Missing native macOS plugin binary in: $binary_directory" >&2
+  exit 1
+}
 (( elapsed < 300 )) || { echo "Cold minimal-plugin build exceeded 5 minutes: ${elapsed}s" >&2; exit 1; }
 echo "macOS mounted-plugin smoke OK in ${elapsed}s: $OUTPUT_DIR/UECIMinimal"
