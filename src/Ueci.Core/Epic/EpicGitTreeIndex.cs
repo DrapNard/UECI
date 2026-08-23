@@ -146,14 +146,13 @@ public sealed class EpicGitTreeIndex
             }
 
             string path = Normalize(raw[(tab + 1)..]);
-            if (!requested.Contains(path))
+            if (!MatchesRequestedPath(path, requested))
             {
                 continue;
             }
 
             string[] fields = raw[..tab].Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (fields.Length < 3 || !int.TryParse(fields[0], System.Globalization.NumberStyles.AllowLeadingWhite,
-                    System.Globalization.CultureInfo.InvariantCulture, out int mode))
+            if (fields.Length < 3)
             {
                 continue;
             }
@@ -164,9 +163,25 @@ public sealed class EpicGitTreeIndex
             entries[path] = new EpicGitTreeEntry(path, fields[1], size, unixMode, fields[0] == "120000");
         }
 
-        return entries.Count == requested.Count
-            ? new EpicGitTreeIndex(commit, entries)
-            : null;
+        return entries.Count == 0 ? null : new EpicGitTreeIndex(commit, entries);
+    }
+
+    private static bool MatchesRequestedPath(string path, IReadOnlySet<string> requested)
+    {
+        if (requested.Contains(path))
+        {
+            return true;
+        }
+
+        int separator = path.Length;
+        while ((separator = path.LastIndexOf('/', separator - 1)) > 0)
+        {
+            if (requested.Contains(path[..separator]))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     internal static IReadOnlyList<IReadOnlyList<string>> CreatePathspecBatches(IReadOnlyList<string> pathspecs)

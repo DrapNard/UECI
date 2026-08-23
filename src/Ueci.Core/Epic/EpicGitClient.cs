@@ -222,6 +222,19 @@ public sealed class EpicGitClient
             string patterns = string.Join('\n', paths) + '\n';
             string sparsePatternFile = Path.Combine(repositoryRoot, ".git", "info", "sparse-checkout");
             bool initialized = File.Exists(sparsePatternFile);
+            if (initialized)
+            {
+                var existingPatterns = new HashSet<string>(
+                    File.ReadLines(sparsePatternFile)
+                        .Select(NormalizeGitPathspec)
+                        .Where(path => path.Length != 0),
+                    StringComparer.Ordinal);
+                if (paths.All(existingPatterns.Contains))
+                {
+                    progress?.Invoke("Targeted sparse-checkout already contains the predicted source paths.");
+                    return true;
+                }
+            }
             if (!initialized)
             {
                 await RequireSuccessAsync(
