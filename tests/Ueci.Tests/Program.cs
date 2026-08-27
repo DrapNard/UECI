@@ -80,6 +80,7 @@ internal static class Program
         ("plugin UBT invocation targets only requested modules", PluginBuildInvocationAsync),
         ("plugin UBT invocation disables UBA when supported", PluginBuildInvocationModernUbaAsync),
         ("plugin UBT invocation filters unsupported flags for legacy UE4", PluginBuildInvocationLegacyAsync),
+        ("plugin builder uses a narrow Windows seed and materialized auto backend", PluginBuilderWindowsPlanningAsync),
         ("plugin failure excerpt preserves early actionable diagnostics", PluginFailureExcerptAsync),
         ("plugin diagnostics learn missing synthetic UE4 link modules", PluginLegacyLinkDependencyAsync),
         ("plugin product collector harvests synthetic target binaries", PluginProductCollectorAsync),
@@ -2606,6 +2607,33 @@ internal static class Program
         {
             DeleteDirectory(root);
         }
+    }
+
+    private static Task PluginBuilderWindowsPlanningAsync()
+    {
+        IReadOnlyList<string> seed = UnrealPluginBuilder.GetInitialNativeSeed("Win64");
+        Assert.True(seed.Contains("Engine/Source/Runtime/Core", StringComparer.Ordinal));
+        Assert.True(seed.Contains("Engine/Config/Windows", StringComparer.Ordinal));
+        Assert.True(seed.Contains("Engine/Source/Developer/Windows/WindowsTargetPlatform", StringComparer.Ordinal));
+        Assert.False(seed.Contains("Engine/Source/Developer/Windows", StringComparer.Ordinal));
+        Assert.False(seed.Contains("Engine/Source/Programs/Windows", StringComparer.Ordinal));
+
+        EnginePresentationMode autoWindows = UnrealPluginBuilder.ResolvePresentationMode(
+            EnginePresentationMode.Auto,
+            "win-x64",
+            "Win64",
+            isLinux: false,
+            isMacOS: false);
+        Assert.Equal(EnginePresentationMode.Materialized, autoWindows);
+
+        EnginePresentationMode explicitMounted = UnrealPluginBuilder.ResolvePresentationMode(
+            EnginePresentationMode.Mounted,
+            "win-x64",
+            "Win64",
+            isLinux: false,
+            isMacOS: false);
+        Assert.Equal(EnginePresentationMode.Mounted, explicitMounted);
+        return Task.CompletedTask;
     }
 
     private static Task PluginFailureExcerptAsync()

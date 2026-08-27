@@ -103,13 +103,35 @@ public sealed class UnrealPluginBuilder
         "Engine/Source/Programs/Shared",
     ];
 
-    private static readonly string[] InitialNativeSeed =
+    private static readonly string[] CommonNativeSeed =
     [
         "Engine/Source/Runtime/Core",
         "Engine/Source/Runtime/TraceLog",
         "Engine/Source/Runtime/Projects",
-        "Engine/Config/Linux",
     ];
+
+    private static readonly string[] WindowsNativeSeed =
+    [
+        "Engine/Config/Windows",
+        "Engine/Source/Runtime/Windows",
+        // Keep the cold Windows checkout narrow. UBT's Windows platform implementation already
+        // lives under the shared UnrealBuildTool seed; this target-platform rules directory is
+        // the only additional developer surface routinely needed before diagnostics can drive
+        // the remaining modules.
+        "Engine/Source/Developer/Windows/WindowsTargetPlatform",
+        "Engine/Source/ThirdParty/Windows/DirectX",
+    ];
+
+    private static readonly string[] MacNativeSeed =
+    [
+        "Engine/Config/Mac",
+        "Engine/Source/Runtime/Mac",
+        "Engine/Source/Developer/Mac",
+        "Engine/Source/Programs/Mac",
+        "Engine/Source/ThirdParty/Mac",
+    ];
+
+    private static readonly string[] LinuxNativeSeed = ["Engine/Config/Linux"];
 
     private readonly EpicGitClient _epicClient;
     private readonly UnrealBuildToolBootstrapper _bootstrapper;
@@ -122,25 +144,28 @@ public sealed class UnrealPluginBuilder
         _bootstrapper = bootstrapper ?? new UnrealBuildToolBootstrapper(_epicClient);
     }
 
+    internal static IReadOnlyList<string> GetInitialNativeSeed(string platform)
+    {
+        IEnumerable<string> platformSeed = platform.ToUpperInvariant() switch
+        {
+            "WIN64" or "WINDOWS" => WindowsNativeSeed,
+            "MAC" => MacNativeSeed,
+            _ => LinuxNativeSeed,
+        };
+        return CommonNativeSeed.Concat(platformSeed).ToArray();
+    }
+
     public async Task<UnrealPluginBuildResult> BuildAsync(
         UnrealPluginBuildOptions options,
         CancellationToken cancellationToken = default)
     {
         ValidateOptions(options);
-        EnginePresentationMode presentationMode = options.PresentationMode;
-        if (presentationMode == EnginePresentationMode.Auto)
-        {
-            // Prefer the lazy mounted backend on native FUSE hosts. Other hosts retain the
-            // materialized path until their native mount backend exists.
-            presentationMode = (OperatingSystem.IsLinux()
-                    && options.RuntimeIdentifier.Equals("linux-x64", StringComparison.OrdinalIgnoreCase)
-                    && options.Platform.Equals("Linux", StringComparison.OrdinalIgnoreCase))
-                || (OperatingSystem.IsMacOS()
-                    && options.RuntimeIdentifier.StartsWith("mac-", StringComparison.OrdinalIgnoreCase)
-                    && options.Platform.Equals("Mac", StringComparison.OrdinalIgnoreCase))
-                    ? EnginePresentationMode.Mounted
-                    : EnginePresentationMode.Materialized;
-        }
+        EnginePresentationMode presentationMode = ResolvePresentationMode(
+            options.PresentationMode,
+            options.RuntimeIdentifier,
+            options.Platform,
+            OperatingSystem.IsLinux(),
+            OperatingSystem.IsMacOS());
         if (presentationMode == EnginePresentationMode.Mounted)
         {
             var mounted = new UnrealMountedPluginBuilder();
@@ -228,7 +253,7 @@ public sealed class UnrealPluginBuilder
             bootstrap.EngineRoot,
             bootstrapOverlayFiles);
 
-        IEnumerable<string> nativeSeed = InitialNativeSeed;
+        IEnumerable<string> nativeSeed = GetInitialNativeSeed(options.Platform);
         if (plugin.Modules.Any(module => module.IsEditorOnly))
         {
             nativeSeed = nativeSeed.Append("Engine/Source/Runtime/Launch");
@@ -241,9 +266,7 @@ public sealed class UnrealPluginBuilder
                 bootstrap.EngineRoot,
                 options.Progress);
         }
-        string seedLabel = plugin.Modules.Any(module => module.IsEditorOnly)
-            ? "Core/TraceLog/Projects/Launch"
-            : "Core/TraceLog/Projects";
+        string seedLabel = string.Join('/', nativeSeed.Select(Path.GetFileName));
         options.Progress?.Invoke($"Materializing the minimal native UBT target seed ({seedLabel})...");
         await _epicClient.MaterializeSparseDirectoriesAsync(
             bootstrap.EngineRoot,
@@ -667,6 +690,32 @@ public sealed class UnrealPluginBuilder
         if (runtimeIdentifier.StartsWith("win-", StringComparison.OrdinalIgnoreCase)) return "Win64";
         if (runtimeIdentifier.StartsWith("mac-", StringComparison.OrdinalIgnoreCase)) return "Mac";
         throw new PlatformNotSupportedException($"No Unreal target platform mapping exists for host RID '{runtimeIdentifier}'.");
+    }
+
+    internal static EnginePresentationMode ResolvePresentationMode(
+        EnginePresentationMode requested,
+        string runtimeIdentifier,
+        string platform,
+        bool isLinux,
+        bool isMacOS)
+    {
+        if (requested != EnginePresentationMode.Auto)
+        {
+            return requested;
+        }
+
+        // Prefer the lazy mounted backend only on hosts where UECI ships a native adapter.
+        // Windows deliberately remains materialized until the WinFsp transport is available;
+        // that fallback is fully supported and avoids a hidden driver prerequisite in CI.
+        bool supportsMountedBackend = (isLinux
+                && runtimeIdentifier.Equals("linux-x64", StringComparison.OrdinalIgnoreCase)
+                && platform.Equals("Linux", StringComparison.OrdinalIgnoreCase))
+            || (isMacOS
+                && runtimeIdentifier.StartsWith("mac-", StringComparison.OrdinalIgnoreCase)
+                && platform.Equals("Mac", StringComparison.OrdinalIgnoreCase));
+        return supportsMountedBackend
+            ? EnginePresentationMode.Mounted
+            : EnginePresentationMode.Materialized;
     }
 
     private sealed record BuildPhase(string Target, IReadOnlyList<string> Modules);

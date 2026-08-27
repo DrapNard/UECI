@@ -65,7 +65,7 @@ Useful controls:
 - `--max-discovery-passes N` bounds the lazy retry loop (default 32, max 64).
 - normal GitDependencies cache flags remain available.
 
-Each UBT pass is saved under `.ueci/plugin-work/<PluginName>/Logs`. If discovery stalls, UECI reports the full log path and the last diagnostic lines rather than silently downloading broad Engine subtrees.
+Each UBT pass is saved under `.ueci/plugin-work/<PluginName>/Logs`. If discovery stalls, UECI reports the full log path and the last diagnostic lines rather than silently downloading broad Engine subtrees. On Windows, the first materialized seed adds only `Config/Windows`, `Runtime/Windows`, `WindowsTargetPlatform`, and DirectX rules to the common Core seed; remaining requirements are discovered from UBT diagnostics. This keeps a cold `windows-latest` checkout focused instead of preloading all Windows Engine source.
 
 ## Packaging
 
