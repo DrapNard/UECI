@@ -48,7 +48,7 @@
 
 - [ ] Stable `EngineView` API
 - [x] Linux FUSE driver
-- [ ] WinFsp driver/adaptor
+- [x] WinFsp adapter (optional runtime/driver prerequisite)
 - [ ] Evaluate macFUSE vs FSKit constraints
 - [x] Copy-on-write upper layer
 - [x] Automatic Linux mounted selection with materialized fallback on unsupported hosts

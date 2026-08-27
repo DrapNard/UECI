@@ -4,7 +4,7 @@ UECI builds Unreal Engine code plugins in CI without materializing a complete Un
 
 It presents a pinned Unreal Engine commit as a lazy virtual filesystem: Epic source files come from a blobless Git clone and binary dependencies come from `Commit.gitdeps.xml`. UnrealBuildTool (UBT) remains the authority for the build; UECI only fetches and caches the data needed to run it.
 
-> Status: experimental alpha. Linux/FUSE3 and macOS/macFUSE mounted backends are implemented. Windows currently uses the materialized backend.
+> Status: experimental alpha. Linux/FUSE3, macOS/macFUSE, and Windows/WinFsp mounted backends are implemented. Windows automatically retains the materialized backend when WinFsp is absent.
 
 ## Highlights
 
@@ -38,6 +38,7 @@ Mounted builds additionally require:
 
 - Linux: FUSE3, `pkg-config`, and a C compiler
 - macOS: macFUSE and Xcode command-line tools
+- Windows: WinFsp runtime (including Developer files) for the optional mounted backend
 
 Real Epic builds require a GitHub account authorized for `EpicGames/UnrealEngine` and a read-only token supplied through `UECI_EPIC_GITHUB_TOKEN`.
 

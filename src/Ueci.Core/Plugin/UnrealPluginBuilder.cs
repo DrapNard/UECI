@@ -2,6 +2,7 @@ using Ueci.Epic;
 using Ueci.GitDeps;
 using Ueci.Unreal;
 using Ueci.Vfs;
+using Ueci.Vfs.Windows;
 
 namespace Ueci.Plugin;
 
@@ -165,7 +166,9 @@ public sealed class UnrealPluginBuilder
             options.RuntimeIdentifier,
             options.Platform,
             OperatingSystem.IsLinux(),
-            OperatingSystem.IsMacOS());
+            OperatingSystem.IsMacOS(),
+            OperatingSystem.IsWindows(),
+            OperatingSystem.IsWindows() && WindowsWinFspProbe.Detect().IsAvailable);
         if (presentationMode == EnginePresentationMode.Mounted)
         {
             var mounted = new UnrealMountedPluginBuilder();
@@ -697,7 +700,9 @@ public sealed class UnrealPluginBuilder
         string runtimeIdentifier,
         string platform,
         bool isLinux,
-        bool isMacOS)
+        bool isMacOS,
+        bool isWindows,
+        bool hasWinFsp)
     {
         if (requested != EnginePresentationMode.Auto)
         {
@@ -712,7 +717,11 @@ public sealed class UnrealPluginBuilder
                 && platform.Equals("Linux", StringComparison.OrdinalIgnoreCase))
             || (isMacOS
                 && runtimeIdentifier.StartsWith("mac-", StringComparison.OrdinalIgnoreCase)
-                && platform.Equals("Mac", StringComparison.OrdinalIgnoreCase));
+                && platform.Equals("Mac", StringComparison.OrdinalIgnoreCase))
+            || (isWindows
+                && hasWinFsp
+                && runtimeIdentifier.Equals("win-x64", StringComparison.OrdinalIgnoreCase)
+                && platform.Equals("Win64", StringComparison.OrdinalIgnoreCase));
         return supportsMountedBackend
             ? EnginePresentationMode.Mounted
             : EnginePresentationMode.Materialized;

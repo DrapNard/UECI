@@ -6,11 +6,13 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Runtime.InteropServices;
 using Ueci.Epic;
 using Ueci.GitDeps;
 using Ueci.Plugin;
 using Ueci.Unreal;
 using Ueci.Vfs;
+using Ueci.Vfs.Windows;
 
 namespace Ueci.Tests;
 
@@ -81,6 +83,7 @@ internal static class Program
         ("plugin UBT invocation disables UBA when supported", PluginBuildInvocationModernUbaAsync),
         ("plugin UBT invocation filters unsupported flags for legacy UE4", PluginBuildInvocationLegacyAsync),
         ("plugin builder uses a narrow Windows seed and materialized auto backend", PluginBuilderWindowsPlanningAsync),
+        ("WinFsp probe selects the matching installed runtime", WindowsWinFspProbeAsync),
         ("plugin failure excerpt preserves early actionable diagnostics", PluginFailureExcerptAsync),
         ("plugin diagnostics learn missing synthetic UE4 link modules", PluginLegacyLinkDependencyAsync),
         ("plugin product collector harvests synthetic target binaries", PluginProductCollectorAsync),
@@ -2623,7 +2626,9 @@ internal static class Program
             "win-x64",
             "Win64",
             isLinux: false,
-            isMacOS: false);
+            isMacOS: false,
+            isWindows: true,
+            hasWinFsp: false);
         Assert.Equal(EnginePresentationMode.Materialized, autoWindows);
 
         EnginePresentationMode explicitMounted = UnrealPluginBuilder.ResolvePresentationMode(
@@ -2631,8 +2636,38 @@ internal static class Program
             "win-x64",
             "Win64",
             isLinux: false,
-            isMacOS: false);
+            isMacOS: false,
+            isWindows: true,
+            hasWinFsp: false);
         Assert.Equal(EnginePresentationMode.Mounted, explicitMounted);
+
+        EnginePresentationMode autoWinFsp = UnrealPluginBuilder.ResolvePresentationMode(
+            EnginePresentationMode.Auto,
+            "win-x64",
+            "Win64",
+            isLinux: false,
+            isMacOS: false,
+            isWindows: true,
+            hasWinFsp: true);
+        Assert.Equal(EnginePresentationMode.Mounted, autoWinFsp);
+        return Task.CompletedTask;
+    }
+
+    private static Task WindowsWinFspProbeAsync()
+    {
+        string root = CreateTempDirectory();
+        try
+        {
+            string x64 = Path.Combine(root, "WinFsp", "bin", "winfsp-x64.dll");
+            Directory.CreateDirectory(Path.GetDirectoryName(x64)!);
+            File.WriteAllBytes(x64, []);
+            Assert.Equal(x64, WindowsWinFspProbe.FindRuntime([root], Architecture.X64));
+            Assert.Equal(null, WindowsWinFspProbe.FindRuntime([root], Architecture.Arm64));
+        }
+        finally
+        {
+            DeleteDirectory(root);
+        }
         return Task.CompletedTask;
     }
 

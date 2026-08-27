@@ -7,6 +7,7 @@ using Ueci.GitDeps;
 using Ueci.Unreal;
 using Ueci.Vfs;
 using Ueci.Vfs.Linux;
+using Ueci.Vfs.Windows;
 
 namespace Ueci.Plugin;
 
@@ -27,10 +28,13 @@ internal sealed class UnrealMountedPluginBuilder
         bool mac = OperatingSystem.IsMacOS()
             && options.RuntimeIdentifier.StartsWith("mac-", StringComparison.OrdinalIgnoreCase)
             && options.Platform.Equals("Mac", StringComparison.OrdinalIgnoreCase);
-        if (!linux && !mac)
+        bool windows = OperatingSystem.IsWindows()
+            && options.RuntimeIdentifier.Equals("win-x64", StringComparison.OrdinalIgnoreCase)
+            && options.Platform.Equals("Win64", StringComparison.OrdinalIgnoreCase);
+        if (!linux && !mac && !windows)
         {
             throw new PlatformNotSupportedException(
-                "The mounted plugin build backend supports native linux-x64 -> Linux (FUSE3) and macOS -> Mac (macFUSE) only.");
+                "The mounted plugin build backend supports native linux-x64 -> Linux (FUSE3), macOS -> Mac (macFUSE), and win-x64 -> Win64 (WinFsp) only.");
         }
 
         var timings = new UnrealPluginBuildTimingCollector();
@@ -95,6 +99,9 @@ internal sealed class UnrealMountedPluginBuilder
         // restore it directly without re-extracting the 1+ GiB archive.
         string toolchainStore = Path.Combine(sharedCacheRoot, "toolchains", "installed", "linux-x64");
         bool isLinuxBuild = options.Platform.Equals("Linux", StringComparison.OrdinalIgnoreCase);
+        bool windows = OperatingSystem.IsWindows()
+            && options.RuntimeIdentifier.Equals("win-x64", StringComparison.OrdinalIgnoreCase)
+            && options.Platform.Equals("Win64", StringComparison.OrdinalIgnoreCase);
 
         Directory.CreateDirectory(mountedStateRoot);
         Directory.CreateDirectory(mountPoint);
@@ -275,21 +282,12 @@ internal sealed class UnrealMountedPluginBuilder
                 options.Progress?.Invoke("[vfs/artifacts] Warm UBT cache: skipping managed bootstrap source prefetch.");
             }
 
-            var fuse = new LinuxFuseMount();
-            Task<LinuxFuseMountSession> mountTask = timings.MeasureAsync(
-                "fuse.mount",
-                () => fuse.StartAsync(
-                    context.FileSystem,
-                    new LinuxFuseMountOptions(
-                        mountPoint,
-                        options.FetchOptions.CacheDirectory,
-                        Verbose: options.VerboseVfs,
-                        StartupTimeout: OperatingSystem.IsMacOS() ? TimeSpan.FromSeconds(20) : TimeSpan.FromMinutes(2),
-                        Progress: options.Progress),
-                    cancellationToken));
+            Task<IEngineMountSession> mountTask = timings.MeasureAsync(
+                windows ? "winfsp.mount" : "fuse.mount",
+                () => StartMountAsync(context.FileSystem, mountPoint, options, windows, cancellationToken));
             await Task.WhenAll(prefetchTask, mountTask).ConfigureAwait(false);
-            LinuxFuseMountSession mountSession = await mountTask.ConfigureAwait(false);
-            await using LinuxFuseMountSession mount = mountSession;
+            IEngineMountSession mountSession = await mountTask.ConfigureAwait(false);
+            await using IEngineMountSession mount = mountSession;
 
             string virtualEngineRoot = mount.MountPoint;
             await RelaxMacSdkVersionGateAsync(virtualEngineRoot, options.Progress, cancellationToken).ConfigureAwait(false);
@@ -782,6 +780,31 @@ internal sealed class UnrealMountedPluginBuilder
                 }
             }
         }
+    }
+
+    private static async Task<IEngineMountSession> StartMountAsync(
+        VirtualEngineFileSystem fileSystem,
+        string mountPoint,
+        UnrealPluginBuildOptions options,
+        bool windows,
+        CancellationToken cancellationToken)
+    {
+        if (windows)
+        {
+            return await new WindowsWinFspMount().StartAsync(
+                fileSystem,
+                new WindowsWinFspMountOptions(mountPoint, options.VerboseVfs, options.Progress),
+                cancellationToken).ConfigureAwait(false);
+        }
+        return await new LinuxFuseMount().StartAsync(
+            fileSystem,
+            new LinuxFuseMountOptions(
+                mountPoint,
+                options.FetchOptions.CacheDirectory,
+                Verbose: options.VerboseVfs,
+                StartupTimeout: OperatingSystem.IsMacOS() ? TimeSpan.FromSeconds(20) : TimeSpan.FromMinutes(2),
+                Progress: options.Progress),
+            cancellationToken).ConfigureAwait(false);
     }
 
     private static IReadOnlyList<string> SelectActionableMissingPaths(

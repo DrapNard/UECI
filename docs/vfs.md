@@ -7,7 +7,7 @@ UECI v0.5 presents the selected Unreal commit as a complete filesystem namespace
 | Host | Preferred mounted backend | Fallback |
 |---|---|---|
 | Linux | FUSE 3 (implemented in v0.5 alpha) | materialized directory |
-| Windows | materialized directory | native WinFsp adapter (planned) |
+| Windows | WinFsp (implemented, optional) | materialized directory |
 | macOS | macFUSE (implemented) | materialized directory |
 
 Mounted mode is optional. Hosted CI environments that do not expose FUSE continue to use the materialized backend. On macOS, install macFUSE plus its `pkg-config` development metadata, activate its system extension in macOS Settings if prompted, and ensure the Xcode command-line tools are available. UECI fails mount startup after 20 seconds on macOS when that prerequisite is not active, preserving cold-build time for a useful error rather than waiting for the Linux-oriented two-minute timeout.
@@ -155,7 +155,7 @@ Git tree objects contain path/mode/object-id but not blob length. On the Epic/Gi
 7. invoke each UBT target once; UBT/clang resolve Engine sources and native libraries through normal filesystem calls;
 8. package the plugin and unmount in a `finally`/async-dispose path.
 
-The materialized backend remains available for every supported host. `--backend auto` selects the mounted backend on native Linux x64 and macOS hosts; it selects the materialized backend on Windows. This makes the normal Windows CI path driver-free and reliable on hosted GitHub runners.
+The materialized backend remains available for every supported host. `--backend auto` selects the mounted backend on native Linux x64 and macOS hosts. On Windows it selects WinFsp when its runtime is installed, otherwise it selects the materialized backend. This keeps the normal Windows CI path driver-free and reliable on hosted GitHub runners while allowing self-hosted runners to use the lazy VFS.
 
 ## macOS storage policy
 

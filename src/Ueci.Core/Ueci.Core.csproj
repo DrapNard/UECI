@@ -9,6 +9,11 @@
     <EmbeddedResource Include="Vfs/Profiles/*.seed" />
   </ItemGroup>
   <ItemGroup>
+    <!-- The managed adapter is loaded only by the Windows/WinFsp backend. The signed WinFsp
+         driver itself remains an explicit machine prerequisite. -->
+    <PackageReference Include="winfsp.net" Version="2.2.26215" />
+  </ItemGroup>
+  <ItemGroup>
     <InternalsVisibleTo Include="Ueci.Tests" />
   </ItemGroup>
 </Project>

@@ -5,6 +5,7 @@ using Ueci.Plugin;
 using Ueci.Unreal;
 using Ueci.Vfs;
 using Ueci.Vfs.Linux;
+using Ueci.Vfs.Windows;
 
 namespace Ueci.Cli;
 
@@ -422,9 +423,9 @@ internal static class Program
             return args.Length == 0 ? 2 : 0;
         }
 
-        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS() && !OperatingSystem.IsWindows())
         {
-            return Fail("The mounted backend requires Linux + FUSE3 or macOS + macFUSE. Use the materialized backend on other hosts.");
+            return Fail("The mounted backend requires Linux + FUSE3, macOS + macFUSE, or Windows + WinFsp. Use the materialized backend on other hosts.");
         }
 
         string mountPoint = args[0];
@@ -476,8 +477,22 @@ internal static class Program
             Console.Error.WriteLine("[ueci] Reads are lazy: the first open may block while its Git/GitDependencies blob enters the CAS.");
             Console.Error.WriteLine("[ueci] Press Ctrl+C to unmount.");
 
-            var mount = new LinuxFuseMount();
-            int exitCode = await mount.RunAsync(
+            if (OperatingSystem.IsWindows())
+            {
+                await using WindowsWinFspMountSession mount = await new WindowsWinFspMount().StartAsync(
+                    context.FileSystem,
+                    new WindowsWinFspMountOptions(
+                        mountPoint,
+                        Verbose: verbose,
+                        Progress: message => Console.Error.WriteLine($"[ueci] {message}")),
+                    cancellation.Token).ConfigureAwait(false);
+                try { await Task.Delay(Timeout.InfiniteTimeSpan, cancellation.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+                return 0;
+            }
+
+            var fuse = new LinuxFuseMount();
+            int exitCode = await fuse.RunAsync(
                 context.FileSystem,
                 new LinuxFuseMountOptions(
                     mountPoint,

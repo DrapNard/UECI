@@ -11,7 +11,7 @@ public sealed record LinuxFuseMountOptions(
     TimeSpan? StartupTimeout = null,
     Action<string>? Progress = null);
 
-public sealed class LinuxFuseMountSession : IAsyncDisposable
+public sealed class LinuxFuseMountSession : IEngineMountSession
 {
     private readonly Process _process;
     private readonly FuseProtocolServer _server;
