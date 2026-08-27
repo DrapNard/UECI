@@ -76,99 +76,99 @@ public sealed class UnrealPluginRequirementMaterializer
             switch (requirement.Kind)
             {
                 case UnrealBuildRequirementKind.Module:
-                {
-                    // An explicit UBT "missing module" diagnostic outranks our speculative
-                    // Build.cs prefetch. A module directory may already be inside the sparse
-                    // working set because it was hinted by another Build.cs, while UBT's cached
-                    // EngineRules assembly still does not contain the rule. Always force-refresh
-                    // the selected rule file from the pinned Epic commit; this also gives the
-                    // caller a concrete mutation instead of stalling on an already-sparse path.
-                    string? rule = _tracked.FindModuleRules(requirement.Value, maxResults: 1).FirstOrDefault();
-                    if (rule is null)
                     {
+                        // An explicit UBT "missing module" diagnostic outranks our speculative
+                        // Build.cs prefetch. A module directory may already be inside the sparse
+                        // working set because it was hinted by another Build.cs, while UBT's cached
+                        // EngineRules assembly still does not contain the rule. Always force-refresh
+                        // the selected rule file from the pinned Epic commit; this also gives the
+                        // caller a concrete mutation instead of stalling on an already-sparse path.
+                        string? rule = _tracked.FindModuleRules(requirement.Value, maxResults: 1).FirstOrDefault();
+                        if (rule is null)
+                        {
+                            break;
+                        }
+
+                        string? directory = Path.GetDirectoryName(rule.Replace('/', Path.DirectorySeparatorChar));
+                        if (directory is null)
+                        {
+                            break;
+                        }
+
+                        string normalizedDirectory = Normalize(directory);
+                        if (!_sparseDirectories.Contains(normalizedDirectory))
+                        {
+                            sparseToAdd.Add(normalizedDirectory);
+                            details.Add($"module {requirement.Value} -> git subtree {normalizedDirectory}");
+                        }
+                        else
+                        {
+                            details.Add($"module {requirement.Value} already sparse -> force-refresh {rule}");
+                        }
+
+                        gitFiles.Add(rule);
+                        matched++;
                         break;
                     }
-
-                    string? directory = Path.GetDirectoryName(rule.Replace('/', Path.DirectorySeparatorChar));
-                    if (directory is null)
-                    {
-                        break;
-                    }
-
-                    string normalizedDirectory = Normalize(directory);
-                    if (!_sparseDirectories.Contains(normalizedDirectory))
-                    {
-                        sparseToAdd.Add(normalizedDirectory);
-                        details.Add($"module {requirement.Value} -> git subtree {normalizedDirectory}");
-                    }
-                    else
-                    {
-                        details.Add($"module {requirement.Value} already sparse -> force-refresh {rule}");
-                    }
-
-                    gitFiles.Add(rule);
-                    matched++;
-                    break;
-                }
 
                 case UnrealBuildRequirementKind.EnginePath:
-                {
-                    if (ResolveEnginePath(requirement.Value, sparseToAdd, gitFiles, gitDepsFiles, gitDepsPrefixes, details))
                     {
-                        matched++;
-                    }
-                    break;
-                }
-
-                case UnrealBuildRequirementKind.PathSuffix:
-                {
-                    if (ResolveSuffix(requirement.Value, sparseToAdd, gitFiles, gitDepsFiles, details))
-                    {
-                        matched++;
-                    }
-                    break;
-                }
-
-                case UnrealBuildRequirementKind.BuildExecutor:
-                {
-                    string? executorPrefix = ResolveBuildExecutorPrefix(requirement.Value);
-                    if (executorPrefix is not null)
-                    {
-                        gitDepsPrefixes.Add(executorPrefix);
-                        details.Add($"build executor {requirement.Value} -> GitDependencies prefix {executorPrefix}");
-                        matched++;
-                    }
-                    break;
-                }
-
-                case UnrealBuildRequirementKind.PlatformSdk:
-                {
-                    // Setup.sh installs the native Linux toolchain separately from Commit.gitdeps.xml.
-                    // Defer the large download until UBT explicitly tells us the platform SDK is missing.
-                    if (platform.Equals("Linux", StringComparison.OrdinalIgnoreCase)
-                        && _runtimeIdentifier.Equals("linux-x64", StringComparison.OrdinalIgnoreCase))
-                    {
-                        details.Add("platform SDK -> Epic native Linux x86_64 toolchain");
-                        matched++;
-                    }
-                    else if (platform.Equals("Linux", StringComparison.OrdinalIgnoreCase)
-                        && _runtimeIdentifier.StartsWith("linux-", StringComparison.OrdinalIgnoreCase))
-                    {
-                        throw new PlatformNotSupportedException(
-                            $"UECI v0.4 only installs Epic's native Linux x86_64 toolchain automatically; host RID '{_runtimeIdentifier}' is not supported yet.");
-                    }
-                    else
-                    {
-                        string? sdkPrefix = ResolvePlatformSdkPrefix(platform);
-                        if (sdkPrefix is not null)
+                        if (ResolveEnginePath(requirement.Value, sparseToAdd, gitFiles, gitDepsFiles, gitDepsPrefixes, details))
                         {
-                            gitDepsPrefixes.Add(sdkPrefix);
-                            details.Add($"platform SDK -> GitDependencies prefix {sdkPrefix}");
                             matched++;
                         }
+                        break;
                     }
-                    break;
-                }
+
+                case UnrealBuildRequirementKind.PathSuffix:
+                    {
+                        if (ResolveSuffix(requirement.Value, sparseToAdd, gitFiles, gitDepsFiles, details))
+                        {
+                            matched++;
+                        }
+                        break;
+                    }
+
+                case UnrealBuildRequirementKind.BuildExecutor:
+                    {
+                        string? executorPrefix = ResolveBuildExecutorPrefix(requirement.Value);
+                        if (executorPrefix is not null)
+                        {
+                            gitDepsPrefixes.Add(executorPrefix);
+                            details.Add($"build executor {requirement.Value} -> GitDependencies prefix {executorPrefix}");
+                            matched++;
+                        }
+                        break;
+                    }
+
+                case UnrealBuildRequirementKind.PlatformSdk:
+                    {
+                        // Setup.sh installs the native Linux toolchain separately from Commit.gitdeps.xml.
+                        // Defer the large download until UBT explicitly tells us the platform SDK is missing.
+                        if (platform.Equals("Linux", StringComparison.OrdinalIgnoreCase)
+                            && _runtimeIdentifier.Equals("linux-x64", StringComparison.OrdinalIgnoreCase))
+                        {
+                            details.Add("platform SDK -> Epic native Linux x86_64 toolchain");
+                            matched++;
+                        }
+                        else if (platform.Equals("Linux", StringComparison.OrdinalIgnoreCase)
+                            && _runtimeIdentifier.StartsWith("linux-", StringComparison.OrdinalIgnoreCase))
+                        {
+                            throw new PlatformNotSupportedException(
+                                $"UECI v0.4 only installs Epic's native Linux x86_64 toolchain automatically; host RID '{_runtimeIdentifier}' is not supported yet.");
+                        }
+                        else
+                        {
+                            string? sdkPrefix = ResolvePlatformSdkPrefix(platform);
+                            if (sdkPrefix is not null)
+                            {
+                                gitDepsPrefixes.Add(sdkPrefix);
+                                details.Add($"platform SDK -> GitDependencies prefix {sdkPrefix}");
+                                matched++;
+                            }
+                        }
+                        break;
+                    }
             }
         }
 

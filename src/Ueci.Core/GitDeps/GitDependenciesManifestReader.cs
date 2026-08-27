@@ -96,33 +96,33 @@ public static class GitDependenciesManifestReader
                 case "DependencyManifest":
                     break;
                 case "File":
-                {
-                    string name = GitDependencyPath.Normalize(Required(reader, "Name"));
-                    string hash = Required(reader, "Hash");
-                    bool executable = bool.TryParse(reader.GetAttribute("IsExecutable"), out bool value) && value;
-                    files[name] = new GitDependencyFile(name, hash, executable);
-                    break;
-                }
+                    {
+                        string name = GitDependencyPath.Normalize(Required(reader, "Name"));
+                        string hash = Required(reader, "Hash");
+                        bool executable = bool.TryParse(reader.GetAttribute("IsExecutable"), out bool value) && value;
+                        files[name] = new GitDependencyFile(name, hash, executable);
+                        break;
+                    }
                 case "Blob":
-                {
-                    string hash = Required(reader, "Hash");
-                    blobs[hash] = new GitDependencyBlob(
-                        hash,
-                        ParseInt64(reader, "Size"),
-                        Required(reader, "PackHash"),
-                        ParseInt64(reader, "PackOffset"));
-                    break;
-                }
+                    {
+                        string hash = Required(reader, "Hash");
+                        blobs[hash] = new GitDependencyBlob(
+                            hash,
+                            ParseInt64(reader, "Size"),
+                            Required(reader, "PackHash"),
+                            ParseInt64(reader, "PackOffset"));
+                        break;
+                    }
                 case "Pack":
-                {
-                    string hash = Required(reader, "Hash");
-                    packs[hash] = new GitDependencyPack(
-                        hash,
-                        ParseInt64(reader, "Size"),
-                        ParseInt64(reader, "CompressedSize"),
-                        RequiredAny(reader, "RemotePath", "Url", "URL"));
-                    break;
-                }
+                    {
+                        string hash = Required(reader, "Hash");
+                        packs[hash] = new GitDependencyPack(
+                            hash,
+                            ParseInt64(reader, "Size"),
+                            ParseInt64(reader, "CompressedSize"),
+                            RequiredAny(reader, "RemotePath", "Url", "URL"));
+                        break;
+                    }
             }
 
             int indexed = files.Count + blobs.Count + packs.Count;

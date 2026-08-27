@@ -200,37 +200,37 @@ public sealed class UnrealBuildToolRunner
         switch (ubt.RuntimeKind)
         {
             case UnrealBuildToolRuntimeKind.DotNet:
-            {
-                environment["DOTNET_ROOT"] = ResolveDotNetRoot(runtimeHost);
-                environment["DOTNET_MULTILEVEL_LOOKUP"] = "0";
-                environment["DOTNET_NOLOGO"] = "1";
-                environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
-                environment["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"] = "1";
-                environment["DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE"] = "1";
-                environment["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "1";
-                string? externalFrameworkVersion = null;
-                if (!IsEngineBundledDotNet(ubt.EngineRoot, runtimeHost))
                 {
-                    // External runtimes include both the runner SDK and UECI's isolated legacy
-                    // compatibility SDK. Pin execution to the framework actually installed beside
-                    // that host instead of assuming Environment.Version belongs to the same dotnet.
-                    externalFrameworkVersion = ResolveInstalledDotNetFrameworkVersion(runtimeHost);
-                    environment["DOTNET_ROLL_FORWARD"] = externalFrameworkVersion is null
-                        ? "LatestMajor"
-                        : "LatestPatch";
+                    environment["DOTNET_ROOT"] = ResolveDotNetRoot(runtimeHost);
+                    environment["DOTNET_MULTILEVEL_LOOKUP"] = "0";
+                    environment["DOTNET_NOLOGO"] = "1";
+                    environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+                    environment["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"] = "1";
+                    environment["DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE"] = "1";
+                    environment["DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"] = "1";
+                    string? externalFrameworkVersion = null;
+                    if (!IsEngineBundledDotNet(ubt.EngineRoot, runtimeHost))
+                    {
+                        // External runtimes include both the runner SDK and UECI's isolated legacy
+                        // compatibility SDK. Pin execution to the framework actually installed beside
+                        // that host instead of assuming Environment.Version belongs to the same dotnet.
+                        externalFrameworkVersion = ResolveInstalledDotNetFrameworkVersion(runtimeHost);
+                        environment["DOTNET_ROLL_FORWARD"] = externalFrameworkVersion is null
+                            ? "LatestMajor"
+                            : "LatestPatch";
+                    }
+                    await UnrealBuildToolConfiguration.WriteHermeticLocalExecutorAsync(
+                        isolatedUbtConfigDirectory,
+                        cancellationToken,
+                        compatibility).ConfigureAwait(false);
+                    executable = runtimeHost;
+                    processArguments = IsEngineBundledDotNet(ubt.EngineRoot, runtimeHost)
+                        ? [ubt.AssemblyPath, .. arguments]
+                        : externalFrameworkVersion is not null
+                            ? ["--fx-version", externalFrameworkVersion, ubt.AssemblyPath, .. arguments]
+                            : [ubt.AssemblyPath, .. arguments];
+                    break;
                 }
-                await UnrealBuildToolConfiguration.WriteHermeticLocalExecutorAsync(
-                    isolatedUbtConfigDirectory,
-                    cancellationToken,
-                    compatibility).ConfigureAwait(false);
-                executable = runtimeHost;
-                processArguments = IsEngineBundledDotNet(ubt.EngineRoot, runtimeHost)
-                    ? [ubt.AssemblyPath, .. arguments]
-                    : externalFrameworkVersion is not null
-                        ? ["--fx-version", externalFrameworkVersion, ubt.AssemblyPath, .. arguments]
-                        : [ubt.AssemblyPath, .. arguments];
-                break;
-            }
 
             case UnrealBuildToolRuntimeKind.Mono:
                 // Legacy UE4 UBT predates UBA and its XML schema differs substantially. Do not

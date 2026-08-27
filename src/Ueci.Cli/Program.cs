@@ -61,166 +61,166 @@ internal static class Program
         switch (command)
         {
             case "inspect":
-            {
-                GitDependenciesSummary summary = await GitDependenciesManifestReader.ReadSummaryAsync(manifestPath)
-                    .ConfigureAwait(false);
-                if (json)
                 {
-                    WriteJson(summary);
+                    GitDependenciesSummary summary = await GitDependenciesManifestReader.ReadSummaryAsync(manifestPath)
+                        .ConfigureAwait(false);
+                    if (json)
+                    {
+                        WriteJson(summary);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Base URL:          {summary.BaseUrl}");
+                        Console.WriteLine($"Files:             {summary.FileCount:N0}");
+                        Console.WriteLine($"Executable files:  {summary.ExecutableFileCount:N0}");
+                        Console.WriteLine($"Unique blobs:      {summary.BlobCount:N0}");
+                        Console.WriteLine($"Packs:             {summary.PackCount:N0}");
+                        Console.WriteLine($"Blob bytes:        {FormatBytes(summary.UniqueBlobBytes)}");
+                        Console.WriteLine($"Pack bytes:        {FormatBytes(summary.ExpandedPackBytes)}");
+                        Console.WriteLine($"Compressed packs:  {FormatBytes(summary.CompressedPackBytes)}");
+                    }
+                    return 0;
                 }
-                else
-                {
-                    Console.WriteLine($"Base URL:          {summary.BaseUrl}");
-                    Console.WriteLine($"Files:             {summary.FileCount:N0}");
-                    Console.WriteLine($"Executable files:  {summary.ExecutableFileCount:N0}");
-                    Console.WriteLine($"Unique blobs:      {summary.BlobCount:N0}");
-                    Console.WriteLine($"Packs:             {summary.PackCount:N0}");
-                    Console.WriteLine($"Blob bytes:        {FormatBytes(summary.UniqueBlobBytes)}");
-                    Console.WriteLine($"Pack bytes:        {FormatBytes(summary.ExpandedPackBytes)}");
-                    Console.WriteLine($"Compressed packs:  {FormatBytes(summary.CompressedPackBytes)}");
-                }
-                return 0;
-            }
             case "lookup":
-            {
-                if (args.Length < 3)
                 {
-                    return Fail("Usage: ueci gitdeps lookup <manifest> <engine-path> [--json]");
+                    if (args.Length < 3)
+                    {
+                        return Fail("Usage: ueci gitdeps lookup <manifest> <engine-path> [--json]");
+                    }
+                    GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath)
+                        .ConfigureAwait(false);
+                    GitDependencyResolution? resolution = manifest.Resolve(args[2]);
+                    if (resolution is null)
+                    {
+                        return Fail($"Path not found in manifest: {args[2]}");
+                    }
+                    if (json)
+                    {
+                        WriteJson(resolution);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"File:        {resolution.File.Name}");
+                        Console.WriteLine($"Blob:        {resolution.Blob.Hash}");
+                        Console.WriteLine($"Blob size:   {FormatBytes(resolution.Blob.Size)}");
+                        Console.WriteLine($"Pack:        {resolution.Pack.Hash}");
+                        Console.WriteLine($"Pack offset: {resolution.Blob.PackOffset:N0}");
+                        Console.WriteLine($"Pack URL:    {resolution.PackUri}");
+                    }
+                    return 0;
                 }
-                GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath)
-                    .ConfigureAwait(false);
-                GitDependencyResolution? resolution = manifest.Resolve(args[2]);
-                if (resolution is null)
-                {
-                    return Fail($"Path not found in manifest: {args[2]}");
-                }
-                if (json)
-                {
-                    WriteJson(resolution);
-                }
-                else
-                {
-                    Console.WriteLine($"File:        {resolution.File.Name}");
-                    Console.WriteLine($"Blob:        {resolution.Blob.Hash}");
-                    Console.WriteLine($"Blob size:   {FormatBytes(resolution.Blob.Size)}");
-                    Console.WriteLine($"Pack:        {resolution.Pack.Hash}");
-                    Console.WriteLine($"Pack offset: {resolution.Blob.PackOffset:N0}");
-                    Console.WriteLine($"Pack URL:    {resolution.PackUri}");
-                }
-                return 0;
-            }
             case "validate":
-            {
-                GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath)
-                    .ConfigureAwait(false);
-                GitDependenciesIntegrityResult result = manifest.ValidateIntegrity();
-                if (json)
                 {
-                    WriteJson(result);
+                    GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath)
+                        .ConfigureAwait(false);
+                    GitDependenciesIntegrityResult result = manifest.ValidateIntegrity();
+                    if (json)
+                    {
+                        WriteJson(result);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Missing blob references: {result.MissingBlobReferences:N0}");
+                        Console.WriteLine($"Missing pack references: {result.MissingPackReferences:N0}");
+                        Console.WriteLine(result.IsValid ? "Manifest graph: valid" : "Manifest graph: INVALID");
+                    }
+                    return result.IsValid ? 0 : 3;
                 }
-                else
-                {
-                    Console.WriteLine($"Missing blob references: {result.MissingBlobReferences:N0}");
-                    Console.WriteLine($"Missing pack references: {result.MissingPackReferences:N0}");
-                    Console.WriteLine(result.IsValid ? "Manifest graph: valid" : "Manifest graph: INVALID");
-                }
-                return result.IsValid ? 0 : 3;
-            }
             case "plan":
-            {
-                string[] exact = GetMultiOption(args, "--path");
-                string[] prefixes = GetMultiOption(args, "--prefix");
-                GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath)
-                    .ConfigureAwait(false);
-                GitDependenciesPlan plan = GitDependenciesPlanner.CreatePlan(manifest, exact, prefixes);
-                if (json)
                 {
-                    WriteJson(plan);
+                    string[] exact = GetMultiOption(args, "--path");
+                    string[] prefixes = GetMultiOption(args, "--prefix");
+                    GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath)
+                        .ConfigureAwait(false);
+                    GitDependenciesPlan plan = GitDependenciesPlanner.CreatePlan(manifest, exact, prefixes);
+                    if (json)
+                    {
+                        WriteJson(plan);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Files:             {plan.FileCount:N0}");
+                        Console.WriteLine($"Unique blobs:      {plan.UniqueBlobCount:N0}");
+                        Console.WriteLine($"Unique packs:      {plan.UniquePackCount:N0}");
+                        Console.WriteLine($"Selected blobs:    {FormatBytes(plan.SelectedBlobBytes)}");
+                        Console.WriteLine($"Pack download:     {FormatBytes(plan.DownloadCompressedBytes)}");
+                        Console.WriteLine($"Expanded packs:    {FormatBytes(plan.DownloadExpandedBytes)}");
+                    }
+                    return 0;
                 }
-                else
-                {
-                    Console.WriteLine($"Files:             {plan.FileCount:N0}");
-                    Console.WriteLine($"Unique blobs:      {plan.UniqueBlobCount:N0}");
-                    Console.WriteLine($"Unique packs:      {plan.UniquePackCount:N0}");
-                    Console.WriteLine($"Selected blobs:    {FormatBytes(plan.SelectedBlobBytes)}");
-                    Console.WriteLine($"Pack download:     {FormatBytes(plan.DownloadCompressedBytes)}");
-                    Console.WriteLine($"Expanded packs:    {FormatBytes(plan.DownloadExpandedBytes)}");
-                }
-                return 0;
-            }
             case "fetch":
-            {
-                if (args.Length < 3 || args[2].StartsWith("--", StringComparison.Ordinal))
                 {
-                    return Fail("Usage: ueci gitdeps fetch <manifest> <engine-path> --out PATH [--cache-dir PATH] [--no-pack-cache] [--json]");
-                }
+                    if (args.Length < 3 || args[2].StartsWith("--", StringComparison.Ordinal))
+                    {
+                        return Fail("Usage: ueci gitdeps fetch <manifest> <engine-path> --out PATH [--cache-dir PATH] [--no-pack-cache] [--json]");
+                    }
 
-                string enginePath = args[2];
-                string output = GetOption(args, "--out") ?? GetOption(args, "--output")
-                    ?? throw new ArgumentException("Missing required option --out.");
-                GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath)
-                    .ConfigureAwait(false);
-                GitDependencyResolution resolution = manifest.Resolve(enginePath)
-                    ?? throw new FileNotFoundException($"Path not found in manifest: {enginePath}");
+                    string enginePath = args[2];
+                    string output = GetOption(args, "--out") ?? GetOption(args, "--output")
+                        ?? throw new ArgumentException("Missing required option --out.");
+                    GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath)
+                        .ConfigureAwait(false);
+                    GitDependencyResolution resolution = manifest.Resolve(enginePath)
+                        ?? throw new FileNotFoundException($"Path not found in manifest: {enginePath}");
 
-                GitDependenciesFetchOptions options = GetFetchOptions(args);
-                using var source = new HttpGitDependenciesPackSource();
-                var materializer = new GitDependenciesMaterializer(source);
-                GitDependenciesFetchResult result = await materializer.MaterializeFileAsync(
-                    resolution,
-                    output,
-                    options).ConfigureAwait(false);
+                    GitDependenciesFetchOptions options = GetFetchOptions(args);
+                    using var source = new HttpGitDependenciesPackSource();
+                    var materializer = new GitDependenciesMaterializer(source);
+                    GitDependenciesFetchResult result = await materializer.MaterializeFileAsync(
+                        resolution,
+                        output,
+                        options).ConfigureAwait(false);
 
-                if (json)
-                {
-                    WriteJson(result);
+                    if (json)
+                    {
+                        WriteJson(result);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Materialized:      {result.OutputPath}");
+                        Console.WriteLine($"Blob:              {result.BlobHash}");
+                        Console.WriteLine($"Pack:              {result.PackHash}");
+                        Console.WriteLine($"Blob cache:        {(result.BlobCacheHit ? "hit" : "miss")}");
+                        Console.WriteLine($"Pack cache:        {(result.PackCacheHit ? "hit" : "miss")}");
+                        Console.WriteLine($"Downloaded:        {FormatBytes(result.DownloadedBytes)}");
+                    }
+                    return 0;
                 }
-                else
-                {
-                    Console.WriteLine($"Materialized:      {result.OutputPath}");
-                    Console.WriteLine($"Blob:              {result.BlobHash}");
-                    Console.WriteLine($"Pack:              {result.PackHash}");
-                    Console.WriteLine($"Blob cache:        {(result.BlobCacheHit ? "hit" : "miss")}");
-                    Console.WriteLine($"Pack cache:        {(result.PackCacheHit ? "hit" : "miss")}");
-                    Console.WriteLine($"Downloaded:        {FormatBytes(result.DownloadedBytes)}");
-                }
-                return 0;
-            }
             case "materialize":
-            {
-                string outputRoot = RequireOption(args, "--root");
-                string[] exact = GetMultiOption(args, "--path");
-                string[] prefixes = GetMultiOption(args, "--prefix");
-                GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath)
-                    .ConfigureAwait(false);
-                GitDependenciesPlan plan = GitDependenciesPlanner.CreatePlan(manifest, exact, prefixes);
-                GitDependenciesFetchOptions options = GetFetchOptions(args);
-
-                using var source = new HttpGitDependenciesPackSource();
-                var materializer = new GitDependenciesMaterializer(source);
-                GitDependenciesBatchResult result = await materializer.MaterializePlanAsync(
-                    manifest,
-                    plan,
-                    outputRoot,
-                    options).ConfigureAwait(false);
-
-                if (json)
                 {
-                    WriteJson(result);
+                    string outputRoot = RequireOption(args, "--root");
+                    string[] exact = GetMultiOption(args, "--path");
+                    string[] prefixes = GetMultiOption(args, "--prefix");
+                    GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath)
+                        .ConfigureAwait(false);
+                    GitDependenciesPlan plan = GitDependenciesPlanner.CreatePlan(manifest, exact, prefixes);
+                    GitDependenciesFetchOptions options = GetFetchOptions(args);
+
+                    using var source = new HttpGitDependenciesPackSource();
+                    var materializer = new GitDependenciesMaterializer(source);
+                    GitDependenciesBatchResult result = await materializer.MaterializePlanAsync(
+                        manifest,
+                        plan,
+                        outputRoot,
+                        options).ConfigureAwait(false);
+
+                    if (json)
+                    {
+                        WriteJson(result);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Files:             {result.FileCount:N0}");
+                        Console.WriteLine($"Unique blobs:      {result.UniqueBlobCount:N0}");
+                        Console.WriteLine($"Unique packs:      {result.UniquePackCount:N0}");
+                        Console.WriteLine($"Blob cache hits:   {result.BlobCacheHits:N0}");
+                        Console.WriteLine($"Pack cache hits:   {result.PackCacheHits:N0}");
+                        Console.WriteLine($"Downloaded packs:  {result.DownloadedPacks:N0}");
+                        Console.WriteLine($"Downloaded:        {FormatBytes(result.DownloadedBytes)}");
+                        Console.WriteLine($"Output root:       {Path.GetFullPath(outputRoot)}");
+                    }
+                    return 0;
                 }
-                else
-                {
-                    Console.WriteLine($"Files:             {result.FileCount:N0}");
-                    Console.WriteLine($"Unique blobs:      {result.UniqueBlobCount:N0}");
-                    Console.WriteLine($"Unique packs:      {result.UniquePackCount:N0}");
-                    Console.WriteLine($"Blob cache hits:   {result.BlobCacheHits:N0}");
-                    Console.WriteLine($"Pack cache hits:   {result.PackCacheHits:N0}");
-                    Console.WriteLine($"Downloaded packs:  {result.DownloadedPacks:N0}");
-                    Console.WriteLine($"Downloaded:        {FormatBytes(result.DownloadedBytes)}");
-                    Console.WriteLine($"Output root:       {Path.GetFullPath(outputRoot)}");
-                }
-                return 0;
-            }
             default:
                 return Fail($"Unknown gitdeps command '{command}'.");
         }
@@ -247,45 +247,45 @@ internal static class Program
                 Console.WriteLine($"Epic repository access OK: {reference}");
                 return 0;
             case "resolve":
-            {
-                string commit = await client.ResolveRefAsync(repo, reference, tokenEnv).ConfigureAwait(false);
-                Console.WriteLine(commit);
-                return 0;
-            }
+                {
+                    string commit = await client.ResolveRefAsync(repo, reference, tokenEnv).ConfigureAwait(false);
+                    Console.WriteLine(commit);
+                    return 0;
+                }
             case "init":
-            {
-                string directory = RequireOption(args, "--dir");
-                string commit = await client.InitializePartialRepositoryAsync(directory, repo, reference, tokenEnv)
-                    .ConfigureAwait(false);
-                Console.WriteLine($"Initialized blobless Epic source store at {Path.GetFullPath(directory)}");
-                Console.WriteLine($"Resolved commit: {commit}");
-                return 0;
-            }
+                {
+                    string directory = RequireOption(args, "--dir");
+                    string commit = await client.InitializePartialRepositoryAsync(directory, repo, reference, tokenEnv)
+                        .ConfigureAwait(false);
+                    Console.WriteLine($"Initialized blobless Epic source store at {Path.GetFullPath(directory)}");
+                    Console.WriteLine($"Resolved commit: {commit}");
+                    return 0;
+                }
             case "materialize":
-            {
-                string directory = RequireOption(args, "--dir");
-                string enginePath = RequireOption(args, "--path");
-                string output = RequireOption(args, "--out");
-                await client.MaterializeFileAsync(directory, enginePath, output, tokenEnv).ConfigureAwait(false);
-                Console.WriteLine($"Materialized {enginePath} -> {Path.GetFullPath(output)}");
-                return 0;
-            }
+                {
+                    string directory = RequireOption(args, "--dir");
+                    string enginePath = RequireOption(args, "--path");
+                    string output = RequireOption(args, "--out");
+                    await client.MaterializeFileAsync(directory, enginePath, output, tokenEnv).ConfigureAwait(false);
+                    Console.WriteLine($"Materialized {enginePath} -> {Path.GetFullPath(output)}");
+                    return 0;
+                }
             case "bootstrap":
-            {
-                string directory = RequireOption(args, "--dir");
-                string manifestOut = GetOption(args, "--manifest-out") ?? Path.Combine(".ueci", "Commit.gitdeps.xml");
-                string commit = await client.InitializePartialRepositoryAsync(directory, repo, reference, tokenEnv)
-                    .ConfigureAwait(false);
-                await client.MaterializeFileAsync(
-                    directory,
-                    "Engine/Build/Commit.gitdeps.xml",
-                    manifestOut,
-                    tokenEnv)
-                    .ConfigureAwait(false);
-                Console.WriteLine($"Epic source commit: {commit}");
-                Console.WriteLine($"GitDependencies manifest: {Path.GetFullPath(manifestOut)}");
-                return 0;
-            }
+                {
+                    string directory = RequireOption(args, "--dir");
+                    string manifestOut = GetOption(args, "--manifest-out") ?? Path.Combine(".ueci", "Commit.gitdeps.xml");
+                    string commit = await client.InitializePartialRepositoryAsync(directory, repo, reference, tokenEnv)
+                        .ConfigureAwait(false);
+                    await client.MaterializeFileAsync(
+                        directory,
+                        "Engine/Build/Commit.gitdeps.xml",
+                        manifestOut,
+                        tokenEnv)
+                        .ConfigureAwait(false);
+                    Console.WriteLine($"Epic source commit: {commit}");
+                    Console.WriteLine($"GitDependencies manifest: {Path.GetFullPath(manifestOut)}");
+                    return 0;
+                }
             default:
                 return Fail($"Unknown epic command '{command}'.");
         }
@@ -310,105 +310,105 @@ internal static class Program
         switch (command)
         {
             case "bootstrap":
-            {
-                var bootstrapper = new UnrealBuildToolBootstrapper();
-                var options = new UnrealBuildToolBootstrapOptions(
-                    root,
-                    repo,
-                    reference,
-                    tokenEnv,
-                    GetFetchOptions(args),
-                    runtimeIdentifier,
-                    ProbeUnrealBuildTool: !HasFlag(args, "--no-probe"),
-                    Progress: message => Console.Error.WriteLine($"[ueci] {message}"),
-                    ManifestPath: manifestOverride);
-                UnrealBuildToolBootstrapResult result = await bootstrapper.BootstrapAsync(options)
-                    .ConfigureAwait(false);
-
-                Console.WriteLine($"Engine root:        {result.EngineRoot}");
-                Console.WriteLine($"Epic commit:        {result.EpicCommit}");
-                Console.WriteLine($"Engine version:     {result.EngineVersion}");
-                Console.WriteLine($"Host RID:           {result.RuntimeIdentifier}");
-                Console.WriteLine($"Managed runtime:    {result.ManagedRuntimeDescription}");
-                Console.WriteLine($"Runtime root:       {result.ManagedRuntimeRoot}");
-                if (result.BundledDotNetSdkVersion is not null)
-                    Console.WriteLine($"Bundled SDK:        {result.BundledDotNetSdkVersion}");
-                Console.WriteLine($"UBT runtime:        {result.RuntimeKind}");
-                Console.WriteLine($"UBT assembly:       {result.UnrealBuildToolAssembly}");
-                Console.WriteLine($"UBT compile:        {(result.CompileResult.Succeeded ? "OK" : $"FAILED ({result.CompileResult.ExitCode})")}");
-                Console.WriteLine($"GitDeps files:      {result.Dependencies.FileCount:N0}");
-                Console.WriteLine($"GitDeps blobs:      {result.Dependencies.UniqueBlobCount:N0}");
-                Console.WriteLine($"Downloaded:         {FormatBytes(result.Dependencies.DownloadedBytes)}");
-                foreach (DotNetFrameworkRequirement framework in result.Frameworks)
                 {
-                    Console.WriteLine($"Framework:          {framework.Name} {framework.Version}");
-                }
-
-                if (result.ProbeResult is not null)
-                {
-                    Console.WriteLine($"UBT probe:          {(result.ProbeResult.Succeeded ? "OK" : $"FAILED ({result.ProbeResult.ExitCode})")}");
-                    if (!result.ProbeResult.Succeeded)
-                    {
-                        if (!string.IsNullOrWhiteSpace(result.ProbeResult.StandardOutput))
-                        {
-                            Console.WriteLine(result.ProbeResult.StandardOutput.TrimEnd());
-                        }
-                        if (!string.IsNullOrWhiteSpace(result.ProbeResult.StandardError))
-                        {
-                            Console.Error.WriteLine(result.ProbeResult.StandardError.TrimEnd());
-                        }
-                        return result.ProbeResult.ExitCode == 0 ? 4 : result.ProbeResult.ExitCode;
-                    }
-                }
-                return 0;
-            }
-            case "run":
-            {
-                int separator = Array.IndexOf(args, "--");
-                if (separator < 0 || separator == args.Length - 1)
-                {
-                    return Fail("Usage: ueci ubt run --dir PATH [--dotnet-root PATH] -- <UBT arguments...>");
-                }
-
-                string[] ubtArguments = args[(separator + 1)..];
-                var runner = new UnrealBuildToolRunner();
-                ExternalProcessResult result;
-                string? explicitDotNetRoot = GetOption(args, "--dotnet-root");
-                if (!string.IsNullOrWhiteSpace(explicitDotNetRoot))
-                {
-                    result = await runner.RunAsync(root, explicitDotNetRoot, ubtArguments).ConfigureAwait(false);
-                }
-                else
-                {
-                    UnrealEngineCompatibility compatibility = await UnrealEngineCompatibility.DetectAsync(
+                    var bootstrapper = new UnrealBuildToolBootstrapper();
+                    var options = new UnrealBuildToolBootstrapOptions(
                         root,
-                        reference).ConfigureAwait(false);
-                    string manifestPath = Path.Combine(Path.GetFullPath(root), "Engine", "Build", "Commit.gitdeps.xml");
-                    GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath)
-                        .ConfigureAwait(false);
-                    UnrealBuildToolRuntimePlan runtime = UnrealBuildToolRuntimeResolver.Resolve(
-                        manifest,
-                        root,
+                        repo,
+                        reference,
+                        tokenEnv,
+                        GetFetchOptions(args),
                         runtimeIdentifier,
-                        compatibility.ProjectStyle);
-                    string project = Path.Combine(Path.GetFullPath(root), "Engine", "Source", "Programs", "UnrealBuildTool", "UnrealBuildTool.csproj");
-                    UnrealBuildToolPaths paths = UnrealBuildToolLocator.LocateBuiltOutput(root, project) with
+                        ProbeUnrealBuildTool: !HasFlag(args, "--no-probe"),
+                        Progress: message => Console.Error.WriteLine($"[ueci] {message}"),
+                        ManifestPath: manifestOverride);
+                    UnrealBuildToolBootstrapResult result = await bootstrapper.BootstrapAsync(options)
+                        .ConfigureAwait(false);
+
+                    Console.WriteLine($"Engine root:        {result.EngineRoot}");
+                    Console.WriteLine($"Epic commit:        {result.EpicCommit}");
+                    Console.WriteLine($"Engine version:     {result.EngineVersion}");
+                    Console.WriteLine($"Host RID:           {result.RuntimeIdentifier}");
+                    Console.WriteLine($"Managed runtime:    {result.ManagedRuntimeDescription}");
+                    Console.WriteLine($"Runtime root:       {result.ManagedRuntimeRoot}");
+                    if (result.BundledDotNetSdkVersion is not null)
+                        Console.WriteLine($"Bundled SDK:        {result.BundledDotNetSdkVersion}");
+                    Console.WriteLine($"UBT runtime:        {result.RuntimeKind}");
+                    Console.WriteLine($"UBT assembly:       {result.UnrealBuildToolAssembly}");
+                    Console.WriteLine($"UBT compile:        {(result.CompileResult.Succeeded ? "OK" : $"FAILED ({result.CompileResult.ExitCode})")}");
+                    Console.WriteLine($"GitDeps files:      {result.Dependencies.FileCount:N0}");
+                    Console.WriteLine($"GitDeps blobs:      {result.Dependencies.UniqueBlobCount:N0}");
+                    Console.WriteLine($"Downloaded:         {FormatBytes(result.Dependencies.DownloadedBytes)}");
+                    foreach (DotNetFrameworkRequirement framework in result.Frameworks)
                     {
-                        RuntimeKind = runtime.Kind,
-                        RuntimeHostPath = runtime.HostPath,
-                    };
-                    result = await runner.RunAsync(paths, ubtArguments, compatibility: compatibility).ConfigureAwait(false);
+                        Console.WriteLine($"Framework:          {framework.Name} {framework.Version}");
+                    }
+
+                    if (result.ProbeResult is not null)
+                    {
+                        Console.WriteLine($"UBT probe:          {(result.ProbeResult.Succeeded ? "OK" : $"FAILED ({result.ProbeResult.ExitCode})")}");
+                        if (!result.ProbeResult.Succeeded)
+                        {
+                            if (!string.IsNullOrWhiteSpace(result.ProbeResult.StandardOutput))
+                            {
+                                Console.WriteLine(result.ProbeResult.StandardOutput.TrimEnd());
+                            }
+                            if (!string.IsNullOrWhiteSpace(result.ProbeResult.StandardError))
+                            {
+                                Console.Error.WriteLine(result.ProbeResult.StandardError.TrimEnd());
+                            }
+                            return result.ProbeResult.ExitCode == 0 ? 4 : result.ProbeResult.ExitCode;
+                        }
+                    }
+                    return 0;
                 }
-                if (!string.IsNullOrEmpty(result.StandardOutput))
+            case "run":
                 {
-                    Console.Write(result.StandardOutput);
+                    int separator = Array.IndexOf(args, "--");
+                    if (separator < 0 || separator == args.Length - 1)
+                    {
+                        return Fail("Usage: ueci ubt run --dir PATH [--dotnet-root PATH] -- <UBT arguments...>");
+                    }
+
+                    string[] ubtArguments = args[(separator + 1)..];
+                    var runner = new UnrealBuildToolRunner();
+                    ExternalProcessResult result;
+                    string? explicitDotNetRoot = GetOption(args, "--dotnet-root");
+                    if (!string.IsNullOrWhiteSpace(explicitDotNetRoot))
+                    {
+                        result = await runner.RunAsync(root, explicitDotNetRoot, ubtArguments).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        UnrealEngineCompatibility compatibility = await UnrealEngineCompatibility.DetectAsync(
+                            root,
+                            reference).ConfigureAwait(false);
+                        string manifestPath = Path.Combine(Path.GetFullPath(root), "Engine", "Build", "Commit.gitdeps.xml");
+                        GitDependenciesManifest manifest = await GitDependenciesManifestReader.LoadAsync(manifestPath)
+                            .ConfigureAwait(false);
+                        UnrealBuildToolRuntimePlan runtime = UnrealBuildToolRuntimeResolver.Resolve(
+                            manifest,
+                            root,
+                            runtimeIdentifier,
+                            compatibility.ProjectStyle);
+                        string project = Path.Combine(Path.GetFullPath(root), "Engine", "Source", "Programs", "UnrealBuildTool", "UnrealBuildTool.csproj");
+                        UnrealBuildToolPaths paths = UnrealBuildToolLocator.LocateBuiltOutput(root, project) with
+                        {
+                            RuntimeKind = runtime.Kind,
+                            RuntimeHostPath = runtime.HostPath,
+                        };
+                        result = await runner.RunAsync(paths, ubtArguments, compatibility: compatibility).ConfigureAwait(false);
+                    }
+                    if (!string.IsNullOrEmpty(result.StandardOutput))
+                    {
+                        Console.Write(result.StandardOutput);
+                    }
+                    if (!string.IsNullOrEmpty(result.StandardError))
+                    {
+                        Console.Error.Write(result.StandardError);
+                    }
+                    return result.ExitCode;
                 }
-                if (!string.IsNullOrEmpty(result.StandardError))
-                {
-                    Console.Error.Write(result.StandardError);
-                }
-                return result.ExitCode;
-            }
             default:
                 return Fail($"Unknown ubt command '{command}'.");
         }

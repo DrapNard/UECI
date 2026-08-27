@@ -154,112 +154,112 @@ internal sealed class FuseProtocolServer : IAsyncDisposable
         switch (fields[0])
         {
             case "STATFS":
-            {
-                await writer.WriteLineAsync($"OK\t{FuseProtocol.Encode(_fileSystem.UpperRoot)}").ConfigureAwait(false);
-                return;
-            }
-            case "STAT":
-            {
-                RequireFields(fields, 2);
-                string path = FuseProtocol.Decode(fields[1]);
-                VirtualEngineMetadata? metadata = await _fileSystem.GetStatMetadataAsync(path, cancellationToken)
-                    .ConfigureAwait(false);
-                if (metadata is null)
                 {
-                    await writer.WriteLineAsync("ERR\t2\t").ConfigureAwait(false);
+                    await writer.WriteLineAsync($"OK\t{FuseProtocol.Encode(_fileSystem.UpperRoot)}").ConfigureAwait(false);
                     return;
                 }
-                await writer.WriteLineAsync(
-                    $"OK\t{FuseProtocol.Kind(metadata.Kind)}\t{FuseProtocol.Number(metadata.Size)}\t{FuseProtocol.Mode(metadata.UnixMode)}")
-                    .ConfigureAwait(false);
-                return;
-            }
-            case "LIST":
-            {
-                RequireFields(fields, 2);
-                string path = FuseProtocol.Decode(fields[1]);
-                IReadOnlyList<VirtualEngineDirectoryEntry> entries = await _fileSystem.ListAsync(path, cancellationToken)
-                    .ConfigureAwait(false);
-                Interlocked.Add(ref _listEntryCount, entries.Count);
-                await writer.WriteLineAsync("OK").ConfigureAwait(false);
-                foreach (VirtualEngineDirectoryEntry entry in entries)
+            case "STAT":
                 {
-                    await writer.WriteLineAsync(
-                        $"E\t{FuseProtocol.Kind(entry.Kind)}\t{FuseProtocol.Number(entry.Size)}\t{FuseProtocol.Mode(entry.UnixMode)}\t{FuseProtocol.Encode(entry.Name)}")
+                    RequireFields(fields, 2);
+                    string path = FuseProtocol.Decode(fields[1]);
+                    VirtualEngineMetadata? metadata = await _fileSystem.GetStatMetadataAsync(path, cancellationToken)
                         .ConfigureAwait(false);
+                    if (metadata is null)
+                    {
+                        await writer.WriteLineAsync("ERR\t2\t").ConfigureAwait(false);
+                        return;
+                    }
+                    await writer.WriteLineAsync(
+                        $"OK\t{FuseProtocol.Kind(metadata.Kind)}\t{FuseProtocol.Number(metadata.Size)}\t{FuseProtocol.Mode(metadata.UnixMode)}")
+                        .ConfigureAwait(false);
+                    return;
                 }
-                await writer.WriteLineAsync("END").ConfigureAwait(false);
-                return;
-            }
+            case "LIST":
+                {
+                    RequireFields(fields, 2);
+                    string path = FuseProtocol.Decode(fields[1]);
+                    IReadOnlyList<VirtualEngineDirectoryEntry> entries = await _fileSystem.ListAsync(path, cancellationToken)
+                        .ConfigureAwait(false);
+                    Interlocked.Add(ref _listEntryCount, entries.Count);
+                    await writer.WriteLineAsync("OK").ConfigureAwait(false);
+                    foreach (VirtualEngineDirectoryEntry entry in entries)
+                    {
+                        await writer.WriteLineAsync(
+                            $"E\t{FuseProtocol.Kind(entry.Kind)}\t{FuseProtocol.Number(entry.Size)}\t{FuseProtocol.Mode(entry.UnixMode)}\t{FuseProtocol.Encode(entry.Name)}")
+                            .ConfigureAwait(false);
+                    }
+                    await writer.WriteLineAsync("END").ConfigureAwait(false);
+                    return;
+                }
             case "RESOLVE":
-            {
-                RequireFields(fields, 4);
-                bool write = fields[1] == "W";
-                bool create = fields[2] == "1";
-                string path = FuseProtocol.Decode(fields[3]);
-                string physical = write
-                    ? await _fileSystem.ResolveWriteBackingPathAsync(path, create, cancellationToken).ConfigureAwait(false)
-                    : await _fileSystem.ResolveReadBackingPathAsync(path, cancellationToken).ConfigureAwait(false);
-                await writer.WriteLineAsync($"OK\t{FuseProtocol.Encode(physical)}").ConfigureAwait(false);
-                return;
-            }
+                {
+                    RequireFields(fields, 4);
+                    bool write = fields[1] == "W";
+                    bool create = fields[2] == "1";
+                    string path = FuseProtocol.Decode(fields[3]);
+                    string physical = write
+                        ? await _fileSystem.ResolveWriteBackingPathAsync(path, create, cancellationToken).ConfigureAwait(false)
+                        : await _fileSystem.ResolveReadBackingPathAsync(path, cancellationToken).ConfigureAwait(false);
+                    await writer.WriteLineAsync($"OK\t{FuseProtocol.Encode(physical)}").ConfigureAwait(false);
+                    return;
+                }
             case "READLINK":
-            {
-                RequireFields(fields, 2);
-                string target = await _fileSystem.ReadSymbolicLinkAsync(FuseProtocol.Decode(fields[1]), cancellationToken)
-                    .ConfigureAwait(false);
-                await writer.WriteLineAsync($"OK\t{FuseProtocol.Encode(target)}").ConfigureAwait(false);
-                return;
-            }
+                {
+                    RequireFields(fields, 2);
+                    string target = await _fileSystem.ReadSymbolicLinkAsync(FuseProtocol.Decode(fields[1]), cancellationToken)
+                        .ConfigureAwait(false);
+                    await writer.WriteLineAsync($"OK\t{FuseProtocol.Encode(target)}").ConfigureAwait(false);
+                    return;
+                }
             case "MKDIR":
-            {
-                RequireFields(fields, 3);
-                int mode = int.Parse(fields[1], CultureInfo.InvariantCulture);
-                await _fileSystem.CreateDirectoryAsync(FuseProtocol.Decode(fields[2]), mode, cancellationToken)
-                    .ConfigureAwait(false);
-                await writer.WriteLineAsync("OK").ConfigureAwait(false);
-                return;
-            }
+                {
+                    RequireFields(fields, 3);
+                    int mode = int.Parse(fields[1], CultureInfo.InvariantCulture);
+                    await _fileSystem.CreateDirectoryAsync(FuseProtocol.Decode(fields[2]), mode, cancellationToken)
+                        .ConfigureAwait(false);
+                    await writer.WriteLineAsync("OK").ConfigureAwait(false);
+                    return;
+                }
             case "UNLINK":
             case "RMDIR":
-            {
-                RequireFields(fields, 2);
-                await _fileSystem.DeleteAsync(
-                    FuseProtocol.Decode(fields[1]),
-                    directory: fields[0] == "RMDIR",
-                    cancellationToken).ConfigureAwait(false);
-                await writer.WriteLineAsync("OK").ConfigureAwait(false);
-                return;
-            }
+                {
+                    RequireFields(fields, 2);
+                    await _fileSystem.DeleteAsync(
+                        FuseProtocol.Decode(fields[1]),
+                        directory: fields[0] == "RMDIR",
+                        cancellationToken).ConfigureAwait(false);
+                    await writer.WriteLineAsync("OK").ConfigureAwait(false);
+                    return;
+                }
             case "RENAME":
-            {
-                RequireFields(fields, 3);
-                await _fileSystem.RenameAsync(
-                    FuseProtocol.Decode(fields[1]),
-                    FuseProtocol.Decode(fields[2]),
-                    cancellationToken).ConfigureAwait(false);
-                await writer.WriteLineAsync("OK").ConfigureAwait(false);
-                return;
-            }
+                {
+                    RequireFields(fields, 3);
+                    await _fileSystem.RenameAsync(
+                        FuseProtocol.Decode(fields[1]),
+                        FuseProtocol.Decode(fields[2]),
+                        cancellationToken).ConfigureAwait(false);
+                    await writer.WriteLineAsync("OK").ConfigureAwait(false);
+                    return;
+                }
             case "SYMLINK":
-            {
-                RequireFields(fields, 3);
-                await _fileSystem.CreateSymbolicLinkAsync(
-                    FuseProtocol.Decode(fields[1]),
-                    FuseProtocol.Decode(fields[2]),
-                    cancellationToken).ConfigureAwait(false);
-                await writer.WriteLineAsync("OK").ConfigureAwait(false);
-                return;
-            }
+                {
+                    RequireFields(fields, 3);
+                    await _fileSystem.CreateSymbolicLinkAsync(
+                        FuseProtocol.Decode(fields[1]),
+                        FuseProtocol.Decode(fields[2]),
+                        cancellationToken).ConfigureAwait(false);
+                    await writer.WriteLineAsync("OK").ConfigureAwait(false);
+                    return;
+                }
             case "CHMOD":
-            {
-                RequireFields(fields, 3);
-                int mode = int.Parse(fields[1], CultureInfo.InvariantCulture);
-                await _fileSystem.ChmodAsync(FuseProtocol.Decode(fields[2]), mode, cancellationToken)
-                    .ConfigureAwait(false);
-                await writer.WriteLineAsync("OK").ConfigureAwait(false);
-                return;
-            }
+                {
+                    RequireFields(fields, 3);
+                    int mode = int.Parse(fields[1], CultureInfo.InvariantCulture);
+                    await _fileSystem.ChmodAsync(FuseProtocol.Decode(fields[2]), mode, cancellationToken)
+                        .ConfigureAwait(false);
+                    await writer.WriteLineAsync("OK").ConfigureAwait(false);
+                    return;
+                }
             default:
                 throw new InvalidDataException($"Unknown FUSE protocol command '{fields[0]}'.");
         }
@@ -311,7 +311,7 @@ internal sealed class FuseProtocolServer : IAsyncDisposable
                 $"LIST {Interlocked.Read(ref _listCount):N0} ({Interlocked.Read(ref _listEntryCount):N0} entries), " +
                 $"RESOLVE {Interlocked.Read(ref _resolveCount):N0}, " +
                 $"mutations {Interlocked.Read(ref _mutationCount):N0}, " +
-                $"connections {Interlocked.Read(ref _connectionCount):N0}." );
+                $"connections {Interlocked.Read(ref _connectionCount):N0}.");
         }
     }
 
